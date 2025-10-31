@@ -5,6 +5,7 @@ import bcrypt from "bcrypt";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import pool from "./db";
+import meRoutes from "./routes/me";
 
 // Almodulok
 import workOrderRoutes from "./routes/workOrders";
@@ -17,6 +18,9 @@ import servicesRouter from "./routes/services";
 
 import sendLoginCodeEmail  from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
+import servicesAvailableRoutes from "./routes/services_available";
+import employeeCalendarRoutes from "./routes/employee_calendar";
+
 
 dotenv.config();
 
@@ -28,6 +32,7 @@ const PORT = process.env.PORT || 5000;
 // ===========================================================
 app.use(cors({
   origin: [
+    "http://localhost:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3001",
     "http://10.40.23.26:3001",
@@ -49,6 +54,13 @@ app.get("/", (_req, res) => {
 // - ha jó, generál egy 6 jegyű kódot
 // - eltárolja memóriában
 // - elküldi Gmail-lel
+
+app.use("/api/me", meRoutes);
+
+app.use("/api/services/available", servicesAvailableRoutes);
+
+app.use("/api/employee-calendar", employeeCalendarRoutes); // naptárhoz
+
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -144,7 +156,7 @@ app.post("/api/verify-code", async (req, res) => {
 // itt mennek tovább a többi route-ok is...
 // pl. app.use("/api/menus", menuRoutes); stb.
 
-app.listen(3000, () => {
+app.listen(3001, () => {
   console.log("✅ Backend fut a 3000-es porton");
 });
 

@@ -2,15 +2,15 @@
 import express from "express";
 import { pool } from "../db";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 
 const router = express.Router();
 
-/* ---------- AUTH MIDDLEWARE ---------- */
-/*
-   Elvárás:
+/* ==========================================================
+   AUTH MIDDLEWARE
    - Authorization: Bearer <token>
-   - A tokenben benne legyen pl. { user_id: "...", role: "admin" }
-*/
+   - token payload pl.: { user_id: "...", role: "admin" }
+========================================================== */
 function authenticate(req: any, res: any, next: any) {
   const auth = req.headers.authorization;
   if (!auth) {
@@ -20,7 +20,7 @@ function authenticate(req: any, res: any, next: any) {
   try {
     const token = auth.split(" ")[1];
     const decoded: any = jwt.verify(token, process.env.JWT_SECRET as string);
-    req.user = decoded;
+    req.user = decoded; // { user_id, role, ... }
     next();
   } catch (err) {
     console.error("JWT hiba:", err);
@@ -28,39 +28,45 @@ function authenticate(req: any, res: any, next: any) {
   }
 }
 
-/* ---------- ROLE CHECK MIDDLEWARE ---------- */
-/*
-   Csak bizonyos szerepkör láthatja a dolgozók listáját.
-   - admin, receptionist, employee (szakember)
-   A vendég NE lássa a teljes listát.
-*/
+/* ==========================================================
+   ROLE CHECK: lista lekéréséhez
+   - admin
+   - receptionist
+   - employee (szakember)
+   vendég NE lássa
+========================================================== */
 function authorizeEmployeeList(req: any, res: any, next: any) {
   const role = req.user?.role;
   if (!role) {
-    return res.status(403).json({ error: "Nincs jogosultság (nincs szerepkör)" });
+    return res
+      .status(403)
+      .json({ error: "Nincs jogosultság (nincs szerepkör)" });
   }
 
-  // ide beírjuk kik láthatják a listát
   const allowed = ["admin", "receptionist", "employee"];
   if (!allowed.includes(role)) {
-    return res.status(403).json({ error: "Nincs jogosultság ehhez az erőforráshoz" });
+    return res
+      .status(403)
+      .json({ error: "Nincs jogosultság ehhez az erőforráshoz" });
   }
 
   next();
 }
 
-/*
-  Egyetlen dolgozó részletes adatait
-  - admin és receptionist bárkiről lát mindent
-  - employee (szakember) csak a saját adatát láthatja, ne a többiekét
-*/
+/* ==========================================================
+   ROLE CHECK: adott dolgozó részletes adata
+   - admin, receptionist: mindent láthat
+   - employee: csak saját magát
+========================================================== */
 function authorizeEmployeeDetails(req: any, res: any, next: any) {
   const role = req.user?.role;
-  const currentUserId = req.user?.user_id; // ez legyen benne a tokenben
+  const currentUserId = req.user?.user_id; // tedd bele ezt a tokenbe
   const requestedId = req.params.id;
 
   if (!role) {
-    return res.status(403).json({ error: "Nincs jogosultság (nincs szerepkör)" });
+    return res
+      .status(403)
+      .json({ error: "Nincs jogosultság (nincs szerepkör)" });
   }
 
   if (role === "admin" || role === "receptionist") {
@@ -68,40 +74,44 @@ function authorizeEmployeeDetails(req: any, res: any, next: any) {
   }
 
   if (role === "employee") {
-    // szakember csak a SAJÁT rekordját nézheti
     if (currentUserId === requestedId) {
       return next();
     } else {
-      return res.status(403).json({ error: "Nem férhetsz hozzá más dolgozó adatlapjához" });
+      return res
+        .status(403)
+        .json({ error: "Nem férhetsz hozzá más dolgozó adatlapjához" });
     }
   }
 
-  // más szerepkör nem férhet hozzá
-  return res.status(403).json({ error: "Nincs jogosultság ehhez az erőforráshoz" });
+  return res
+    .status(403)
+    .json({ error: "Nincs jogosultság ehhez az erőforráshoz" });
 }
 
-/* ===========================================================
+/* ==========================================================
+   ROLE CHECK: admin-only műveletek
+   - státuszváltás
+   - új dolgozó létrehozás
+   - credentials módosítás
+   - roles módosítás
+========================================================== */
+function requireAdmin(req: any, res: any, next: any) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ error: "Nincs jogosultság (csak admin)." });
+  }
+  next();
+}
+
+/* ==========================================================
    GET /api/employees
-   Dolgozók LISTÁJA a táblád szerint
-   - életkorhoz: birth_date
-   - telephelyhez: locations.name AS location_name
-   - erre épít a frontend EmployeesList.tsx
-=========================================================== */
+   Dolgozók listája.
+   query param: ?include_inactive=1   -> akkor NEM szűrünk active=true-re
+   FRONTEND: EmployeesList.tsx ezt használja
+========================================================== */
 router.get("/", authenticate, authorizeEmployeeList, async (req, res) => {
   try {
-    /*
-      employees tábla oszlopok, amiket most ténylegesen akarunk listázni:
-      - id (uuid)
-      - full_name / first_name / last_name
-      - birth_date
-      - qualification
-      - monthly_wage / hourly_wage
-      - photo_url
-      - location_id
-      - locations.name AS location_name
+    const includeInactive = req.query.include_inactive === "1";
 
-      Ez a JOIN fontos, hogy a telephely nevét is visszaadjuk.
-    */
     const result = await pool.query(
       `
       SELECT
@@ -115,10 +125,11 @@ router.get("/", authenticate, authorizeEmployeeList, async (req, res) => {
         e.hourly_wage,
         e.photo_url,
         e.location_id,
+        e.active,
         l.name AS location_name
       FROM employees e
       LEFT JOIN locations l ON l.id = e.location_id
-      WHERE e.active = true
+      ${includeInactive ? "" : "WHERE e.active = true"}
       ORDER BY e.last_name, e.first_name;
       `
     );
@@ -126,16 +137,16 @@ router.get("/", authenticate, authorizeEmployeeList, async (req, res) => {
     return res.json(result.rows);
   } catch (err) {
     console.error("❌ /api/employees hiba:", err);
-    return res.status(500).json({ error: "Adatbázis hiba a dolgozók listázásánál" });
+    return res
+      .status(500)
+      .json({ error: "Adatbázis hiba a dolgozók listázásánál" });
   }
 });
 
-/* ===========================================================
+/* ==========================================================
    GET /api/employees/:id
-   EGY dolgozó részletes adatai
-   - itt visszaadunk MINDENT amit a táblád tartalmaz,
-     mert az EmployeeDetails.tsx teljes HR profilt akar mutatni
-=========================================================== */
+   Egy dolgozó teljes profilja (HR adatlap)
+========================================================== */
 router.get("/:id", authenticate, authorizeEmployeeDetails, async (req, res) => {
   const { id } = req.params;
 
@@ -151,7 +162,8 @@ router.get("/:id", authenticate, authorizeEmployeeDetails, async (req, res) => {
         e.first_name,
         e.last_name,
         e.active,
-        e.role,
+
+        e.role,                 -- JSON-ben tárolt szerepkörlista pl. ["admin","recepciós"]
 
         e.birth_name,
         e.birth_date,
@@ -186,7 +198,9 @@ router.get("/:id", authenticate, authorizeEmployeeDetails, async (req, res) => {
         e.review_notes,
         e.traits,
 
-        e.created_at
+        e.created_at,
+
+        e.login_name           -- adminnak kell látni a belépési nevet
       FROM employees e
       LEFT JOIN locations l ON l.id = e.location_id
       WHERE e.id = $1
@@ -202,7 +216,328 @@ router.get("/:id", authenticate, authorizeEmployeeDetails, async (req, res) => {
     return res.json(result.rows[0]);
   } catch (err) {
     console.error("❌ /api/employees/:id hiba:", err);
-    return res.status(500).json({ error: "Adatbázis hiba a dolgozó lekérésénél" });
+    return res
+      .status(500)
+      .json({ error: "Adatbázis hiba a dolgozó lekérésénél" });
+  }
+});
+
+/* ==========================================================
+   POST /api/employees
+   ÚJ dolgozó létrehozása (teljesebb HR adat + login egyben)
+
+   A frontend (EmployeeCreateModal) ilyesmit küld:
+   {
+     first_name,
+     last_name,
+     full_name,
+     phone,
+     email,
+     birth_date,
+     location_id,
+     active,
+     login_name,
+     plain_password,
+     roles: ["admin","recepciós"],
+     // services: [...],  // ezt majd később kötjük be kapcsolótáblán át
+   }
+
+   Kötelező:
+     - full név (vagy first+last-ból építjük)
+     - phone
+     - location_id
+     - login_name
+     - plain_password
+========================================================== */
+router.post("/", authenticate, requireAdmin, async (req, res) => {
+  const {
+    first_name,
+    last_name,
+    full_name,
+    phone,
+    email,
+    birth_date,
+    location_id,
+
+    login_name,
+    plain_password,
+    roles,
+
+    active,
+  } = req.body;
+
+  // ha nincs full_name, akkor építünk first+last-ból
+  const computedFullName =
+    full_name ||
+    `${(last_name || "").trim()} ${(first_name || "").trim()}`.trim();
+
+  if (
+    !computedFullName ||
+    !phone ||
+    !login_name ||
+    !plain_password ||
+    !location_id
+  ) {
+    return res.status(400).json({
+      error:
+        "Kötelező mező hiányzik (név / telefon / login / jelszó / telephely).",
+    });
+  }
+
+  try {
+    const hash = await bcrypt.hash(plain_password, 10);
+
+    const insertResult = await pool.query(
+      `
+      INSERT INTO employees (
+        full_name,
+        first_name,
+        last_name,
+        phone,
+        email,
+        birth_date,
+        login_name,
+        password_hash,
+        location_id,
+        role,
+        active
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      RETURNING *
+      `,
+      [
+        computedFullName,
+        first_name || null,
+        last_name || null,
+        phone,
+        email || null,
+        birth_date || null,
+        login_name,
+        hash,
+        location_id,
+        JSON.stringify(roles || []), // több jogosultsági címke mehet bele
+        active === false ? false : true,
+      ]
+    );
+
+    // (Ha kell: itt lehet INSERT employee_services kapcsolótáblába a req.body.services alapján)
+
+    return res.status(201).json(insertResult.rows[0]);
+  } catch (err) {
+    console.error("❌ Új dolgozó mentési hiba:", err);
+    return res.status(500).json({ error: "Adatbázis hiba létrehozáskor" });
+  }
+});
+
+/* ==========================================================
+   POST /api/employees/credentials
+   Minimál user létrehozása csak belépéssel.
+   Ezt akkor hívjuk, ha az admin csak login_name + jelszóval
+   felvesz valakit (még nincs teljes HR adat).
+
+   Body:
+   {
+     login_name: "anna.kovacs",
+     plain_password: "Titok123!"
+   }
+
+   Visszaadja az új ID-t, hogy utána már lehessen
+   státuszt állítani, HR adatokat feltölteni, stb.
+========================================================== */
+router.post(
+  "/credentials",
+  authenticate,
+  requireAdmin,
+  async (req: any, res) => {
+    const { login_name, plain_password } = req.body;
+
+    if (!login_name || !plain_password) {
+      return res.status(400).json({
+        error: "login_name és plain_password kötelező.",
+      });
+    }
+
+    try {
+      const hash = await bcrypt.hash(plain_password, 10);
+
+      const r = await pool.query(
+        `
+        INSERT INTO employees (login_name, password_hash, active)
+        VALUES ($1,$2,true)
+        RETURNING id, login_name, active
+        `,
+        [login_name.trim(), hash]
+      );
+
+      return res.status(201).json(r.rows[0]);
+    } catch (err) {
+      console.error("❌ Minimál user létrehozás hiba:", err);
+      return res
+        .status(500)
+        .json({ error: "Adatbázis hiba user létrehozáskor." });
+    }
+  }
+);
+
+/* ==========================================================
+   PATCH /api/employees/:id/active
+   Dolgozó aktiválása / inaktiválása
+   body: { active: boolean }
+   Csak admin.
+========================================================== */
+router.patch(
+  "/:id/active",
+  authenticate,
+  requireAdmin,
+  async (req: any, res) => {
+    const { id } = req.params;
+    const { active } = req.body;
+
+    if (typeof active !== "boolean") {
+      return res.status(400).json({
+        error: "Hiányzik vagy hibás az 'active' mező (boolean kell).",
+      });
+    }
+
+    try {
+      const result = await pool.query(
+        `
+        UPDATE employees
+        SET active = $1
+        WHERE id = $2
+        RETURNING id, full_name, active
+        `,
+        [active, id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Nincs ilyen dolgozó." });
+      }
+
+      return res.json({
+        success: true,
+        employee: result.rows[0],
+      });
+    } catch (err) {
+      console.error("❌ Dolgozó státusz frissítési hiba:", err);
+      return res
+        .status(500)
+        .json({ error: "Adatbázis hiba státusz módosításkor." });
+    }
+  }
+);
+
+/* ==========================================================
+   PATCH /api/employees/:id/credentials
+   Meglévő dolgozó belépési adatainak módosítása
+   (felhasználónév és opcionálisan új jelszó).
+   Csak admin.
+
+   Body:
+   {
+     login_name: "ujnev",
+     plain_password: "ujJelszo123"   // ha nem küldjük -> marad a régi hash
+   }
+========================================================== */
+router.patch(
+  "/:id/credentials",
+  authenticate,
+  requireAdmin,
+  async (req: any, res) => {
+    const { id } = req.params;
+    const { login_name, plain_password } = req.body;
+
+    if (!login_name || !login_name.trim()) {
+      return res
+        .status(400)
+        .json({ error: "A login_name kötelező a frissítéshez." });
+    }
+
+    try {
+      let queryText = `
+        UPDATE employees
+        SET login_name = $1
+        WHERE id = $2
+        RETURNING id, full_name, login_name
+      `;
+      let queryParams: any[] = [login_name.trim(), id];
+
+      if (plain_password && plain_password.trim()) {
+        const hash = await bcrypt.hash(plain_password.trim(), 10);
+
+        queryText = `
+          UPDATE employees
+          SET login_name = $1,
+              password_hash = $2
+          WHERE id = $3
+          RETURNING id, full_name, login_name
+        `;
+        queryParams = [login_name.trim(), hash, id];
+      }
+
+      const upd = await pool.query(queryText, queryParams);
+
+      if (upd.rows.length === 0) {
+        return res.status(404).json({ error: "Dolgozó nem található." });
+      }
+
+      return res.json({
+        success: true,
+        employee: upd.rows[0],
+      });
+    } catch (err) {
+      console.error("❌ Belépési adatok frissítése hiba:", err);
+      return res.status(500).json({
+        error: "Adatbázis hiba belépési adatok frissítésekor.",
+      });
+    }
+  }
+);
+
+/* ==========================================================
+   PATCH /api/employees/:id/roles
+   Admin módosítja a dolgozó szerepkörlistáját.
+   Body:
+   {
+     roles: ["admin","recepciós", ...]
+   }
+
+   Ezeket JSON-ként eltároljuk az employees.role mezőben.
+========================================================== */
+router.patch("/:id/roles", authenticate, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { roles } = req.body;
+
+  if (!Array.isArray(roles)) {
+    return res
+      .status(400)
+      .json({ error: "A roles mező kötelező és tömb kell legyen." });
+  }
+
+  try {
+    const upd = await pool.query(
+      `
+      UPDATE employees
+      SET role = $1
+      WHERE id = $2
+      RETURNING id, full_name, role
+      `,
+      [JSON.stringify(roles), id]
+    );
+
+    if (upd.rows.length === 0) {
+      return res.status(404).json({ error: "Dolgozó nem található." });
+    }
+
+    return res.json({
+      success: true,
+      employee: upd.rows[0],
+    });
+  } catch (err) {
+    console.error("❌ Jogosultságok frissítése hiba:", err);
+    return res.status(500).json({
+      error: "Adatbázis hiba jogosultság frissítésekor.",
+    });
   }
 });
 
