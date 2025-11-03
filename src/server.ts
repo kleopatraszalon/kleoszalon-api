@@ -1,12 +1,12 @@
 import "dotenv/config";
 import express, { Request, Response } from "express";
-import cors from "cors";
-import bcrypt from "bcrypt";
+import cors, { CorsOptions } from "cors";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import pool from "./db";
 
 import meRoutes from "./routes/me";
-import workOrderRoutes from "./routes/workOrders";
+import workOrderRoutes from "./routes/workorders";
 import bookingsRoutes from "./routes/bookings";
 import transactionsRoutes from "./routes/transactions";
 import locationsRoutes from "./routes/locations";
@@ -23,12 +23,24 @@ const app = express();
 
 // ===== Alap middleware-ek =====
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN?.split(",") ?? ["*"],
-    credentials: true,
-  })
-);
+
+// CORS – .env CORS_ORIGIN támogatás (vesszővel elválasztva). Ha nincs megadva, minden engedélyezett.
+const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsOptions: CorsOptions = {
+  // Ha van lista és nem tartalmaz '*', akkor azt használjuk; különben origin: true (reflektálja a kérést)
+  origin: allowedOrigins.length > 0 && !allowedOrigins.includes("*") ? allowedOrigins : true,
+  // Ha '*' szerepel, ne küldjünk hitelesítési adatokat (böngészőkorlát). Egyébként engedjük.
+  credentials: allowedOrigins.length > 0 ? !allowedOrigins.includes("*") : true,
+};
+
+app.use(cors(corsOptions));
+
+// (opcionális Render/Proxy): helyes IP és protokoll felismerés
+app.set("trust proxy", 1);
 
 // ===== Health (Render health check) =====
 app.get("/health", (_req: Request, res: Response) => res.status(200).send("ok"));
@@ -52,7 +64,7 @@ app.use("/api/transactions", transactionsRoutes);
 
 // ===== Auth: 1) /api/login → e-mail + jelszó → 2FA kód kiküldése =====
 app.post("/api/login", async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body as { email: string; password: string };
 
   try {
     const result = await pool.query(
@@ -60,16 +72,19 @@ app.post("/api/login", async (req: Request, res: Response) => {
       [email]
     );
 
-    if (result.rows.length === 0)
+    if (result.rows.length === 0) {
       return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
+    }
 
     const user = result.rows[0];
-    if (!user.active)
+    if (!user.active) {
       return res.status(403).json({ success: false, error: "Fiók inaktív" });
+    }
 
     const isMatch = await bcrypt.compare(password, user.password_hash);
-    if (!isMatch)
+    if (!isMatch) {
       return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
+    }
 
     // 6 jegyű kód generálása
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -99,14 +114,24 @@ app.post("/api/login", async (req: Request, res: Response) => {
 
 // ===== Auth: 2) /api/verify-code → JWT kiadása, ha a kód stimmel =====
 app.post("/api/verify-code", (req: Request, res: Response) => {
-  const { email, code } = req.body;
+  const { email, code } = req.body as { email: string; code: string };
   const record = consumeCode(email);
 
-  if (!record)
-    return res.status(400).json({ success: false, error: "Nincs aktív kód ehhez az e-mailhez vagy lejárt" });
+  if (!record) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Nincs aktív kód ehhez az e-mailhez vagy lejárt" });
+  }
 
-  if (record.code !== code)
+  if (record.code !== code) {
     return res.status(400).json({ success: false, error: "Érvénytelen kód" });
+  }
+
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    console.error("Hiányzó JWT_SECRET környezeti változó.");
+    return res.status(500).json({ success: false, error: "Szerver beállítási hiba (JWT)" });
+  }
 
   const token = jwt.sign(
     {
@@ -115,7 +140,7 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
       role: record.role,
       location_id: record.location_id || null,
     },
-    process.env.JWT_SECRET as string,
+    secret,
     { expiresIn: "8h" }
   );
 
@@ -128,15 +153,18 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
 });
 
 // ===== Indítás (EGY darab listen!) =====
-const port: number = Number(process.env.PORT) || 3002;
-const host: string = "0.0.0.0";
+const port = Number(process.env.PORT ?? 3002);
+const host = "0.0.0.0";
 const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
 
-// NodeJS.ErrnoException helyes típusdefiníció
-server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EADDRINUSE") {
+// Port foglaltság/egyéb hiba kezelése – NodeJS típusok nélkül
+interface ErrnoLike extends Error {
+  code?: string;
+}
+server.on("error", (err: ErrnoLike) => {
+  if (err && err.code === "EADDRINUSE") {
     console.error(`❌ Port ${port} már használatban van.`);
   } else {
     console.error(err);

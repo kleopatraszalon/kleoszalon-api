@@ -1,15 +1,12 @@
 import { Pool } from "pg";
-import dotenv from "dotenv";
+import "dotenv/config";
 
-dotenv.config();
+const useSSL =
+  (process.env.DATABASE_SSL ?? "").toLowerCase() === "true" ||
+  (process.env.RENDER ?? "").toLowerCase() === "true";
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: false,
+  ssl: useSSL ? { rejectUnauthorized: false } : false,
 });
-
-pool.connect()
-  .then(() => console.log("✅ Sikeres kapcsolat a PostgreSQL-hez"))
-  .catch((err: Error) => console.error("❌ Kapcsolódási hiba:", err));
-
 export default pool;

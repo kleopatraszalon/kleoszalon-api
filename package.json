@@ -7,18 +7,21 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --exec \"ts-node src/server.ts\""
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts"
   },
   "engines": {
     "node": ">=18.18.0 <21"
   },
   "dependencies": {
+    "@types/nodemailer": "^7.0.3",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.0.3",
-    "express": "^4.19.2",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.3"
+    "nodemailer": "^7.0.10",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
@@ -28,6 +31,9 @@
     "@types/express": "^4.17.25",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.19.24",
-    "@types/pg": "^8.15.6"
+    "@types/pg": "^8.15.6",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
   }
 }
