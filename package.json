@@ -13,3 +13,12 @@
     "express": "^4.19.2"
   }
 }
+
+{
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "nodemon --watch src --exec \"ts-node src/server.ts\""
+  },
+  "engines": { "node": ">=18.18.0 <21" }
+}
