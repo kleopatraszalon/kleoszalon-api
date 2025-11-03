@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken";
 import pool from "./db";
 
 import meRoutes from "./routes/me";
-import workOrderRoutes from "./routes/workorders";
+import workorderRoutes from "./routes/workorders"; // <— ez a helyes import
 import bookingsRoutes from "./routes/bookings";
 import transactionsRoutes from "./routes/transactions";
 import locationsRoutes from "./routes/locations";
@@ -21,36 +21,34 @@ import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 
 const app = express();
 
-// ===== Alap middleware-ek =====
+/* ===== Alap middleware-ek ===== */
 app.use(express.json());
 
-// CORS – .env CORS_ORIGIN támogatás (vesszővel elválasztva). Ha nincs megadva, minden engedélyezett.
+/* CORS – .env CORS_ORIGIN (vesszővel elválasztva). Ha nincs megadva, minden engedélyezett. */
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
 const corsOptions: CorsOptions = {
-  // Ha van lista és nem tartalmaz '*', akkor azt használjuk; különben origin: true (reflektálja a kérést)
   origin: allowedOrigins.length > 0 && !allowedOrigins.includes("*") ? allowedOrigins : true,
-  // Ha '*' szerepel, ne küldjünk hitelesítési adatokat (böngészőkorlát). Egyébként engedjük.
   credentials: allowedOrigins.length > 0 ? !allowedOrigins.includes("*") : true,
 };
 
 app.use(cors(corsOptions));
 
-// (opcionális Render/Proxy): helyes IP és protokoll felismerés
+/* (Render/Proxy): helyes IP és protokoll felismerés */
 app.set("trust proxy", 1);
 
-// ===== Health (Render health check) =====
+/* ===== Health (Render health check) ===== */
 app.get("/health", (_req: Request, res: Response) => res.status(200).send("ok"));
 
-// ===== Teszt gyökér =====
+/* ===== Teszt gyökér ===== */
 app.get("/", (_req: Request, res: Response) => {
   res.send("✅ Backend fut és CORS be van állítva");
 });
 
-// ===== API route-ok =====
+/* ===== API route-ok ===== */
 app.use("/api/me", meRoutes);
 app.use("/api/employees", employeesRouter);
 app.use("/api/services", servicesRouter);
@@ -58,11 +56,11 @@ app.use("/api/services/available", servicesAvailableRoutes);
 app.use("/api/employee-calendar", employeeCalendarRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/locations", locationsRoutes);
-app.use("/api/workorders", workOrderRoutes);
+app.use("/api/workorders", workorderRoutes); // <— itt is a helyes név
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 
-// ===== Auth: 1) /api/login → e-mail + jelszó → 2FA kód kiküldése =====
+/* ===== Auth: 1) /api/login → e-mail + jelszó → 2FA kód kiküldése ===== */
 app.post("/api/login", async (req: Request, res: Response) => {
   const { email, password } = req.body as { email: string; password: string };
 
@@ -86,7 +84,7 @@ app.post("/api/login", async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
     }
 
-    // 6 jegyű kód generálása
+    // 6 jegyű kód
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN || "5", 10);
 
@@ -98,7 +96,6 @@ app.post("/api/login", async (req: Request, res: Response) => {
       expiresAt: Date.now() + expiresMin * 60 * 1000,
     });
 
-    // kód e-mailben
     await sendLoginCodeEmail(email, code);
 
     return res.json({
@@ -112,7 +109,7 @@ app.post("/api/login", async (req: Request, res: Response) => {
   }
 });
 
-// ===== Auth: 2) /api/verify-code → JWT kiadása, ha a kód stimmel =====
+/* ===== Auth: 2) /api/verify-code ===== */
 app.post("/api/verify-code", (req: Request, res: Response) => {
   const { email, code } = req.body as { email: string; code: string };
   const record = consumeCode(email);
@@ -152,14 +149,14 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
   });
 });
 
-// ===== Indítás (EGY darab listen!) =====
+/* ===== Indítás (EGY darab listen!) ===== */
 const port = Number(process.env.PORT ?? 3002);
 const host = "0.0.0.0";
 const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
 
-// Port foglaltság/egyéb hiba kezelése – NodeJS típusok nélkül
+/* Port foglaltság/egyéb hiba kezelése */
 interface ErrnoLike extends Error {
   code?: string;
 }
@@ -170,3 +167,5 @@ server.on("error", (err: ErrnoLike) => {
     console.error(err);
   }
 });
+
+export default app;

@@ -1,4 +1,7 @@
 import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 async function sendLoginCodeEmail(toEmail: string, code: string) {
   const transporter = nodemailer.createTransport({

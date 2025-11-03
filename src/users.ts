@@ -1,6 +1,6 @@
 // 🔹 Összes felhasználó listázása (admin funkció)
 
-import express, { Request, Response } from "express";
+import express, { Router, Request, Response } from "express";
 import pool from "./db"; // vagy "../db", ha a routes mappában van
 
 const router = express.Router();
@@ -17,6 +17,11 @@ router.get("/", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Adatbázis hiba" });
   }
 });
+
+router.get("/", (_req: Request, res: Response) => {
+  res.json([]);
+});
+
 
 // 🔹 Felhasználó aktiválása admin által
 router.put("/activate/:id", async (req: Request, res: Response) => {

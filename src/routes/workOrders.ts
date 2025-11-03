@@ -1,8 +1,8 @@
-import express, { Request, Response, NextFunction } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { pool } from "../db";
 import jwt from "jsonwebtoken";
 
-const router = express.Router();
+
 
 /* ───────────────── TÍPUSOK ───────────────── */
 
@@ -11,6 +11,13 @@ interface AuthUser {
   role: string;
   location_id?: string | null;
 }
+
+const router = Router();
+
+router.get("/", (_req: Request, res: Response) => {
+  res.json({ items: [] });
+});
+
 
 interface AuthenticatedRequest extends Request {
   user: AuthUser;
