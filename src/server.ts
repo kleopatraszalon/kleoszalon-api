@@ -1,6 +1,5 @@
-// src/server.ts
 import "dotenv/config";
-import express from "express";
+import express, { Request, Response } from "express";
 import cors from "cors";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
@@ -32,10 +31,10 @@ app.use(
 );
 
 // ===== Health (Render health check) =====
-app.get("/health", (_req, res) => res.status(200).send("ok"));
+app.get("/health", (_req: Request, res: Response) => res.status(200).send("ok"));
 
 // ===== Teszt gyökér =====
-app.get("/", (_req, res) => {
+app.get("/", (_req: Request, res: Response) => {
   res.send("✅ Backend fut és CORS be van állítva");
 });
 
@@ -52,7 +51,7 @@ app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 
 // ===== Auth: 1) /api/login → e-mail + jelszó → 2FA kód kiküldése =====
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", async (req: Request, res: Response) => {
   const { email, password } = req.body;
 
   try {
@@ -99,7 +98,7 @@ app.post("/api/login", async (req, res) => {
 });
 
 // ===== Auth: 2) /api/verify-code → JWT kiadása, ha a kód stimmel =====
-app.post("/api/verify-code", (req, res) => {
+app.post("/api/verify-code", (req: Request, res: Response) => {
   const { email, code } = req.body;
   const record = consumeCode(email);
 
@@ -129,12 +128,13 @@ app.post("/api/verify-code", (req, res) => {
 });
 
 // ===== Indítás (EGY darab listen!) =====
-const port = Number(process.env.PORT) || 3002; // lokálra 3002 jó
-const host = "0.0.0.0";                         // Renderhez kell
+const port: number = Number(process.env.PORT) || 3002; // lokálra 3002 jó
+const host: string = "0.0.0.0";                         // Renderhez kell
 const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
 
+// NodeJS.ErrnoException helyes típusdefiníció
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(`❌ Port ${port} már használatban van.`);
