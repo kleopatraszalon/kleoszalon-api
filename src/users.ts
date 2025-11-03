@@ -1,11 +1,12 @@
 // 🔹 Összes felhasználó listázása (admin funkció)
 
-import express from "express";
+import express, { Request, Response } from "express";
 import pool from "./db"; // vagy "../db", ha a routes mappában van
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+// 🔹 Összes felhasználó lekérdezése
+router.get("/", async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
       "SELECT id, name, email, role, is_active, created_at FROM users ORDER BY created_at DESC"
@@ -18,7 +19,7 @@ router.get("/", async (req, res) => {
 });
 
 // 🔹 Felhasználó aktiválása admin által
-router.put("/activate/:id", async (req, res) => {
+router.put("/activate/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 

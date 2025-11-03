@@ -25,7 +25,7 @@ const app = express();
 app.use(express.json());
 app.use(
   cors({
-    origin: (process.env.CORS_ORIGIN?.split(",") ?? ["*"]),
+    origin: process.env.CORS_ORIGIN?.split(",") ?? ["*"],
     credentials: true,
   })
 );
@@ -128,8 +128,8 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
 });
 
 // ===== Indítás (EGY darab listen!) =====
-const port: number = Number(process.env.PORT) || 3002; // lokálra 3002 jó
-const host: string = "0.0.0.0";                         // Renderhez kell
+const port: number = Number(process.env.PORT) || 3002;
+const host: string = "0.0.0.0";
 const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
