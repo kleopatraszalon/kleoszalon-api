@@ -4,42 +4,78 @@ import express, { Request, Response, NextFunction } from "express";
 import cors, { CorsOptions } from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import pool from "./db.js";
+import pool from "./db";
 
-// ROUTES
-import menuRoutes from "./routes/menu.js";
-import meRoutes from "./routes/me.js";
-import workorderRoutes from "./routes/workorders.js";
-import bookingsRoutes from "./routes/bookings.js";
-import transactionsRoutes from "./routes/transactions.js";
-import locationsRoutes from "./routes/locations.js";
-import dashboardRoutes from "./routes/dashboard.js";
-import employeesRouter from "./routes/employees.js";
-import servicesRouter from "./routes/services.js";
-import servicesAvailableRoutes from "./routes/services_available.js";
-import employeeCalendarRoutes from "./routes/employee_calendar.js";
+/* ===== ROUTES ===== */
+import menuRoutes from "./routes/menu";
+import meRoutes from "./routes/me";
+import workorderRoutes from "./routes/workorders";
+import bookingsRoutes from "./routes/bookings";
+import transactionsRoutes from "./routes/transactions";
+import locationsRoutes from "./routes/locations";
+import dashboardRoutes from "./routes/dashboard";
+import employeesRouter from "./routes/employees";
+import servicesRouter from "./routes/services";
+import servicesAvailableRoutes from "./routes/services_available";
+import employeeCalendarRoutes from "./routes/employee_calendar";
 
-import sendLoginCodeEmail from "./mailer.js";
-import { saveCodeForEmail, consumeCode } from "./tempCodeStore.js";
+import sendLoginCodeEmail from "./mailer";
+import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 
 const app = express();
 
 /* ===== Proxy és alap middlewares ===== */
 app.set("trust proxy", 1);
 
-// --- CORS előbb, mint bármely route! ---
-const allowedOrigins =
-  process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()).filter(Boolean) || [];
+/* ===== CORS – rugalmas, hibatűrő, wildcard támogatással ===== */
+const rawOrigins =
+  (process.env.CORS_ORIGIN ?? "*")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const allowAll = rawOrigins.includes("*") || rawOrigins.length === 0;
+
+// egyszerű wildcard illesztő: '*' → bármi, '*.domain.hu' → bármely aldomain
+function originMatches(origin: string, patterns: string[]): boolean {
+  for (const p of patterns) {
+    if (p === "*") return true;
+    const re = new RegExp(
+      "^" +
+        p
+          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&") // escape
+          .replace(/\\\*/g, ".*") + // '*' → '.*'
+      "$"
+    );
+    if (re.test(origin)) return true;
+  }
+  return false;
+}
 
 const corsOptions: CorsOptions = {
-  // Ha nincs megadva semmi, engedjük az összes origin-t (dev).
-  // origin: true esetén a cors csomag visszatükrözi a kérést küldő origin-t.
-  origin: allowedOrigins.length > 0 && !allowedOrigins.includes("*") ? allowedOrigins : true,
-  credentials: allowedOrigins.length > 0 ? !allowedOrigins.includes("*") : true,
+  origin(origin, cb) {
+    // No-origin (pl. Postman/cURL) → engedjük
+    if (!origin) return cb(null, true);
+
+    // Mindent engedünk (dev / '*' / nincs megadva)
+    if (allowAll) return cb(null, true);
+
+    // Ha megegyezik valamely mintával → engedjük
+    if (originMatches(origin, rawOrigins)) return cb(null, true);
+
+    // NINCS hiba dobás! Egyszerűen nem teszünk CORS headert.
+    return cb(null, false);
+  },
+  credentials: true,
 };
 
+// Vary: Origin – hogy a cache helyesen kezelje az origin alapú variációt
+app.use((_, res, next) => {
+  res.header("Vary", "Origin");
+  next();
+});
+
 app.use(cors(corsOptions));
-// Preflight kérelmek (OPTIONS) kezelése
 app.options("*", cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
@@ -54,9 +90,9 @@ app.get("/", (_req: Request, res: Response) => {
   res.send("✅ Backend fut és CORS be van állítva");
 });
 
-/* ===== Route-ok (MENÜ legfelül, alias-szal) ===== */
-app.use("/api/menu", menuRoutes);   // => GET /api/menu
-app.use("/api/menus", menuRoutes);  // alias, ha a frontend ezt hívja
+/* ===== Route-ok mountolása ===== */
+app.use("/api/menu", menuRoutes);
+app.use("/api/menus", menuRoutes);
 
 app.use("/api/me", meRoutes);
 app.use("/api/employees", employeesRouter);
@@ -69,7 +105,7 @@ app.use("/api/workorders", workorderRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 
-/* ===== Auth: Login ===== */
+/* ===== Auth: Login (1. lépcső – jelszó + e-mail kód) ===== */
 app.post("/api/login", async (req: Request, res: Response) => {
   const { email, password } = req.body as { email: string; password: string };
 
@@ -79,7 +115,9 @@ app.post("/api/login", async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      "SELECT id, email, password_hash, role, location_id, active FROM users WHERE email = $1",
+      `SELECT id, email, password_hash, role, location_id, active
+       FROM users
+       WHERE email = $1`,
       [email]
     );
 
@@ -93,24 +131,22 @@ app.post("/api/login", async (req: Request, res: Response) => {
       return res.status(403).json({ success: false, error: "Fiók inaktív" });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password_hash);
+    const isMatch = bcrypt.compareSync(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
     }
 
-    // 🔹 6 jegyű kód generálása
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN || "5", 10);
+    const expiresMin = Number.parseInt(process.env.CODE_EXPIRES_MIN || "5", 10);
 
     saveCodeForEmail(email, {
       code,
       userId: user.id,
-      role: user.role || "guest",
-      location_id: user.location_id || null,
+      role: user.role ?? "guest",
+      location_id: user.location_id ?? null,
       expiresAt: Date.now() + expiresMin * 60 * 1000,
     });
 
-    console.log("📧 Küldés előtt – SMTP_USER:", process.env.SMTP_USER);
     await sendLoginCodeEmail(email, code);
 
     return res.json({
@@ -124,7 +160,7 @@ app.post("/api/login", async (req: Request, res: Response) => {
   }
 });
 
-/* ===== Auth: Verify Code ===== */
+/* ===== Auth: Verify Code (2. lépcső – JWT) ===== */
 app.post("/api/verify-code", (req: Request, res: Response) => {
   const { email, code } = req.body as { email: string; code: string };
   const record = consumeCode(email);
@@ -151,7 +187,7 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
       email,
       userId: record.userId,
       role: record.role,
-      location_id: record.location_id || null,
+      location_id: record.location_id ?? null,
     },
     secret,
     { expiresIn: "8h" }
@@ -161,7 +197,7 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
     success: true,
     token,
     role: record.role,
-    location_id: record.location_id || null,
+    location_id: record.location_id ?? null,
   });
 });
 
@@ -184,8 +220,6 @@ const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
 
-// Stabilabb hálózat Renderen / proxy mögött
-// (lásd: "Bad Gateway" tippek)
 server.keepAliveTimeout = 120_000;
 server.headersTimeout = 120_000;
 
@@ -197,7 +231,6 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   }
 });
 
-// Graceful shutdown
 const shutdown = () => {
   console.log("🛑 Leállítás folyamatban...");
   server.close(() => {

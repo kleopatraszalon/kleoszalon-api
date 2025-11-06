@@ -1,10 +1,13 @@
 import axios from "axios";
 
-const base = (import.meta as any).env?.VITE_API_URL?.replace(/\/$/, "") 
-  || "http://localhost:10000"; // Renderen ez a saját backend URL-ed
+const base =
+  (import.meta as any).env?.VITE_API_URL?.replace(/\/$/, "") ||
+  window.location.origin;
 
-export const api = axios.create({
-  baseURL: base, // Pl.: https://<backend-domain>/api
+const api = axios.create({
+  baseURL: `${base}/api`,
   withCredentials: true,
   headers: { "Content-Type": "application/json" },
 });
+
+export default api; // ✅ default export
