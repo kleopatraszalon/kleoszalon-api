@@ -1,18 +1,19 @@
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
-    "lib": ["ES2020"],
-    "rootDir": "src",
-    "outDir": "dist",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "resolveJsonModule": true,
-    "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
-  },
-   "include": ["src/**/*.ts"],
-  "exclude": ["**/*.spec.ts", "**/*.test.ts", "src/server másolata.ts"]
+// src/api.ts (backend-safe változat)
+import axios from "axios";
+
+// BACKENDBEN sose használd a Vite-féle import.meta.env-t!
+const raw =
+  process.env.API_BASE_URL || process.env.VITE_API_URL || "http://localhost:5000/api";
+
+const baseURL = raw.replace(/\/$/, "");
+
+export const api = axios.create({
+  baseURL,
+  withCredentials: true,
+  headers: { "Content-Type": "application/json" },
+});
+
+// ha kell util:
+export function getApiBaseUrl() {
+  return baseURL;
 }
