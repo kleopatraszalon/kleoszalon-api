@@ -1,10 +1,11 @@
-import express from "express";
-import pool from "../db";
+// src/routes/menu.ts
+import * as express from "express";
+import pool from "../db.js";
 import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
-// --- Felhasználói szerepkör kinyerése a Bearer tokenből (opcionális) ---
+// --- Felhasználói szerepkör kinyerése a Bearer tokenből ---
 function getUserRole(req: express.Request): string {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
@@ -19,14 +20,12 @@ function getUserRole(req: express.Request): string {
 }
 
 router.get("/", async (req, res) => {
-  const userRole = getUserRole(req); // 'all' | 'employee' | 'admin' | 'guest' ...
+  const userRole = getUserRole(req); // 'all' | 'employee' | 'admin' ...
 
-  // Alap SELECT – NINCS benne "link"
   const baseSelect = `
     id, name, icon, route, order_index, parent_id
   `;
 
-  // 1) Próbáljuk úgy, hogy van 'role' nevű oszlop
   const sqlWithRole = `
     SELECT ${baseSelect}, LOWER(role) AS role
     FROM menus
@@ -34,7 +33,6 @@ router.get("/", async (req, res) => {
     ORDER BY COALESCE(parent_id, 0) ASC, order_index ASC, id ASC
   `;
 
-  // 2) Ha nincs 'role' oszlop: vegyünk mindent és alias-oljuk 'role' = 'all'
   const sqlNoRole = `
     SELECT ${baseSelect}, 'all'::text AS role
     FROM menus
@@ -48,7 +46,6 @@ router.get("/", async (req, res) => {
       rows = r1.rows;
     } catch (err: any) {
       if (err?.code === "42703") {
-        // nincs 'role' oszlop → essünk vissza
         const r2 = await pool.query(sqlNoRole);
         rows = r2.rows;
       } else {
@@ -56,8 +53,7 @@ router.get("/", async (req, res) => {
       }
     }
 
-    // --- Hierarchia építés (O(n)) ---
-    // Vigyázunk azokra a sorokra, ahol parent_id lehet null
+    // --- Hierarchia építés ---
     const byId = new Map<number, any>();
     rows.forEach((r) => {
       byId.set(r.id, {
@@ -82,10 +78,10 @@ router.get("/", async (req, res) => {
       }
     });
 
-    // Gyerekek rendezése is order_index, id szerint
     const sortTree = (arr: any[]) => {
-      arr.sort((a, b) =>
-        (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id
+      arr.sort(
+        (a, b) =>
+          (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id
       );
       arr.forEach((n) => sortTree(n.submenus));
     };

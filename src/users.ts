@@ -1,7 +1,7 @@
 // 🔹 Összes felhasználó listázása (admin funkció)
 
 import express, { Router, Request, Response } from "express";
-import pool from "./db"; // vagy "../db", ha a routes mappában van
+import pool from "./db.js"; // vagy "../db", ha a routes mappában van
 
 const router = express.Router();
 

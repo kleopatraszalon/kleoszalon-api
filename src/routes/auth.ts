@@ -1,15 +1,15 @@
+// src/routes/auth.ts
 import express, { Request, Response } from "express";
-import pool from "../db";
+import pool from "../db.js";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 const authRouter = express.Router();
 
 authRouter.post("/login", async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body as { email: string; password: string };
 
   try {
-    // 1) user lekérése az adatbázisból
     const result = await pool.query(
       `SELECT id, password_hash, role, location_id
        FROM users
@@ -23,24 +23,27 @@ authRouter.post("/login", async (req: Request, res: Response) => {
 
     const user = result.rows[0];
 
-    // 2) jelszó ellenőrzés
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
       return res.status(401).json({ error: "Hibás belépési adatok" });
     }
 
-    // 3) JWT építése - FIGYELEM: itt rakjuk bele a DB-ből jövő szerepet
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error("❌ Hiányzik a JWT_SECRET környezeti változó.");
+      return res.status(500).json({ error: "Szerver beállítási hiba (JWT)" });
+    }
+
     const token = jwt.sign(
       {
         userId: user.id,
-        role: user.role,                // <- EZ a kulcs
-        location_id: user.location_id,  // <- telephely is mehet a tokenbe
+        role: user.role,
+        location_id: user.location_id,
       },
-      process.env.JWT_SECRET as string,
+      secret,
       { expiresIn: "12h" }
     );
 
-    // 4) visszaadjuk a frontendre
     return res.json({
       token,
       role: user.role,

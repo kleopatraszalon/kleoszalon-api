@@ -1,28 +1,26 @@
 /* ===== .env betöltése az első sorban ===== */
-import dotenv from "dotenv";
-dotenv.config();
-
+import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
 import cors, { CorsOptions } from "cors";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import pool from "./db";
+import pool from "./db.js";
 
 // ROUTES
-import menuRoutes from "./routes/menu";
-import meRoutes from "./routes/me";
-import workorderRoutes from "./routes/workorders";
-import bookingsRoutes from "./routes/bookings";
-import transactionsRoutes from "./routes/transactions";
-import locationsRoutes from "./routes/locations";
-import dashboardRoutes from "./routes/dashboard";
-import employeesRouter from "./routes/employees";
-import servicesRouter from "./routes/services";
-import servicesAvailableRoutes from "./routes/services_available";
-import employeeCalendarRoutes from "./routes/employee_calendar";
+import menuRoutes from "./routes/menu.js";
+import meRoutes from "./routes/me.js";
+import workorderRoutes from "./routes/workorders.js";
+import bookingsRoutes from "./routes/bookings.js";
+import transactionsRoutes from "./routes/transactions.js";
+import locationsRoutes from "./routes/locations.js";
+import dashboardRoutes from "./routes/dashboard.js";
+import employeesRouter from "./routes/employees.js";
+import servicesRouter from "./routes/services.js";
+import servicesAvailableRoutes from "./routes/services_available.js";
+import employeeCalendarRoutes from "./routes/employee_calendar.js";
 
-import sendLoginCodeEmail from "./mailer";
-import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
+import sendLoginCodeEmail from "./mailer.js";
+import { saveCodeForEmail, consumeCode } from "./tempCodeStore.js";
 
 const app = express();
 
@@ -34,7 +32,8 @@ const allowedOrigins =
   process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()).filter(Boolean) || [];
 
 const corsOptions: CorsOptions = {
-  // Ha nincs megadva semmi, legyen minden origin engedélyezve (dev)
+  // Ha nincs megadva semmi, engedjük az összes origin-t (dev).
+  // origin: true esetén a cors csomag visszatükrözi a kérést küldő origin-t.
   origin: allowedOrigins.length > 0 && !allowedOrigins.includes("*") ? allowedOrigins : true,
   credentials: allowedOrigins.length > 0 ? !allowedOrigins.includes("*") : true,
 };
@@ -43,7 +42,7 @@ app.use(cors(corsOptions));
 // Preflight kérelmek (OPTIONS) kezelése
 app.options("*", cors(corsOptions));
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 /* ===== Health check ===== */
 app.get("/api/health", (_req: Request, res: Response) => {
@@ -179,11 +178,16 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 /* ===== Indítás ===== */
 const port = Number(process.env.PORT) || 5000;
-const host = "0.0.0.0";
+const host = process.env.HOST || "0.0.0.0";
 
 const server = app.listen(port, host, () => {
   console.log(`✅ Server running on http://${host}:${port}`);
 });
+
+// Stabilabb hálózat Renderen / proxy mögött
+// (lásd: "Bad Gateway" tippek)
+server.keepAliveTimeout = 120_000;
+server.headersTimeout = 120_000;
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
@@ -192,5 +196,16 @@ server.on("error", (err: NodeJS.ErrnoException) => {
     console.error(err);
   }
 });
+
+// Graceful shutdown
+const shutdown = () => {
+  console.log("🛑 Leállítás folyamatban...");
+  server.close(() => {
+    console.log("👋 Szerver leállt.");
+    process.exit(0);
+  });
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 export default app;

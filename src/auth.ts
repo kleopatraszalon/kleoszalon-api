@@ -1,5 +1,5 @@
 import express from "express";
-import pool from "./db";
+import pool from "./db.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
