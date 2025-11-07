@@ -1,5 +1,7 @@
-/* ===== .env betöltése az első sorban ===== */
-import "dotenv/config";
+/* ===== .env betöltése AZONNAL ===== */
+import dotenv from "dotenv";
+dotenv.config();
+
 import express, { Request, Response, NextFunction } from "express";
 import cors, { CorsOptions } from "cors";
 import bcrypt from "bcryptjs";
@@ -28,11 +30,10 @@ const app = express();
 app.set("trust proxy", 1);
 
 /* ===== CORS – rugalmas, hibatűrő, wildcard támogatással ===== */
-const rawOrigins =
-  (process.env.CORS_ORIGIN ?? "*")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean));
 
 const allowAll = rawOrigins.includes("*") || rawOrigins.length === 0;
 
@@ -44,7 +45,7 @@ function originMatches(origin: string, patterns: string[]): boolean {
       "^" +
         p
           .replace(/[.*+?^${}()|[\]\\]/g, "\\$&") // escape
-          .replace(/\\\*/g, ".*") + // '*' → '.*'
+          .replace(/\\\*/g, ".*") +               // '*' → '.*'
       "$"
     );
     if (re.test(origin)) return true;
@@ -67,6 +68,7 @@ const corsOptions: CorsOptions = {
     return cb(null, false);
   },
   credentials: true,
+  optionsSuccessStatus: 204,
 };
 
 // Vary: Origin – hogy a cache helyesen kezelje az origin alapú variációt
@@ -96,8 +98,11 @@ app.use("/api/menus", menuRoutes);
 
 app.use("/api/me", meRoutes);
 app.use("/api/employees", employeesRouter);
-app.use("/api/services", servicesRouter);
+
+/* FONTOS: specifikus előbb, mint a generikus */
 app.use("/api/services/available", servicesAvailableRoutes);
+app.use("/api/services", servicesRouter);
+
 app.use("/api/employee-calendar", employeeCalendarRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/locations", locationsRoutes);
@@ -107,7 +112,7 @@ app.use("/api/transactions", transactionsRoutes);
 
 /* ===== Auth: Login (1. lépcső – jelszó + e-mail kód) ===== */
 app.post("/api/login", async (req: Request, res: Response) => {
-  const { email, password } = req.body as { email: string; password: string };
+  const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
 
   if (!email || !password) {
     return res.status(400).json({ success: false, error: "Hiányzó e-mail vagy jelszó" });
@@ -147,7 +152,13 @@ app.post("/api/login", async (req: Request, res: Response) => {
       expiresAt: Date.now() + expiresMin * 60 * 1000,
     });
 
-    await sendLoginCodeEmail(email, code);
+    try {
+      await sendLoginCodeEmail(email, code);
+    } catch (mailErr) {
+      console.error("❌ E-mail küldési hiba:", mailErr);
+      // Ha nem sikerült elküldeni, ne írjuk ki a kódot – inkább hibázzunk
+      return res.status(500).json({ success: false, error: "Nem sikerült elküldeni a belépési kódot" });
+    }
 
     return res.json({
       success: true,
@@ -162,9 +173,13 @@ app.post("/api/login", async (req: Request, res: Response) => {
 
 /* ===== Auth: Verify Code (2. lépcső – JWT) ===== */
 app.post("/api/verify-code", (req: Request, res: Response) => {
-  const { email, code } = req.body as { email: string; code: string };
-  const record = consumeCode(email);
+  const { email, code } = (req.body ?? {}) as { email?: string; code?: string };
 
+  if (!email || !code) {
+    return res.status(400).json({ success: false, error: "Hiányzó e-mail vagy kód" });
+  }
+
+  const record = consumeCode(email);
   if (!record) {
     return res.status(400).json({
       success: false,
@@ -172,7 +187,7 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
     });
   }
 
-  if (record.code !== code) {
+  if (record.code !== String(code)) {
     return res.status(400).json({ success: false, error: "Érvénytelen kód" });
   }
 

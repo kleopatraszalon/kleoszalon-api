@@ -12,5 +12,8 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.tsx"]
+  "exclude": [
+    "src/**/*.tsx",
+    "src/api.ts"          // frontend-only, benne import.meta
+  ]
 }
