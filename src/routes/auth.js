@@ -1,85 +1,252 @@
-"use strict";
-var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
-    function verb(n) { return function (v) { return step([n, v]); }; }
-    function step(op) {
-        if (f) throw new TypeError("Generator is already executing.");
-        while (g && (g = 0, op[0] && (_ = 0)), _) try {
-            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
-            if (y = 0, t) op = [op[0] & 2, t.value];
-            switch (op[0]) {
-                case 0: case 1: t = op; break;
-                case 4: _.label++; return { value: op[1], done: false };
-                case 5: _.label++; y = op[1]; op = [0]; continue;
-                case 7: op = _.ops.pop(); _.trys.pop(); continue;
-                default:
-                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
-                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
-                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
-                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
-                    if (t[2]) _.ops.pop();
-                    _.trys.pop(); continue;
-            }
-            op = body.call(thisArg, _);
-        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
-        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+// src/routes/auth.ts
+import express, { Request, Response } from "express";
+import pool from "../db";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
+
+const authRouter = express.Router();
+
+/* =================== Helpers =================== */
+
+const DEBUG = process.env.DEBUG_AUTH === "1";
+const BCRYPT_RE = /^\$2[aby]\$/;
+
+function isBcryptHash(x: unknown): x is string {
+  return typeof x === "string" && BCRYPT_RE.test(x);
+}
+
+async function checkPassword(raw: string, stored: unknown): Promise<boolean> {
+  const s = String(stored ?? "");
+  if (isBcryptHash(s)) return bcrypt.compare(String(raw), s);
+  if (process.env.ALLOW_PLAIN_PASSWORD === "1") return String(raw) === s;
+  return false;
+}
+
+/** Email/login_name → user + jelszó **több oszlopból** (password_hash, password, pwd) */
+async function findUserByIdentifier(idOrEmail: string) {
+  const ident = String(idOrEmail || "").trim();
+
+  // 1) modern: password_hash (bcrypt)
+  const q1 = `
+    SELECT id, email, role, location_id, password_hash
+    FROM users
+    WHERE lower(email) = lower($1)
+    LIMIT 1`;
+  const r1 = await pool.query(q1, [ident]);
+  if (r1.rowCount) return r1.rows[0];
+
+  const q1b = `
+    SELECT id, email, role, location_id, password_hash
+    FROM users
+    WHERE lower(login_name) = lower($1)
+    LIMIT 1`;
+  try {
+    const r1b = await pool.query(q1b, [ident]);
+    if (r1b.rowCount) return r1b.rows[0];
+  } catch {}
+
+  // 2) legacy: password → map-peljük password_hash névre
+  try {
+    const q2 = `
+      SELECT id, email, role, location_id, password AS password_hash
+      FROM users
+      WHERE lower(email) = lower($1)
+      LIMIT 1`;
+    const r2 = await pool.query(q2, [ident]);
+    if (r2.rowCount) return r2.rows[0];
+  } catch {}
+
+  try {
+    const q2b = `
+      SELECT id, email, role, location_id, password AS password_hash
+      FROM users
+      WHERE lower(login_name) = lower($1)
+      LIMIT 1`;
+    const r2b = await pool.query(q2b, [ident]);
+    if (r2b.rowCount) return r2b.rows[0];
+  } catch {}
+
+  // 3) más név: pwd → map password_hash-ra
+  try {
+    const q3 = `
+      SELECT id, email, role, location_id, pwd AS password_hash
+      FROM users
+      WHERE lower(email) = lower($1)
+      LIMIT 1`;
+    const r3 = await pool.query(q3, [ident]);
+    if (r3.rowCount) return r3.rows[0];
+  } catch {}
+
+  try {
+    const q3b = `
+      SELECT id, email, role, location_id, pwd AS password_hash
+      FROM users
+      WHERE lower(login_name) = lower($1)
+      LIMIT 1`;
+    const r3b = await pool.query(q3b, [ident]);
+    if (r3b.rowCount) return r3b.rows[0];
+  } catch {}
+
+  return null;
+}
+
+function makeMailer() {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env;
+  if (!SMTP_HOST || !SMTP_PORT || !SMTP_FROM) return null;
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: process.env.SMTP_SECURE === "1",
+    auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+  });
+  return { transporter, from: SMTP_FROM };
+}
+
+async function sendLoginCodeMail(to: string, code: string) {
+  const mailer = makeMailer();
+  if (!mailer) { console.log(`[LOGIN CODE] ${to}: ${code}`); return; }
+  await mailer.transporter.sendMail({
+    from: mailer.from, to,
+    subject: "Belépési kód",
+    text: `Kód: ${code} (10 percig érvényes)`,
+    html: `Kód: <b>${code}</b> (10 percig érvényes)`,
+  });
+}
+
+function generateCode(): string {
+  return String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
+}
+
+function signToken(payload: object) {
+  const secret = process.env.JWT_SECRET || "dev_secret_change_me";
+  return jwt.sign(payload as any, secret, { expiresIn: "8h" });
+}
+
+async function ensureLoginCodesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS login_codes (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS login_codes_email_mode_created_idx
+      ON login_codes(email, mode, created_at DESC);
+  `);
+}
+
+/* =================== Handlers =================== */
+
+async function loginHandler(req: Request, res: Response) {
+  const { email, login_name, password, mode } = req.body || {};
+  const identifier = String(email || login_name || "").trim();
+
+  if (!identifier || typeof password !== "string" || password.length < 1) {
+    return res.status(400).json({ success: false, error: "Hiányzó felhasználó/jelszó." });
+  }
+
+  try {
+    const user = await findUserByIdentifier(identifier);
+    if (!user) {
+      if (DEBUG) console.debug("AUTH login: user not found:", identifier);
+      return res.status(401).json({ success: false, error: "Hibás adatok." });
     }
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-var express_1 = require("express");
-var db_1 = require("../db");
-var jsonwebtoken_1 = require("jsonwebtoken");
-var bcrypt_1 = require("bcrypt");
-var authRouter = express_1.default.Router();
-authRouter.post("/login", function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var _a, email, password, result, user, ok, token, err_1;
-    return __generator(this, function (_b) {
-        switch (_b.label) {
-            case 0:
-                _a = req.body, email = _a.email, password = _a.password;
-                _b.label = 1;
-            case 1:
-                _b.trys.push([1, 4, , 5]);
-                return [4 /*yield*/, db_1.default.query("SELECT id, password_hash, role, location_id\n       FROM users\n       WHERE email = $1", [email])];
-            case 2:
-                result = _b.sent();
-                if (result.rows.length === 0) {
-                    return [2 /*return*/, res.status(401).json({ error: "Hibás belépési adatok" })];
-                }
-                user = result.rows[0];
-                return [4 /*yield*/, bcrypt_1.default.compare(password, user.password_hash)];
-            case 3:
-                ok = _b.sent();
-                if (!ok) {
-                    return [2 /*return*/, res.status(401).json({ error: "Hibás belépési adatok" })];
-                }
-                token = jsonwebtoken_1.default.sign({
-                    userId: user.id,
-                    role: user.role, // <- EZ a kulcs
-                    location_id: user.location_id, // <- telephely is mehet a tokenbe
-                }, process.env.JWT_SECRET, { expiresIn: "12h" });
-                // 4) visszaadjuk a frontendre
-                return [2 /*return*/, res.json({
-                        token: token,
-                        role: user.role,
-                        location_id: user.location_id,
-                    })];
-            case 4:
-                err_1 = _b.sent();
-                console.error("Login hiba:", err_1);
-                return [2 /*return*/, res.status(500).json({ error: "Szerver hiba bejelentkezéskor" })];
-            case 5: return [2 /*return*/];
-        }
+
+    const ok = await checkPassword(password, user.password_hash);
+    if (!ok) {
+      if (DEBUG) {
+        console.debug("AUTH login: password mismatch", {
+          identifier,
+          haveHash: Boolean(user.password_hash),
+          looksBcrypt: isBcryptHash(user.password_hash),
+          allowPlain: process.env.ALLOW_PLAIN_PASSWORD === "1",
+        });
+      }
+      return res.status(401).json({ success: false, error: "Hibás adatok." });
+    }
+
+    await ensureLoginCodesTable();
+
+    const code = generateCode();
+    const codeHash = await bcrypt.hash(code, 10);
+    const minutes = Number(process.env.LOGIN_CODE_TTL_MIN || 10);
+
+    await pool.query(
+      `INSERT INTO login_codes (email, mode, code_hash, expires_at)
+       VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
+      [String(user.email || identifier).toLowerCase(), String(mode || "customer"), codeHash, minutes]
+    );
+
+    await sendLoginCodeMail(user.email || identifier, code);
+
+    return res.json({
+      success: true,
+      step: "code_required",
+      message: "A belépési kódot elküldtük az e-mail címedre.",
     });
-}); });
-exports.default = authRouter;
+  } catch (err) {
+    console.error("LOGIN error:", err);
+    return res.status(500).json({ success: false, error: "Váratlan hiba történt." });
+  }
+}
+
+async function verifyCodeHandler(req: Request, res: Response) {
+  const { email, login_name, mode, location_id, code } = req.body || {};
+  const identifier = String(email || login_name || "").trim().toLowerCase();
+  const modeStr = String(mode || "customer");
+  const codeStr = String(code || "").trim();
+
+  if (!identifier || !/^\d{6}$/.test(codeStr)) {
+    return res.status(400).json({ success: false, error: "Hiányzó vagy hibás kód." });
+  }
+
+  try {
+    await ensureLoginCodesTable();
+
+    const r = await pool.query(
+      `SELECT id, code_hash, expires_at, used
+       FROM login_codes
+       WHERE email = $1 AND mode = $2
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [identifier, modeStr]
+    );
+    if (!r.rowCount) return res.status(401).json({ success: false, error: "Érvénytelen kód." });
+
+    const row = r.rows[0];
+    if (row.used)   return res.status(401).json({ success: false, error: "A kód már felhasználva." });
+    if (new Date(row.expires_at) < new Date())
+      return res.status(401).json({ success: false, error: "A kód lejárt." });
+
+    const match = await bcrypt.compare(codeStr, row.code_hash);
+    if (!match) return res.status(401).json({ success: false, error: "Érvénytelen kód." });
+
+    await pool.query(`UPDATE login_codes SET used = true WHERE id = $1`, [row.id]);
+
+    const user = await findUserByIdentifier(identifier);
+    if (!user) return res.status(401).json({ success: false, error: "Felhasználó nem található." });
+
+    const loc = modeStr === "customer"
+      ? (location_id ?? user.location_id ?? null)
+      : user.location_id ?? null;
+
+    const token = signToken({ sub: user.id, role: user.role || "user", location_id: loc ?? null, mode: modeStr });
+
+    return res.json({ success: true, token, role: user.role || "user", location_id: loc ?? null });
+  } catch (err) {
+    console.error("VERIFY error:", err);
+    return res.status(500).json({ success: false, error: "Váratlan hiba történt." });
+  }
+}
+
+/* =================== Routes (dupla prefix támogatás) =================== */
+authRouter.post("/login", loginHandler);
+authRouter.post("/verify-code", verifyCodeHandler);
+authRouter.post("/auth/login", loginHandler);
+authRouter.post("/auth/verify-code", verifyCodeHandler);
+
+export default authRouter;

@@ -22,8 +22,11 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
 
     // elvárás: a login-nál így rakjuk össze majd a token payloadot:
     // { id, role, location_id }
+    // Robusztusabb: elfogadjuk az id / userId / sub mezőt is
+    const uid = decoded.id ?? decoded.userId ?? decoded.sub;
+
     req.user = {
-      id: decoded.id,
+      id: uid,
       role: decoded.role,
       location_id: decoded.location_id ?? null,
     };

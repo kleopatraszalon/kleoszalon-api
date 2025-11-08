@@ -1,6 +1,6 @@
 // src/routes/menu.ts
 import * as express from "express";
-import pool from "../db.js";
+import pool from "../db";
 import jwt from "jsonwebtoken";
 
 const router = express.Router();

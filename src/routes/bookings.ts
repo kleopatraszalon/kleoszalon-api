@@ -1,6 +1,6 @@
 // src/routes/bookings.ts
 import express, { Request, Response } from "express";
-import pool from "../db.js";
+import pool from "../db";
 
 const router = express.Router();
 

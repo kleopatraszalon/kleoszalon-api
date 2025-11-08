@@ -1,6 +1,6 @@
 import express from "express";
-import pool from "../db.js";
-import { requireAuth, AuthRequest } from "../middleware/auth.js";
+import pool from "../db";
+import { requireAuth, AuthRequest } from "../middleware/auth";
 import { Router } from "express";
 
 const router = express.Router();
@@ -9,12 +9,6 @@ const router = express.Router();
  * GET /api/me
  * Visszaadja a bejelentkezett felhasználó adatait.
  */
-
-router.get("/", (req, res) => {
-  // pl. a token alapján felhasználó lekérése
-  res.json({ email: "teszt@example.com", role: "admin" });
-});
-
 
 router.get("/", requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -44,22 +38,6 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Felhasználó nem található" });
-    }
-
-    const me = result.rows[0];
-
-    return res.json({
-      id: me.id,
-      full_name: me.full_name,
-      role: me.role,
-      active: me.active,
-      location_id: me.location_id,
-      location_name: me.location_name,
-    });
-  } catch (err) {
-    console.error("GET /api/me hiba:", err);
-    return res.status(500).json({ error: "Szerver hiba" });
-  }
-});
+    
 
 export default router;

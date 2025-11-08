@@ -1,5 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
-import pool from "../db.js";
+import pool from "../db";
 import jwt from "jsonwebtoken";
 
 const router = express.Router();

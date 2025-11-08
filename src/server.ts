@@ -4,11 +4,13 @@ dotenv.config();
 
 import express, { Request, Response, NextFunction } from "express";
 import cors, { CorsOptions } from "cors";
+import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import pool from "./db";
 
-/* ===== ROUTES ===== */
+/* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
 import meRoutes from "./routes/me";
 import workorderRoutes from "./routes/workorders";
@@ -29,25 +31,17 @@ const app = express();
 /* ===== Proxy és alap middlewares ===== */
 app.set("trust proxy", 1);
 
-/* ===== CORS – rugalmas, hibatűrő, wildcard támogatással ===== */
+/* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean));
-
 const allowAll = rawOrigins.includes("*") || rawOrigins.length === 0;
 
-// egyszerű wildcard illesztő: '*' → bármi, '*.domain.hu' → bármely aldomain
 function originMatches(origin: string, patterns: string[]): boolean {
   for (const p of patterns) {
     if (p === "*") return true;
-    const re = new RegExp(
-      "^" +
-        p
-          .replace(/[.*+?^${}()|[\]\\]/g, "\\$&") // escape
-          .replace(/\\\*/g, ".*") +               // '*' → '.*'
-      "$"
-    );
+    const re = new RegExp("^" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*") + "$");
     if (re.test(origin)) return true;
   }
   return false;
@@ -55,54 +49,110 @@ function originMatches(origin: string, patterns: string[]): boolean {
 
 const corsOptions: CorsOptions = {
   origin(origin, cb) {
-    // No-origin (pl. Postman/cURL) → engedjük
     if (!origin) return cb(null, true);
-
-    // Mindent engedünk (dev / '*' / nincs megadva)
     if (allowAll) return cb(null, true);
-
-    // Ha megegyezik valamely mintával → engedjük
     if (originMatches(origin, rawOrigins)) return cb(null, true);
-
-    // NINCS hiba dobás! Egyszerűen nem teszünk CORS headert.
     return cb(null, false);
   },
   credentials: true,
   optionsSuccessStatus: 204,
 };
 
-// Vary: Origin – hogy a cache helyesen kezelje az origin alapú variációt
-app.use((_, res, next) => {
-  res.header("Vary", "Origin");
-  next();
-});
-
+app.use((_, res, next) => { res.header("Vary", "Origin"); next(); });
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-
 app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
 
-/* ===== Health check ===== */
-app.get("/api/health", (_req: Request, res: Response) => {
-  res.json({ ok: true, time: new Date().toISOString() });
-});
+/* ===== JWT segédek ===== */
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
+const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
 
-/* ===== Teszt root ===== */
-app.get("/", (_req: Request, res: Response) => {
-  res.send("✅ Backend fut és CORS be van állítva");
-});
+function signToken(payload: object) {
+  return jwt.sign(payload as any, JWT_SECRET, { expiresIn: "8h" });
+}
+function extractBearer(req: Request): string | null {
+  const h = (req.headers["authorization"] || req.headers["Authorization"]) as string | undefined;
+  return h && /^Bearer\s+/i.test(h) ? h.replace(/^Bearer\s+/i, "") : null;
+}
+function extractTokenFromReq(req: Request): string | null {
+  return extractBearer(req) || (req as any).cookies?.token || (req.query?.token as string) || (req.body?.token as string) || null;
+}
 
-/* ===== Route-ok mountolása ===== */
+/* ===== Hash detektálás + ellenőrzés ===== */
+type HashType = "bcrypt" | "argon2" | "pbkdf2" | "sha256" | "plaintext" | "unknown";
+
+function detectHashType(hash: string | null | undefined): HashType {
+  if (!hash) return "unknown";
+  if (hash.startsWith("$2a$") || hash.startsWith("$2b$") || hash.startsWith("$2y$")) return "bcrypt";
+  if (hash.startsWith("$argon2")) return "argon2";
+  if (hash.startsWith("pbkdf2$")) return "pbkdf2";
+  if (hash.startsWith("sha256:")) return "sha256";
+  if (hash.length > 0 && hash.length < 60) return "plaintext";
+  return "unknown";
+}
+
+async function verifyPassword(stored: string | null | undefined, plain: string): Promise<boolean> {
+  const t = detectHashType(stored);
+  const s = stored || "";
+
+  try {
+    switch (t) {
+      case "bcrypt":
+        return bcrypt.compareSync(plain, s);
+
+      case "argon2":
+        try {
+          // opcionális csomag: npm i argon2
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const argon2 = require("argon2");
+          return await argon2.verify(s, plain);
+        } catch {
+          console.warn("⚠️ Argon2 hash és 'argon2' csomag nincs telepítve. (npm i argon2)");
+          return false;
+        }
+
+      case "pbkdf2": {
+        // formátum: pbkdf2$ITER$SALT$HEX
+        const parts = s.split("$");
+        if (parts.length !== 4) return false;
+        const iter = parseInt(parts[1], 10) || 100000;
+        const salt = parts[2];
+        const hex = parts[3];
+        const derived = crypto.pbkdf2Sync(plain, salt, iter, hex.length / 2, "sha256").toString("hex");
+        return crypto.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(derived, "hex"));
+      }
+
+      case "sha256": {
+        const hex = s.slice("sha256:".length);
+        const digest = crypto.createHash("sha256").update(plain).digest("hex");
+        return crypto.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(digest, "hex"));
+      }
+
+      case "plaintext":
+        return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
+
+      default:
+        return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
+    }
+  } catch (e) {
+    console.error("❌ verifyPassword error:", e);
+    return false;
+  }
+}
+
+/* ===== Health + root ===== */
+app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+app.get("/", (_req, res) => res.send("✅ Backend fut és CORS be van állítva"));
+
+/* ===== Nem-auth route-ok ===== */
 app.use("/api/menu", menuRoutes);
 app.use("/api/menus", menuRoutes);
-
 app.use("/api/me", meRoutes);
 app.use("/api/employees", employeesRouter);
-
-/* FONTOS: specifikus előbb, mint a generikus */
 app.use("/api/services/available", servicesAvailableRoutes);
 app.use("/api/services", servicesRouter);
-
 app.use("/api/employee-calendar", employeeCalendarRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/locations", locationsRoutes);
@@ -110,41 +160,55 @@ app.use("/api/workorders", workorderRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 
-/* ===== Auth: Login (1. lépcső – jelszó + e-mail kód) ===== */
-app.post("/api/login", async (req: Request, res: Response) => {
-  const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
+/* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
+async function loginHandler(req: Request, res: Response) {
+  const { email, login_name, password } =
+    (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, error: "Hiányzó e-mail vagy jelszó" });
+  const ident = String(email ?? login_name ?? "").trim().toLowerCase();
+  if (!ident || !password) {
+    return res.status(400).json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
   }
 
   try {
-    const result = await pool.query(
-      `SELECT id, email, password_hash, role, location_id, active
-       FROM users
-       WHERE email = $1`,
-      [email]
-    );
+    const q = `
+      SELECT id, email, login_name, password_hash, role, location_id, active,
+             length(password_hash) AS len,
+             left(coalesce(password_hash,''), 7) AS head
+      FROM users
+      WHERE lower(email) = lower($1) OR lower(login_name) = lower($1)
+      LIMIT 1
+    `;
+    const { rows } = await pool.query(q, [ident]);
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
+    if (rows.length === 0) {
+      console.warn(`[AUTH] user not found: ${ident}`);
+      return res.status(401).json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
     }
 
-    const user = result.rows[0];
-
-    if (!user.active) {
+    const user = rows[0];
+    if (user.active === false) {
+      console.warn(`[AUTH] inactive account: ${ident}`);
       return res.status(403).json({ success: false, error: "Fiók inaktív" });
     }
 
-    const isMatch = bcrypt.compareSync(password, user.password_hash);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, error: "Hibás e-mail vagy jelszó" });
+    const hashType = detectHashType(user.password_hash);
+    if (hashType === "bcrypt" && Number(user.len) < 60) {
+      console.error(`[AUTH] bcrypt hash rövid (truncált?) len=${user.len}, head=${user.head}, ident=${ident}`);
     }
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresMin = Number.parseInt(process.env.CODE_EXPIRES_MIN || "5", 10);
+    const isMatch = await verifyPassword(user.password_hash, String(password));
+    if (!isMatch) {
+      console.warn(`[AUTH] bad password (type=${hashType}, len=${user.len}, head=${user.head}) ident=${ident}`);
+      return res.status(401).json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+    }
 
-    saveCodeForEmail(email, {
+    // 6 jegyű kód generálása és ideiglenes tárolása
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN ?? "5", 10);
+    const emailKey = String(user.email || ident).toLowerCase();
+
+    saveCodeForEmail(emailKey, {
       code,
       userId: user.id,
       role: user.role ?? "guest",
@@ -153,33 +217,62 @@ app.post("/api/login", async (req: Request, res: Response) => {
     });
 
     try {
-      await sendLoginCodeEmail(email, code);
+      await sendLoginCodeEmail(emailKey, code);
     } catch (mailErr) {
       console.error("❌ E-mail küldési hiba:", mailErr);
-      // Ha nem sikerült elküldeni, ne írjuk ki a kódot – inkább hibázzunk
       return res.status(500).json({ success: false, error: "Nem sikerült elküldeni a belépési kódot" });
     }
 
-    return res.json({
-      success: true,
-      step: "code_required",
-      message: "Belépési kód elküldve az e-mail címre.",
-    });
+    return res.json({ success: true, step: "code_required", message: "Belépési kód elküldve az e-mail címre." });
   } catch (err) {
     console.error("❌ Login hiba:", err);
     return res.status(500).json({ success: false, error: "Hiba történt a belépés során" });
   }
-});
+}
 
-/* ===== Auth: Verify Code (2. lépcső – JWT) ===== */
-app.post("/api/verify-code", (req: Request, res: Response) => {
-  const { email, code } = (req.body ?? {}) as { email?: string; code?: string };
+/* ====== Kód ellenőrzés (2. lépcső) – JWT ====== */
+async function verifyCodeHandler(req: Request, res: Response) {
+  const { email, login_name, code, location_id, mode } =
+    (req.body ?? {}) as {
+      email?: string;
+      login_name?: string;
+      code?: string;
+      location_id?: any;
+      mode?: string;
+    };
 
-  if (!email || !code) {
-    return res.status(400).json({ success: false, error: "Hiányzó e-mail vagy kód" });
+  // 1) E-mail normalizálás
+  let emailKey = String(email ?? "").trim().toLowerCase();
+
+  // Ha nincs e-mail, de van login_name (azonosító), megpróbáljuk e-mailre feloldani
+  if (!emailKey && login_name) {
+    try {
+      const ident = String(login_name).trim().toLowerCase();
+      const r = await pool.query(
+        `
+        SELECT email
+        FROM users
+        WHERE lower(email) = $1
+        LIMIT 1
+      `,
+        [ident]
+      );
+      if (r.rows.length) {
+        emailKey = String(r.rows[0].email || "").toLowerCase();
+      }
+    } catch (err) {
+      console.error("verifyCodeHandler login_name lookup hiba:", err);
+    }
   }
 
-  const record = consumeCode(email);
+  // 2) E-mail + kód ellenőrzése
+  if (!emailKey || !code) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Hiányzó e-mail vagy kód" });
+  }
+
+  const record = consumeCode(emailKey);
   if (!record) {
     return res.status(400).json({
       success: false,
@@ -188,38 +281,45 @@ app.post("/api/verify-code", (req: Request, res: Response) => {
   }
 
   if (record.code !== String(code)) {
-    return res.status(400).json({ success: false, error: "Érvénytelen kód" });
+    return res
+      .status(400)
+      .json({ success: false, error: "Érvénytelen kód" });
   }
 
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    console.error("❌ Hiányzó JWT_SECRET környezeti változó.");
-    return res.status(500).json({ success: false, error: "Szerver beállítási hiba (JWT)" });
-  }
+  // 3) JWT felépítése – ITT A FONTOS VÁLTOZÁS:
+  //    id: record.userId  (nem userId mező a payloadban!)
+  const token = signToken({
+    id: record.userId,
+    email: emailKey,
+    role: record.role,
+    location_id:
+      (mode === "customer"
+        ? location_id ?? record.location_id
+        : record.location_id) ?? null,
+  });
 
-  const token = jwt.sign(
-    {
-      email,
-      userId: record.userId,
-      role: record.role,
-      location_id: record.location_id ?? null,
-    },
-    secret,
-    { expiresIn: "8h" }
-  );
+  // 4) Token sütiben is (ha szeretnéd), plusz JSON-ben vissza
+  res.cookie("token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 8 * 60 * 60 * 1000, // 8 óra
+  });
 
   return res.json({
     success: true,
     token,
     role: record.role,
-    location_id: record.location_id ?? null,
+    location_id:
+      (mode === "customer"
+        ? location_id ?? record.location_id
+        : record.location_id) ?? null,
   });
-});
+}
 
-/* ===== 404 Not Found ===== */
-app.use((req: Request, res: Response) => {
-  res.status(404).json({ error: "Not found", path: req.originalUrl });
-});
+/* ===== 404 ===== */
+app.use((req, res) => res.status(404).json({ error: "Not found", path: req.originalUrl }));
 
 /* ===== Globális hiba-kezelő ===== */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -230,29 +330,14 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 /* ===== Indítás ===== */
 const port = Number(process.env.PORT) || 5000;
 const host = process.env.HOST || "0.0.0.0";
-
-const server = app.listen(port, host, () => {
-  console.log(`✅ Server running on http://${host}:${port}`);
-});
-
+const server = app.listen(port, host, () => console.log(`✅ Server running on http://${host}:${port}`));
 server.keepAliveTimeout = 120_000;
 server.headersTimeout = 120_000;
-
 server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`❌ Port ${port} már használatban van.`);
-  } else {
-    console.error(err);
-  }
+  if (err.code === "EADDRINUSE") console.error(`❌ Port ${port} már használatban van.`);
+  else console.error(err);
 });
-
-const shutdown = () => {
-  console.log("🛑 Leállítás folyamatban...");
-  server.close(() => {
-    console.log("👋 Szerver leállt.");
-    process.exit(0);
-  });
-};
+const shutdown = () => { console.log("🛑 Leállítás folyamatban..."); server.close(() => { console.log("👋 Szerver leállt."); process.exit(0); }); };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
