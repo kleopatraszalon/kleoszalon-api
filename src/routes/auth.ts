@@ -1,13 +1,13 @@
 // src/routes/auth.ts
 import express, { Request, Response } from "express";
 import pool from "../db";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import sendLoginCodeEmail from "../mailer";
 import { saveCodeForEmail, consumeCode } from "../tempCodeStore";
 
-const router = express.Router();
+const authRouter = express.Router();
 
 /* ===== JWT segédek ===== */
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
@@ -86,7 +86,7 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
 }
 
 /* ====== 1. lépés: /api/login – jelszó ellenőrzés + kód küldés ====== */
-router.post("/login", async (req: Request, res: Response) => {
+authRouter.post("/login", async (req: Request, res: Response) => {
   const { email, login_name, password } =
     (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
 
@@ -177,7 +177,7 @@ router.post("/login", async (req: Request, res: Response) => {
 });
 
 /* ====== 2. lépés: /api/verify-code – kód ellenőrzés + JWT ====== */
-router.post("/verify-code", async (req: Request, res: Response) => {
+authRouter.post("/verify-code", async (req: Request, res: Response) => {
   const { email, login_name, code, location_id, mode } =
     (req.body ?? {}) as {
       email?: string;
@@ -259,4 +259,4 @@ router.post("/verify-code", async (req: Request, res: Response) => {
   });
 });
 
-export default router;
+export default authRouter;
