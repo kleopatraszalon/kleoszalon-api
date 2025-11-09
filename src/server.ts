@@ -10,6 +10,8 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import pool from "./db";
 
+import cors from "cors";
+
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
 import meRoutes from "./routes/me";
@@ -30,6 +32,24 @@ const app = express();
 
 /* ===== Proxy és alap middlewares ===== */
 app.set("trust proxy", 1);
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
+];
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
 
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
