@@ -28,14 +28,17 @@ function detectHashType(hash: string | null | undefined) {
   return "unknown" as const;
 }
 
-async function verifyPassword(stored: string | null | undefined, plain: string): Promise<boolean> {
+async function verifyPassword(
+  stored: string | null | undefined,
+  plain: string
+): Promise<boolean> {
   const t = detectHashType(stored);
   const s = stored || "";
 
   try {
     switch (t) {
       case "bcrypt":
-        return bcrypt.compareSync(plain, s);
+        return await bcrypt.compare(plain, s);
 
       case "argon2":
         try {
@@ -44,7 +47,9 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
           const argon2 = require("argon2");
           return await argon2.verify(s, plain);
         } catch {
-          console.warn("⚠️ Argon2 hash és 'argon2' csomag nincs telepítve. (npm i argon2)");
+          console.warn(
+            "⚠️ Argon2 hash és 'argon2' csomag nincs telepítve. (npm i argon2)"
+          );
           return false;
         }
 
@@ -90,6 +95,7 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   const { email, login_name, password } =
     (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
 
+  // identet meghagyjuk, de a DB-ben csak email oszlop van
   const ident = String(email ?? login_name ?? "").trim().toLowerCase();
   if (!ident || !password) {
     return res
@@ -99,11 +105,16 @@ authRouter.post("/login", async (req: Request, res: Response) => {
 
   try {
     const q = `
-      SELECT id, email, login_name, password_hash, role, location_id, active,
+      SELECT id,
+             email,
+             password_hash,
+             role,
+             location_id,
+             active,
              length(password_hash) AS len,
-             left(coalesce(password_hash,''), 7) AS head
+             left(coalesce(password_hash, ''), 7) AS head
       FROM users
-      WHERE lower(email) = lower($1) OR lower(login_name) = lower($1)
+      WHERE lower(email) = lower($1)
       LIMIT 1
     `;
     const { rows } = await pool.query(q, [ident]);
@@ -187,33 +198,31 @@ authRouter.post("/verify-code", async (req: Request, res: Response) => {
       mode?: string;
     };
 
-  let emailKey = String(email ?? "").trim().toLowerCase();
-
-  // Ha csak login_name-et kaptunk, próbáljuk e-mailre feloldani
-  if (!emailKey && login_name) {
-    try {
-      const ident = String(login_name).trim().toLowerCase();
-      const r = await pool.query(
-        `
-        SELECT email
-        FROM users
-        WHERE lower(email) = $1 OR lower(login_name) = $1
-        LIMIT 1
-      `,
-        [ident]
-      );
-      if (r.rows.length) {
-        emailKey = String(r.rows[0].email || "").toLowerCase();
-      }
-    } catch (err) {
-      console.error("verify-code login_name lookup hiba:", err);
-    }
-  }
+  // login_name-t itt is meghagyjuk, de a DB-ben csak emailt nézünk
+  let emailKey = String(email ?? login_name ?? "").trim().toLowerCase();
 
   if (!emailKey || !code) {
     return res
       .status(400)
       .json({ success: false, error: "Hiányzó e-mail vagy kód" });
+  }
+
+  // ha nagyon akarjuk, megerősíthetjük, hogy létező user
+  try {
+    const r = await pool.query(
+      `
+      SELECT email
+      FROM users
+      WHERE lower(email) = $1
+      LIMIT 1
+    `,
+      [emailKey]
+    );
+    if (r.rows.length) {
+      emailKey = String(r.rows[0].email || "").toLowerCase();
+    }
+  } catch (err) {
+    console.error("verify-code email lookup hiba:", err);
   }
 
   const record = consumeCode(emailKey);
