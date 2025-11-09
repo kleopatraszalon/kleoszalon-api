@@ -31,6 +31,40 @@ import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 const app = express();
 
 /* ===== Proxy és alap middlewares ===== */
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin || "*";
+
+  res.header("Access-Control-Allow-Origin", origin);
+  res.header("Vary", "Origin"); // cache miatt fontos
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+  );
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS"
+  );
+  res.header("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+// (ha volt korábban app.use(cors(...)), azt most nyugodtan kiveheted,
+// vagy itt alá teheted még pluszban, de a fenti önmagában elég)
+app.use(express.json());
+app.use(cookieParser());
+
+// EZEK JÖJJENEK UTÁNA:
+/// app.use("/api/locations", locationsRouter);
+/// app.use("/api/login", authRouter);
+/// stb.
+
+
 app.set("trust proxy", 1);
 
 /* const allowedOrigins = [
