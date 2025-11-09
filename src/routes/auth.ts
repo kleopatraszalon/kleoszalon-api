@@ -1,337 +1,262 @@
 // src/routes/auth.ts
 import express, { Request, Response } from "express";
 import pool from "../db";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+import crypto from "crypto";
 import sendLoginCodeEmail from "../mailer";
+import { saveCodeForEmail, consumeCode } from "../tempCodeStore";
 
-const authRouter = express.Router();
+const router = express.Router();
 
-/* ===================== Beállítások / segédek ===================== */
-
-const DEBUG = process.env.DEBUG_AUTH === "1";
-const ALLOW_PLAIN =
-  process.env.ALLOW_PLAIN_PASSWORD === "1" || process.env.NODE_ENV !== "production";
-
-/** Csak fejlesztéshez: univerzális "mester" jelszó (pl. DEV_MASTER_PASSWORD=letmein) */
-const DEV_MASTER = process.env.DEV_MASTER_PASSWORD || "";
-
-/** Ékezetek lecsupaszítása (példa → pelda) */
-function removeDiacritics(s: string): string {
-  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
-}
-
-function log(...args: any[]) {
-  if (DEBUG) console.log("[AUTH]", ...args);
-}
+/* ===== JWT segédek ===== */
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
 
 function signToken(payload: object) {
-  const secret = process.env.JWT_SECRET || "dev_secret_change_me";
-  return jwt.sign(payload as any, secret, { expiresIn: "8h" });
+  return jwt.sign(payload as any, JWT_SECRET, { expiresIn: "8h" });
 }
 
-function verifyTokenRaw(token: string) {
-  const secret = process.env.JWT_SECRET || "dev_secret_change_me";
-  return jwt.verify(token, secret);
+function detectHashType(hash: string | null | undefined) {
+  if (!hash) return "unknown" as const;
+  if (hash.startsWith("$2a$") || hash.startsWith("$2b$") || hash.startsWith("$2y$"))
+    return "bcrypt" as const;
+  if (hash.startsWith("$argon2")) return "argon2" as const;
+  if (hash.startsWith("pbkdf2$")) return "pbkdf2" as const;
+  if (hash.startsWith("sha256:")) return "sha256" as const;
+  if (hash.length > 0 && hash.length < 60) return "plaintext" as const;
+  return "unknown" as const;
 }
 
-function extractBearer(req: Request): string | null {
-  const h = req.headers["authorization"] || req.headers["Authorization"];
-  if (typeof h === "string" && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, "");
-  return null;
-}
-
-function extractTokenFromReq(req: Request): string | null {
-  return (
-    extractBearer(req) ||
-    (req as any).cookies?.token ||
-    (DEBUG ? (req.query?.token as string) : null) ||
-    (DEBUG ? (req.body as any)?.token : null) ||
-    null
-  );
-}
-
-/* -------------------- user keresés rugalmasan -------------------- */
-async function findUserByIdentifier(anyId: string) {
-  const id1 = String(anyId || "").trim().toLowerCase();
-  if (!id1) return null;
-
-  // 1) email (case-insensitive)
-  const r1 = await pool.query(
-    `SELECT id, email, role, location_id, password_hash
-     FROM users
-     WHERE lower(email) = lower($1)
-     LIMIT 1`,
-    [id1]
-  );
-  if (r1.rowCount) return r1.rows[0];
-
-  // 2) login_name (ha van ilyen oszlop)
-  try {
-    const r2 = await pool.query(
-      `SELECT id, email, role, location_id, password_hash
-       FROM users
-       WHERE lower(login_name) = lower($1)
-       LIMIT 1`,
-      [id1]
-    );
-    if (r2.rowCount) return r2.rows[0];
-  } catch {
-    /* nincs oszlop – lépjünk tovább */
-  }
-
-  // 3) ha van ékezet a bemenetben, próbáljuk meg ékezet nélkül
-  const id2 = removeDiacritics(id1);
-  if (id2 !== id1) {
-    const r3 = await pool.query(
-      `SELECT id, email, role, location_id, password_hash
-       FROM users
-       WHERE lower(email) = lower($1)
-       LIMIT 1`,
-      [id2]
-    );
-    if (r3.rowCount) return r3.rows[0];
-
-    try {
-      const r4 = await pool.query(
-        `SELECT id, email, role, location_id, password_hash
-         FROM users
-         WHERE lower(login_name) = lower($1)
-         LIMIT 1`,
-        [id2]
-      );
-      if (r4.rowCount) return r4.rows[0];
-    } catch {}
-  }
-
-  return null;
-}
-
-/** Jelszó ellenőrzés: bcrypt preferált; ha nem bcrypt és ALLOW_PLAIN → plain összehasonlítás.
- * DEV_MASTER megadása esetén (és csak fejlesztéshez ajánlott) bármely felhasználóhoz átengedi.
- */
-async function checkPassword(inputPw: string, stored: string | null | undefined): Promise<boolean> {
+async function verifyPassword(stored: string | null | undefined, plain: string): Promise<boolean> {
+  const t = detectHashType(stored);
   const s = stored || "";
 
-  // Dev mesterjelszó
-  if (DEV_MASTER && inputPw === DEV_MASTER) {
-    log("DEV master password used");
-    return true;
-  }
+  try {
+    switch (t) {
+      case "bcrypt":
+        return bcrypt.compareSync(plain, s);
 
-  // Bcrypt?
-  if (s.startsWith("$2a$") || s.startsWith("$2b$") || s.startsWith("$2y$")) {
-    try {
-      const ok = await bcrypt.compare(inputPw, s);
-      if (DEBUG) log("bcrypt.compare ->", ok);
-      return ok;
-    } catch (e) {
-      if (DEBUG) log("bcrypt error:", e);
-      return false;
+      case "argon2":
+        try {
+          // opcionális csomag: npm i argon2
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const argon2 = require("argon2");
+          return await argon2.verify(s, plain);
+        } catch {
+          console.warn("⚠️ Argon2 hash és 'argon2' csomag nincs telepítve. (npm i argon2)");
+          return false;
+        }
+
+      case "pbkdf2": {
+        // formátum: pbkdf2$ITER$SALT$HEX
+        const parts = s.split("$");
+        if (parts.length !== 4) return false;
+        const iter = parseInt(parts[1], 10) || 100000;
+        const salt = parts[2];
+        const hex = parts[3];
+        const derived = crypto
+          .pbkdf2Sync(plain, salt, iter, hex.length / 2, "sha256")
+          .toString("hex");
+        return crypto.timingSafeEqual(
+          Buffer.from(hex, "hex"),
+          Buffer.from(derived, "hex")
+        );
+      }
+
+      case "sha256": {
+        const hex = s.slice("sha256:".length);
+        const digest = crypto.createHash("sha256").update(plain).digest("hex");
+        return crypto.timingSafeEqual(
+          Buffer.from(hex, "hex"),
+          Buffer.from(digest, "hex")
+        );
+      }
+
+      case "plaintext":
+        return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
+
+      default:
+        return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
     }
+  } catch (e) {
+    console.error("❌ verifyPassword error:", e);
+    return false;
   }
-
-  // Nem bcrypt: fejlesztésben engedjük a plain-t
-  if (ALLOW_PLAIN) {
-    const ok = inputPw === s;
-    if (DEBUG) log("plain compare ->", ok);
-    return ok;
-  }
-
-  return false;
 }
 
-/* -------------------- Mailer (opcionális) -------------------- */
-function makeMailer() {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM } = process.env;
-  if (!SMTP_HOST || !SMTP_PORT || !SMTP_FROM) return null;
-  const transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT),
-    secure: process.env.SMTP_SECURE === "1",
-    auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
-  });
-  return { transporter, from: SMTP_FROM };
-}
+/* ====== 1. lépés: /api/login – jelszó ellenőrzés + kód küldés ====== */
+router.post("/login", async (req: Request, res: Response) => {
+  const { email, login_name, password } =
+    (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
 
-async function sendLoginCodeMail(to: string, code: string) {
-  const mailer = makeMailer();
-  if (!mailer) {
-    log(`[LOGIN CODE] ${to}: ${code}`);
-    return;
-  }
-  await mailer.transporter.sendMail({
-    from: mailer.from,
-    to,
-    subject: "Belépési kód",
-    text: `Az egyszer használatos belépési kódod: ${code}\nA kód 10 percig érvényes.`,
-    html: `<p>Az egyszer használatos belépési kódod: <b>${code}</b></p><p>A kód 10 percig érvényes.</p>`,
-  });
-}
-
-function generateCode(): string {
-  return String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
-}
-
-/* ===================== POST /api/login ===================== */
-authRouter.post("/login", async (req: Request, res: Response) => {
-  const { email, login_name, password, mode, location_id } = req.body || {};
-  const identifier = String(email || login_name || "").trim().toLowerCase();
-
-  if (!identifier || typeof password !== "string" || password.length < 1) {
-    if (DEBUG) res.setHeader("X-Auth-Why", "missing-identifier-or-password");
-    return res.status(400).json({ success: false, error: "Hiányzó felhasználó/jelszó." });
+  const ident = String(email ?? login_name ?? "").trim().toLowerCase();
+  if (!ident || !password) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
   }
 
   try {
-    const user = await findUserByIdentifier(identifier);
-    if (!user) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "user-not-found");
-      return res.status(401).json({ success: false, error: "Hibás adatok." });
+    const q = `
+      SELECT id, email, login_name, password_hash, role, location_id, active,
+             length(password_hash) AS len,
+             left(coalesce(password_hash,''), 7) AS head
+      FROM users
+      WHERE lower(email) = lower($1) OR lower(login_name) = lower($1)
+      LIMIT 1
+    `;
+    const { rows } = await pool.query(q, [ident]);
+
+    if (rows.length === 0) {
+      console.warn(`[AUTH] user not found: ${ident}`);
+      return res
+        .status(401)
+        .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
     }
 
-    const ok = await checkPassword(String(password), user.password_hash);
-    if (!ok) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "bad-password");
-      return res.status(401).json({ success: false, error: "Hibás adatok." });
+    const user = rows[0];
+    if (user.active === false) {
+      console.warn(`[AUTH] inactive account: ${ident}`);
+      return res.status(403).json({ success: false, error: "Fiók inaktív" });
     }
 
-    const code = generateCode();
-    const codeHash = await bcrypt.hash(code, 10);
-    const minutes = Number(process.env.LOGIN_CODE_TTL_MIN || 10);
+    const hashType = detectHashType(user.password_hash);
+    if (hashType === "bcrypt" && Number(user.len) < 60) {
+      console.error(
+        `[AUTH] bcrypt hash rövid (truncált?) len=${user.len}, head=${user.head}, ident=${ident}`
+      );
+    }
 
-    await pool.query(
-      `INSERT INTO login_codes (email, mode, code_hash, expires_at)
-       VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
-      [String(user.email || identifier).toLowerCase(), String(mode || "customer"), codeHash, minutes]
-    );
+    const isMatch = await verifyPassword(user.password_hash, String(password));
+    if (!isMatch) {
+      console.warn(
+        `[AUTH] bad password (type=${hashType}, len=${user.len}, head=${user.head}) ident=${ident}`
+      );
+      return res
+        .status(401)
+        .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+    }
 
-    await sendLoginCodeMail(user.email || identifier, code);
+    // 6 jegyű kód generálása és ideiglenes tárolása
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN ?? "5", 10);
+    const emailKey = String(user.email || ident).toLowerCase();
 
-    if (DEBUG) res.setHeader("X-Auth-Why", "ok-code-sent");
+    console.log(`[AUTH] [LOGIN CODE] ${emailKey}: ${code}`);
+
+    saveCodeForEmail(emailKey, {
+      code,
+      userId: user.id,
+      role: user.role ?? "guest",
+      location_id: user.location_id ?? null,
+      expiresAt: Date.now() + expiresMin * 60 * 1000,
+    });
+
+    try {
+      await sendLoginCodeEmail(emailKey, code);
+    } catch (mailErr) {
+      console.error("❌ E-mail küldési hiba:", mailErr);
+      return res.status(500).json({
+        success: false,
+        error: "Nem sikerült elküldeni a belépési kódot",
+      });
+    }
+
     return res.json({
       success: true,
       step: "code_required",
-      message: "A belépési kódot elküldtük az e-mail címedre.",
+      message: "Belépési kód elküldve az e-mail címre.",
     });
   } catch (err) {
-    console.error("LOGIN error:", err);
-    if (DEBUG) res.setHeader("X-Auth-Why", "server-error");
-    return res.status(500).json({ success: false, error: "Váratlan hiba történt a bejelentkezéskor." });
+    console.error("❌ POST /api/login hiba:", err);
+    return res
+      .status(500)
+      .json({ success: false, error: "Hiba történt a belépés során" });
   }
 });
 
-/* ===================== POST /api/verify-code ===================== */
-authRouter.post("/verify-code", async (req: Request, res: Response) => {
-  const { email, login_name, mode, location_id, code } = req.body || {};
-  const identifier = String(email || login_name || "").trim().toLowerCase();
-  const modeStr = String(mode || "customer");
-  const codeStr = String(code || "").trim();
+/* ====== 2. lépés: /api/verify-code – kód ellenőrzés + JWT ====== */
+router.post("/verify-code", async (req: Request, res: Response) => {
+  const { email, login_name, code, location_id, mode } =
+    (req.body ?? {}) as {
+      email?: string;
+      login_name?: string;
+      code?: string;
+      location_id?: any;
+      mode?: string;
+    };
 
-  if (!identifier || !/^\d{6}$/.test(codeStr)) {
-    if (DEBUG) res.setHeader("X-Auth-Why", "bad-identifier-or-code");
-    return res.status(400).json({ success: false, error: "Hiányzó vagy hibás formátumú kód." });
+  let emailKey = String(email ?? "").trim().toLowerCase();
+
+  // Ha csak login_name-et kaptunk, próbáljuk e-mailre feloldani
+  if (!emailKey && login_name) {
+    try {
+      const ident = String(login_name).trim().toLowerCase();
+      const r = await pool.query(
+        `
+        SELECT email
+        FROM users
+        WHERE lower(email) = $1 OR lower(login_name) = $1
+        LIMIT 1
+      `,
+        [ident]
+      );
+      if (r.rows.length) {
+        emailKey = String(r.rows[0].email || "").toLowerCase();
+      }
+    } catch (err) {
+      console.error("verify-code login_name lookup hiba:", err);
+    }
   }
 
-  try {
-    const r = await pool.query(
-      `SELECT id, code_hash, expires_at, used
-       FROM login_codes
-       WHERE email = $1 AND mode = $2
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [identifier, modeStr]
-    );
-
-    if (!r.rowCount) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "no-code");
-      return res.status(401).json({ success: false, error: "Érvénytelen kód." });
-    }
-
-    const row = r.rows[0];
-    if (row.used) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "already-used");
-      return res.status(401).json({ success: false, error: "A kód már felhasználva." });
-    }
-    if (new Date(row.expires_at) < new Date()) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "expired");
-      return res.status(401).json({ success: false, error: "A kód lejárt." });
-    }
-
-    const match = await bcrypt.compare(codeStr, row.code_hash);
-    if (!match) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "bad-code");
-      return res.status(401).json({ success: false, error: "Érvénytelen kód." });
-    }
-
-    await pool.query(`UPDATE login_codes SET used = true WHERE id = $1`, [row.id]);
-
-    const user = await findUserByIdentifier(identifier);
-    if (!user) {
-      if (DEBUG) res.setHeader("X-Auth-Why", "user-not-found-after-code");
-      return res.status(401).json({ success: false, error: "Felhasználó nem található." });
-    }
-
-    const loc =
-      modeStr === "customer"
-        ? (location_id ?? user.location_id ?? null)
-        : user.location_id ?? null;
-
-    const token = signToken({
-      sub: user.id,
-      role: user.role || "user",
-      location_id: loc ?? null,
-      mode: modeStr,
-    });
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false, // prod-on állítsa true-ra
-      path: "/",
-      maxAge: 8 * 60 * 60 * 1000,
-    });
-
-    if (DEBUG) res.setHeader("X-Auth-Why", "ok-token-issued");
-    return res.json({
-      success: true,
-      token,
-      role: user.role || "user",
-      location_id: loc ?? null,
-    });
-  } catch (err) {
-    console.error("VERIFY error:", err);
-    if (DEBUG) res.setHeader("X-Auth-Why", "server-error");
-    return res.status(500).json({ success: false, error: "Váratlan hiba történt az ellenőrzéskor." });
+  if (!emailKey || !code) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Hiányzó e-mail vagy kód" });
   }
+
+  const record = consumeCode(emailKey);
+  if (!record) {
+    return res.status(400).json({
+      success: false,
+      error: "Nincs aktív kód ehhez az e-mailhez vagy lejárt",
+    });
+  }
+
+  if (record.code !== String(code)) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Érvénytelen kód" });
+  }
+
+  const token = signToken({
+    id: record.userId,
+    email: emailKey,
+    role: record.role,
+    location_id:
+      (mode === "customer"
+        ? location_id ?? record.location_id
+        : record.location_id) ?? null,
+  });
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 8 * 60 * 60 * 1000, // 8 óra
+  });
+
+  return res.json({
+    success: true,
+    token,
+    role: record.role,
+    location_id:
+      (mode === "customer"
+        ? location_id ?? record.location_id
+        : record.location_id) ?? null,
+  });
 });
 
-/* ===================== Diagnosztika ===================== */
-
-authRouter.get("/auth/token-check", (req: Request, res: Response) => {
-  try {
-    const tok = extractTokenFromReq(req);
-    if (!tok) return res.status(401).json({ ok: false, error: "Hiányzik a token." });
-    const decoded = verifyTokenRaw(tok);
-    return res.json({ ok: true, decoded });
-  } catch (e: any) {
-    return res.status(401).json({ ok: false, error: e?.message || "Token hiba" });
-  }
-});
-
-authRouter.get("/auth/me", (req: Request, res: Response) => {
-  try {
-    const tok = extractTokenFromReq(req);
-    if (!tok) return res.status(401).json({ success: false, error: "Nincs token." });
-    const decoded = verifyTokenRaw(tok) as any;
-    return res.json({
-      success: true,
-      user: { id: decoded.sub, role: decoded.role, location_id: decoded.location_id, mode: decoded.mode },
-    });
-  } catch (e: any) {
-    return res.status(401).json({ success: false, error: e?.message || "Érvénytelen token." });
-  }
-});
-
-export default authRouter;
+export default router;
