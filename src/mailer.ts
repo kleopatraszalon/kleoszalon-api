@@ -7,24 +7,42 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "no-reply@example.com";
 
+// 🔹 Ezzel tudsz SMTP-t gyakorlatilag kikapcsolni Renderen:
+// Renderen állítsd: DISABLE_SMTP=1
+const DISABLE_SMTP = process.env.DISABLE_SMTP === "1";
+
 if (!SMTP_USER || !SMTP_PASS) {
   console.warn("⚠️ SMTP_USER vagy SMTP_PASS hiányzik – e-mail küldés nem fog menni!");
 }
 
-const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465, // 465 = SSL, 587 = STARTTLS
-  auth: {
-    user: SMTP_USER,
-    pass: SMTP_PASS,
-  },
-});
+let transporter: nodemailer.Transporter | null = null;
+
+if (!DISABLE_SMTP && SMTP_USER && SMTP_PASS) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465, // 465 = SSL, 587 = STARTTLS
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS,
+    },
+    // pár timeout, hogy ne lógjon sokáig, ha mégis próbálkozunk
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
+  });
+} else {
+  console.warn("📭 DISABLE_SMTP=1 vagy hiányzó SMTP hitelesítés – e-mail csak LOG-ban lesz.");
+}
 
 export default async function sendLoginCodeEmail(to: string, code: string) {
-  if (!SMTP_USER || !SMTP_PASS) {
-    console.error("❌ SMTP konfiguráció hiányzik, nem lehet levelet küldeni.");
-    throw new Error("SMTP configuration missing");
+  // 🔹 MINDIG logoljuk – fejlesztéshez így is használható
+  console.log(`[AUTH] [LOGIN CODE MAIL] to=${to} code=${code}`);
+
+  // Ha ki van kapcsolva az SMTP (pl. Renderen): csak log, és kilépünk
+  if (DISABLE_SMTP || !transporter) {
+    console.warn("📭 SMTP küldés kihagyva (DISABLE_SMTP=1 vagy nincs transporter).");
+    return;
   }
 
   const mailOptions = {
@@ -41,22 +59,23 @@ export default async function sendLoginCodeEmail(to: string, code: string) {
     `,
   };
 
-  console.log("📧 E-mail küldése kóddal:", {
+  console.log("📧 E-mail küldése kóddal (SMTP):", {
     host: SMTP_HOST,
     port: SMTP_PORT,
     from: mailOptions.from,
     to: mailOptions.to,
   });
 
-  const info = await transporter.sendMail(mailOptions);
-
-  console.log("✅ E-mail elküldve, messageId:", info.messageId);
-  if (info.accepted && info.accepted.length > 0) {
-    console.log("✅ Elfogadott címek:", info.accepted);
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("✅ E-mail elküldve, messageId:", info.messageId);
+    if (info.accepted && info.accepted.length > 0) {
+      console.log("✅ Elfogadott címek:", info.accepted);
+    }
+    if (info.rejected && info.rejected.length > 0) {
+      console.warn("⚠️ Elutasított címek:", info.rejected);
+    }
+  } catch (err) {
+    console.error("❌ E-mail küldési hiba:", err);
   }
-  if (info.rejected && info.rejected.length > 0) {
-    console.warn("⚠️ Elutasított címek:", info.rejected);
-  }
-
-  return info;
 }
