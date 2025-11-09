@@ -24,11 +24,17 @@ import employeesRouter from "./routes/employees";
 import servicesRouter from "./routes/services";
 import servicesAvailableRoutes from "./routes/services_available";
 import employeeCalendarRoutes from "./routes/employee_calendar";
+import authRouter from "./routes/auth";  // ha még nincs
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 
 const app = express();
+
+
+app.use("/api/locations", locationsRoutes);
+app.use("/api", authRouter);
+
 
 /* ===== Proxy és alap middlewares ===== */
 
