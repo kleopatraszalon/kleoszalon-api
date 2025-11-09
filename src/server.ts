@@ -29,6 +29,9 @@ import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 
 const app = express();
 
+console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
+console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
+
 /* ===== Proxy és alap middlewares ===== */
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin || "*";

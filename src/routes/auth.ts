@@ -4,6 +4,7 @@ import pool from "../db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
+import sendLoginCodeEmail from "../mailer";
 
 const authRouter = express.Router();
 
