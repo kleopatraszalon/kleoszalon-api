@@ -10,8 +10,6 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import pool from "./db";
 
-import cors from "cors";
-
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
 import meRoutes from "./routes/me";
@@ -24,20 +22,14 @@ import employeesRouter from "./routes/employees";
 import servicesRouter from "./routes/services";
 import servicesAvailableRoutes from "./routes/services_available";
 import employeeCalendarRoutes from "./routes/employee_calendar";
-import authRouter from "./routes/auth";  // ha még nincs
+import authRouter from "./routes/auth";  // auth route-ok
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 
 const app = express();
 
-
-app.use("/api/locations", locationsRoutes);
-app.use("/api", authRouter);
-
-
 /* ===== Proxy és alap middlewares ===== */
-
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin || "*";
 
@@ -60,17 +52,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// (ha volt korábban app.use(cors(...)), azt most nyugodtan kiveheted,
-// vagy itt alá teheted még pluszban, de a fenti önmagában elég)
 app.use(express.json());
 app.use(cookieParser());
-
-// EZEK JÖJJENEK UTÁNA:
-/// app.use("/api/locations", locationsRouter);
-/// app.use("/api/login", authRouter);
-/// stb.
-
-
 app.set("trust proxy", 1);
 
 /* const allowedOrigins = [
@@ -137,7 +120,13 @@ function extractBearer(req: Request): string | null {
   return h && /^Bearer\s+/i.test(h) ? h.replace(/^Bearer\s+/i, "") : null;
 }
 function extractTokenFromReq(req: Request): string | null {
-  return extractBearer(req) || (req as any).cookies?.token || (req.query?.token as string) || (req.body?.token as string) || null;
+  return (
+    extractBearer(req) ||
+    (req as any).cookies?.token ||
+    (req.query?.token as string) ||
+    (req.body?.token as string) ||
+    null
+  );
 }
 
 /* ===== Hash detektálás + ellenőrzés ===== */
@@ -180,14 +169,22 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
         const iter = parseInt(parts[1], 10) || 100000;
         const salt = parts[2];
         const hex = parts[3];
-        const derived = crypto.pbkdf2Sync(plain, salt, iter, hex.length / 2, "sha256").toString("hex");
-        return crypto.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(derived, "hex"));
+        const derived = crypto
+          .pbkdf2Sync(plain, salt, iter, hex.length / 2, "sha256")
+          .toString("hex");
+        return crypto.timingSafeEqual(
+          Buffer.from(hex, "hex"),
+          Buffer.from(derived, "hex")
+        );
       }
 
       case "sha256": {
         const hex = s.slice("sha256:".length);
         const digest = crypto.createHash("sha256").update(plain).digest("hex");
-        return crypto.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(digest, "hex"));
+        return crypto.timingSafeEqual(
+          Buffer.from(hex, "hex"),
+          Buffer.from(digest, "hex")
+        );
       }
 
       case "plaintext":
@@ -203,8 +200,12 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
 }
 
 /* ===== Health + root ===== */
-app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-app.get("/", (_req, res) => res.send("✅ Backend fut és CORS be van állítva"));
+app.get("/api/health", (_req, res) =>
+  res.json({ ok: true, time: new Date().toISOString() })
+);
+app.get("/", (_req, res) =>
+  res.send("✅ Backend fut és CORS be van állítva")
+);
 
 /* ===== Nem-auth route-ok ===== */
 app.use("/api/menu", menuRoutes);
@@ -220,6 +221,9 @@ app.use("/api/workorders", workorderRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 
+/* ===== Auth route-ok ===== */
+app.use("/api", authRouter);
+
 /* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
 async function loginHandler(req: Request, res: Response) {
   const { email, login_name, password } =
@@ -227,7 +231,9 @@ async function loginHandler(req: Request, res: Response) {
 
   const ident = String(email ?? login_name ?? "").trim().toLowerCase();
   if (!ident || !password) {
-    return res.status(400).json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
+    return res
+      .status(400)
+      .json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
   }
 
   try {
@@ -243,7 +249,9 @@ async function loginHandler(req: Request, res: Response) {
 
     if (rows.length === 0) {
       console.warn(`[AUTH] user not found: ${ident}`);
-      return res.status(401).json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+      return res
+        .status(401)
+        .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
     }
 
     const user = rows[0];
@@ -254,13 +262,19 @@ async function loginHandler(req: Request, res: Response) {
 
     const hashType = detectHashType(user.password_hash);
     if (hashType === "bcrypt" && Number(user.len) < 60) {
-      console.error(`[AUTH] bcrypt hash rövid (truncált?) len=${user.len}, head=${user.head}, ident=${ident}`);
+      console.error(
+        `[AUTH] bcrypt hash rövid (truncált?) len=${user.len}, head=${user.head}, ident=${ident}`
+      );
     }
 
     const isMatch = await verifyPassword(user.password_hash, String(password));
     if (!isMatch) {
-      console.warn(`[AUTH] bad password (type=${hashType}, len=${user.len}, head=${user.head}) ident=${ident}`);
-      return res.status(401).json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+      console.warn(
+        `[AUTH] bad password (type=${hashType}, len=${user.len}, head=${user.head}) ident=${ident}`
+      );
+      return res
+        .status(401)
+        .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
     }
 
     // 6 jegyű kód generálása és ideiglenes tárolása
@@ -280,13 +294,22 @@ async function loginHandler(req: Request, res: Response) {
       await sendLoginCodeEmail(emailKey, code);
     } catch (mailErr) {
       console.error("❌ E-mail küldési hiba:", mailErr);
-      return res.status(500).json({ success: false, error: "Nem sikerült elküldeni a belépési kódot" });
+      return res.status(500).json({
+        success: false,
+        error: "Nem sikerült elküldeni a belépési kódot",
+      });
     }
 
-    return res.json({ success: true, step: "code_required", message: "Belépési kód elküldve az e-mail címre." });
+    return res.json({
+      success: true,
+      step: "code_required",
+      message: "Belépési kód elküldve az e-mail címre.",
+    });
   } catch (err) {
     console.error("❌ Login hiba:", err);
-    return res.status(500).json({ success: false, error: "Hiba történt a belépés során" });
+    return res
+      .status(500)
+      .json({ success: false, error: "Hiba történt a belépés során" });
   }
 }
 
@@ -346,8 +369,7 @@ async function verifyCodeHandler(req: Request, res: Response) {
       .json({ success: false, error: "Érvénytelen kód" });
   }
 
-  // 3) JWT felépítése – ITT A FONTOS VÁLTOZÁS:
-  //    id: record.userId  (nem userId mező a payloadban!)
+  // 3) JWT felépítése
   const token = signToken({
     id: record.userId,
     email: emailKey,
@@ -358,7 +380,7 @@ async function verifyCodeHandler(req: Request, res: Response) {
         : record.location_id) ?? null,
   });
 
-  // 4) Token sütiben is (ha szeretnéd), plusz JSON-ben vissza
+  // 4) Token sütiben is, plusz JSON-ben vissza
   res.cookie("token", token, {
     httpOnly: true,
     sameSite: "lax",
@@ -379,7 +401,9 @@ async function verifyCodeHandler(req: Request, res: Response) {
 }
 
 /* ===== 404 ===== */
-app.use((req, res) => res.status(404).json({ error: "Not found", path: req.originalUrl }));
+app.use((req, res) =>
+  res.status(404).json({ error: "Not found", path: req.originalUrl })
+);
 
 /* ===== Globális hiba-kezelő ===== */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -390,14 +414,23 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 /* ===== Indítás ===== */
 const port = Number(process.env.PORT) || 5000;
 const host = process.env.HOST || "0.0.0.0";
-const server = app.listen(port, host, () => console.log(`✅ Server running on http://${host}:${port}`));
+const server = app.listen(port, host, () =>
+  console.log(`✅ Server running on http://${host}:${port}`)
+);
 server.keepAliveTimeout = 120_000;
 server.headersTimeout = 120_000;
 server.on("error", (err: NodeJS.ErrnoException) => {
-  if (err.code === "EADDRINUSE") console.error(`❌ Port ${port} már használatban van.`);
+  if (err.code === "EADDRINUSE")
+    console.error(`❌ Port ${port} már használatban van.`);
   else console.error(err);
 });
-const shutdown = () => { console.log("🛑 Leállítás folyamatban..."); server.close(() => { console.log("👋 Szerver leállt."); process.exit(0); }); };
+const shutdown = () => {
+  console.log("🛑 Leállítás folyamatban...");
+  server.close(() => {
+    console.log("👋 Szerver leállt.");
+    process.exit(0);
+  });
+};
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
