@@ -1,34 +1,56 @@
+// src/mailer.ts
 import nodemailer from "nodemailer";
 
-const user = process.env.SMTP_USER;
-const pass = process.env.SMTP_PASS;
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || "587");
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "no-reply@example.com";
 
-console.log("🧩 SMTP_USER:", user);
-console.log("🧩 SMTP_PASS:", pass ? "✅ van" : "❌ hiányzik");
+if (!SMTP_USER || !SMTP_PASS) {
+  console.warn("⚠️ SMTP_USER vagy SMTP_PASS hiányzik – e-mail küldés nem fog menni!");
+}
 
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: false,
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465, // 465 = SSL, 587 = STARTTLS
   auth: {
-    user,
-    pass,
+    user: SMTP_USER,
+    pass: SMTP_PASS,
   },
 });
 
 export default async function sendLoginCodeEmail(to: string, code: string) {
-  try {
-    console.log("📨 E-mail küldés indul:", to);
-    const mailOptions = {
-      from: `"Kleopátra Szalon" <${user}>`,
-      to,
-      subject: "Belépési kód – Kleopátra Szalon",
-      text: `Az Ön belépési kódja: ${code}`,
-    };
-    await transporter.sendMail(mailOptions);
-    console.log(`📧 Kód elküldve: ${to}`);
-  } catch (err) {
-    console.error("❌ E-mail küldés hiba:", err);
-    throw err;
+  if (!SMTP_USER || !SMTP_PASS) {
+    console.error("❌ SMTP hitelesítés hiányzik, nem lehet levelet küldeni.");
+    throw new Error("SMTP configuration missing");
   }
+
+  const mailOptions = {
+    from: SMTP_FROM,
+    to,
+    subject: "Kleopátra Szalon – belépési kód",
+    text: `Az Ön belépési kódja: ${code}`,
+    html: `<p>Az Ön belépési kódja:</p><p style="font-size:20px;font-weight:bold;">${code}</p>`,
+  };
+
+  console.log("📧 E-mail küldése:", {
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    from: SMTP_FROM,
+    to,
+  });
+
+  const info = await transporter.sendMail(mailOptions);
+
+  console.log("✅ E-mail elküldve:", info.messageId);
+  if (info.accepted && info.accepted.length > 0) {
+    console.log("✅ Elfogadta a szerver:", info.accepted);
+  }
+  if (info.rejected && info.rejected.length > 0) {
+    console.warn("⚠️ Elutasított címek:", info.rejected);
+  }
+
+  return info;
 }
