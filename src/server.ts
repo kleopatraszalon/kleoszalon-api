@@ -3,14 +3,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express, { Request, Response, NextFunction } from "express";
-import cors, { CorsOptions } from "cors";
+
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import pool from "./db";
 
-import cors from "cors";
+import cors, { CorsOptions } from "cors";
 
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
