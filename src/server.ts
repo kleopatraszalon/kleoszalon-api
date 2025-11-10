@@ -227,6 +227,11 @@ app.use("/api/transactions", transactionsRoutes);
 /* ===== Auth route-ok ===== */
 app.use("/api", authRouter);
 
+// 404
+app.use((req, res) =>
+  res.status(404).json({ error: "Not found", path: req.originalUrl })
+);
+
 /* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
 async function loginHandler(req: Request, res: Response) {
   const { email, login_name, password } =
