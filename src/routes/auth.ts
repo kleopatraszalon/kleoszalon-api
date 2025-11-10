@@ -95,7 +95,6 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   const { email, login_name, password } =
     (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
 
-  // identet meghagyjuk, de a DB-ben csak email oszlop van
   const ident = String(email ?? login_name ?? "").trim().toLowerCase();
   if (!ident || !password) {
     return res
@@ -149,7 +148,34 @@ authRouter.post("/login", async (req: Request, res: Response) => {
         .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
     }
 
-    // 6 jegyű kód generálása és ideiglenes tárolása
+    // 🔹 TESZT MÓD: NINCS plusz kód, azonnali belépés
+    if (DISABLE_2FA) {
+      const token = signToken({
+        id: user.id,
+        email: user.email,
+        role: user.role ?? "guest",
+        location_id: user.location_id ?? null,
+      });
+
+      res.cookie("token", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/",
+        maxAge: 8 * 60 * 60 * 1000, // 8 óra
+      });
+
+      return res.json({
+        success: true,
+        token,
+        role: user.role ?? "guest",
+        location_id: user.location_id ?? null,
+      });
+    }
+
+    // 🔹 ÉLES 2FA (ha DISABLE_2FA nincs bekapcsolva) – a régi kód maradhat itt,
+    //   vagy akár ki is törölheted, ha biztosan nem kell egyelőre:
+
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN ?? "5", 10);
     const emailKey = String(user.email || ident).toLowerCase();
@@ -186,6 +212,12 @@ authRouter.post("/login", async (req: Request, res: Response) => {
       .json({ success: false, error: "Hiba történt a belépés során" });
   }
 });
+
+
+
+// 🔹 ha ez 1, akkor NINCS kódos 2FA, csak sima login
+const DISABLE_2FA = process.env.DISABLE_2FA === "1";
+
 
 /* ====== 2. lépés: /api/verify-code – kód ellenőrzés + JWT ====== */
 authRouter.post("/verify-code", async (req: Request, res: Response) => {
