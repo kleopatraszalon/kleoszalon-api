@@ -1,0 +1,7 @@
+// --- PATCH for backend/src/index.ts ---
+// Add near other routers:
+import appointmentsRouter from "./routes/appointments";
+
+// After app initialization:
+app.use("/api/appointments", appointmentsRouter);
+// --- END PATCH ---

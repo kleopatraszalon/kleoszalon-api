@@ -26,7 +26,7 @@ import authRouter from "./routes/auth";  // auth route-ok
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
-
+import scheduleDayRoutes from "./routes/schedule_day";
 const app = express();
 
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
@@ -92,7 +92,7 @@ function originMatches(origin: string, patterns: string[]): boolean {
   }
   return false;
 }
-
+app.use("/api/schedule/day", scheduleDayRoutes);
 /*const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
@@ -111,6 +111,20 @@ app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 /* ===== JWT segédek ===== */
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "*";
+  res.header("Access-Control-Allow-Origin", origin); // vagy fix: https://kleoszalon-frontend.onrender.com
+  res.header("Vary", "Origin");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
+  res.header("Access-Control-Allow-Credentials", "true");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+app.use(express.json());
+app.use(cookieParser());
+
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
