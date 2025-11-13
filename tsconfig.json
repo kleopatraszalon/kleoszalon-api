@@ -1,19 +1,22 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "CommonJS",
-    "moduleResolution": "Node",
-    "rootDir": "src",
-    "outDir": "dist",
-    "strict": true,
+    "target": "ES6",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "jsx": "react-jsx",
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+
     "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
+    "isolatedModules": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "jsx": "react-jsx"
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "baseUrl": "src"
   },
-  "include": ["src/**/*.ts", "src/app.ts"],
-  "exclude": ["src/**/*.tsx"]
+  "include": ["src"],
+  "exclude": ["node_modules", "build", "dist"]
 }
-
-
