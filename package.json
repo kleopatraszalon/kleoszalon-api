@@ -9,7 +9,7 @@
   "type": "commonjs",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc -p tsconfig.server.json && npx copyfiles -u 1 src/sql/**/* dist/",
+       "build": "tsc -p tsconfig.server.json && npx copyfiles -f src/sql/**/* dist/sql",
     "start": "node dist/server.js",
     "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json src/server.ts\""
   },
