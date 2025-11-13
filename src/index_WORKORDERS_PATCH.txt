@@ -1,0 +1,4 @@
+// --- PATCH for backend/src/index.ts ---
+import workordersRouter from "./routes/workorders";
+app.use("/api/workorders", workordersRouter);
+// --- END PATCH ---

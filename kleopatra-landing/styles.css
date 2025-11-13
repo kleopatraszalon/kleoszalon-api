@@ -1,0 +1,822 @@
+/* styles.css – Kleopátra landing */
+
+:root {
+  --bg: #f8f3ee;
+  --bg-alt: #ffffff;
+  --bg-deep: #f0e3d8;
+  --gold: #c5a15f;
+  --gold-soft: #e4d2a4;
+  --accent: #e4b8b4;
+  --accent-soft: #f5d6d3;
+  --dark: #2b1f1a;
+  --muted: #6a5b54;
+  --radius-xl: 1.5rem;
+  --radius-lg: 1rem;
+  --radius-md: 0.75rem;
+  --shadow-soft: 0 18px 45px rgba(0, 0, 0, 0.08);
+  --shadow-light: 0 8px 20px rgba(0, 0, 0, 0.05);
+  --max-width: 1120px;
+}
+
+/* Reset / alapok */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: radial-gradient(circle at top left, #fffdf8 0, var(--bg) 45%);
+  color: var(--dark);
+  -webkit-font-smoothing: antialiased;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0 0 0.5rem;
+  font-family: "Playfair Display", serif;
+}
+
+/* Layout segédosztályok */
+
+.container {
+  width: 100%;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.section {
+  padding: 4rem 0;
+}
+
+.section-alt {
+  padding: 4rem 0;
+  background: radial-gradient(circle at top, #fffdf9 0, var(--bg-deep) 60%);
+}
+
+.section-header {
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto 2.5rem;
+}
+
+.section-header h2 {
+  font-size: 2.1rem;
+  letter-spacing: 0.03em;
+}
+
+.section-header p {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+}
+
+/* Gombok */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.7rem 1.6rem;
+  border-radius: 999px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold), #e2c08b);
+  color: #fff;
+  box-shadow: var(--shadow-soft);
+}
+
+.btn-primary:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.12);
+}
+
+.btn-outline {
+  border-color: var(--gold);
+  color: var(--dark);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.btn-outline:hover {
+  background: #fff;
+  box-shadow: var(--shadow-light);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+/* Fejléc */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(248, 243, 238, 0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(197, 161, 95, 0.1);
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  gap: 1rem;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 20%, #fff8dd, var(--gold));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+.logo-mark-small {
+  width: 26px;
+  height: 26px;
+  font-size: 0.8rem;
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.logo-title {
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+}
+
+.logo-subtitle {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.main-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.4rem;
+  font-size: 0.9rem;
+}
+
+.main-nav a {
+  position: relative;
+  color: var(--muted);
+}
+
+.main-nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -0.2rem;
+  width: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold), var(--accent));
+  transition: width 0.2s ease;
+}
+
+.main-nav a:hover::after {
+  width: 100%;
+}
+
+.header-cta {
+  font-size: 0.85rem;
+}
+
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  background: none;
+  border: none;
+  padding: 0.3rem;
+  cursor: pointer;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--dark);
+}
+
+/* Hero */
+
+.hero {
+  padding: 3.2rem 0 3.5rem;
+}
+
+.hero-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 2.5rem;
+  align-items: center;
+}
+
+.hero-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0 0 0.75rem;
+}
+
+.hero h1 {
+  font-size: 2.6rem;
+  line-height: 1.1;
+  margin-bottom: 1rem;
+}
+
+.hero-lead {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+  max-width: 32rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-bottom: 1.8rem;
+}
+
+.hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-value {
+  font-weight: 600;
+  font-size: 1.25rem;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.hero-visual {
+  position: relative;
+}
+
+.hero-card {
+  background: var(--bg-alt);
+  border-radius: var(--radius-xl);
+  padding: 1.7rem 1.5rem;
+  box-shadow: var(--shadow-soft);
+}
+
+.hero-card-main {
+  position: relative;
+  z-index: 1;
+  border: 1px solid rgba(197, 161, 95, 0.25);
+}
+
+.hero-card-main h2 {
+  font-size: 1.2rem;
+}
+
+.hero-card-main p {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.hero-card-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(197, 161, 95, 0.08);
+  color: var(--dark);
+  font-size: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+.hero-card-list {
+  margin: 1rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.hero-card-secondary {
+  position: absolute;
+  right: 0;
+  bottom: -1.5rem;
+  max-width: 260px;
+  background: linear-gradient(135deg, var(--accent-soft), #fff);
+}
+
+.mini-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin: 0 0 0.35rem;
+}
+
+.mini-text {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* Szolgáltatások */
+
+.services-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.service-card {
+  background: var(--bg-alt);
+  border-radius: var(--radius-lg);
+  padding: 1.4rem 1.3rem;
+  box-shadow: var(--shadow-light);
+  border: 1px solid rgba(197, 161, 95, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  font-size: 0.9rem;
+}
+
+.service-card h3 {
+  font-size: 1.1rem;
+}
+
+.service-card p {
+  color: var(--muted);
+}
+
+.service-card ul {
+  margin: 0.3rem 0 0.5rem;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.service-link {
+  margin-top: auto;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--dark);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.service-link::after {
+  content: "→";
+  font-size: 0.85em;
+}
+
+/* About / timeline */
+
+.about-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.about-list {
+  margin: 1rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.timeline {
+  border-left: 2px solid rgba(197, 161, 95, 0.4);
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.4rem;
+}
+
+.timeline-item {
+  position: relative;
+}
+
+.timeline-year {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(197, 161, 95, 0.12);
+  color: var(--dark);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+
+.timeline-item p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Csapat */
+
+.team-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.team-card {
+  background: var(--bg-alt);
+  padding: 1.3rem 1.2rem;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-light);
+  border: 1px solid rgba(197, 161, 95, 0.12);
+  font-size: 0.9rem;
+}
+
+.avatar-placeholder {
+  width: 54px;
+  height: 54px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--gold-soft));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 0.8rem;
+}
+
+.team-role {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+.team-bio {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Galéria */
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.gallery-item {
+  border-radius: var(--radius-md);
+  min-height: 120px;
+}
+
+.gallery-placeholder {
+  background: linear-gradient(135deg, rgba(196, 161, 95, 0.12), #fff);
+  border: 1px dashed rgba(197, 161, 95, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* Árak */
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.pricing-card {
+  background: var(--bg-alt);
+  padding: 1.5rem 1.4rem;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-light);
+  border: 1px solid rgba(197, 161, 95, 0.16);
+  font-size: 0.9rem;
+  position: relative;
+}
+
+.pricing-card ul {
+  margin: 0.6rem 0 1rem;
+  padding-left: 1.1rem;
+  color: var(--muted);
+}
+
+.price {
+  font-weight: 600;
+  margin: 0.3rem 0 0;
+}
+
+.highlight {
+  border-color: var(--gold);
+  background: linear-gradient(135deg, #fffdf8, #f7ebda);
+}
+
+.badge {
+  position: absolute;
+  top: 1.1rem;
+  right: 1.2rem;
+  background: var(--gold);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+/* Vendégvélemények */
+
+.section-testimonials {
+  background: radial-gradient(circle at top, #fffdf8 0, var(--bg) 65%);
+  padding: 4rem 0 4.5rem;
+}
+
+.testimonials-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.testimonial-card {
+  background: var(--bg-alt);
+  border-radius: var(--radius-lg);
+  padding: 1.4rem 1.3rem;
+  box-shadow: var(--shadow-light);
+  border: 1px solid rgba(197, 161, 95, 0.12);
+  font-size: 0.9rem;
+}
+
+.quote {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.author {
+  margin: 0;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+/* Kapcsolat */
+
+.contact-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.1fr);
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.contact-box {
+  background: rgba(255, 255, 255, 0.9);
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(197, 161, 95, 0.2);
+  font-size: 0.9rem;
+  margin-top: 0.75rem;
+}
+
+.contact-form {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  padding: 1.4rem 1.3rem;
+  box-shadow: var(--shadow-soft);
+  border: 1px solid rgba(197, 161, 95, 0.2);
+  font-size: 0.9rem;
+}
+
+.contact-form h3 {
+  margin-bottom: 0.8rem;
+}
+
+.contact-form label {
+  display: block;
+  font-size: 0.8rem;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+}
+
+.contact-form input,
+.contact-form select,
+.contact-form textarea {
+  width: 100%;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 0.5rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  background: #fffdfb;
+}
+
+.contact-form input:focus,
+.contact-form select:focus,
+.contact-form textarea:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(197, 161, 95, 0.2);
+}
+
+.form-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+
+/* Láb */
+
+.site-footer {
+  border-top: 1px solid rgba(197, 161, 95, 0.16);
+  padding: 1.5rem 0 2rem;
+  background: #f5ece3;
+}
+
+.footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.footer-links {
+  display: flex;
+  gap: 1rem;
+}
+
+.footer-links a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+
+.footer-note {
+  margin-left: auto;
+}
+
+/* Reszponzivitás */
+
+@media (max-width: 960px) {
+  .hero-inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hero-visual {
+    order: -1;
+  }
+
+  .services-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .about-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .team-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gallery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pricing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .testimonials-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .contact-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .main-nav {
+    position: absolute;
+    inset: 60px 1rem auto;
+    background: rgba(248, 243, 238, 0.97);
+    border-radius: 1rem;
+    padding: 0.7rem 0.9rem;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+    box-shadow: var(--shadow-light);
+    transform-origin: top;
+    transform: scaleY(0.95);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .main-nav.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: scaleY(1);
+  }
+
+  .header-cta {
+    display: none;
+  }
+
+  .nav-toggle {
+    display: flex;
+  }
+
+  .hero {
+    padding-top: 2.4rem;
+  }
+
+  .hero h1 {
+    font-size: 2.1rem;
+  }
+
+  .hero-stats {
+    gap: 1rem;
+  }
+
+  .services-grid,
+  .team-grid,
+  .gallery-grid,
+  .pricing-grid,
+  .testimonials-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .site-footer {
+    text-align: center;
+  }
+
+  .footer-inner {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .footer-note {
+    margin-left: 0;
+  }
+}
