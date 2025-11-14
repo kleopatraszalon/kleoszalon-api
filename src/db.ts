@@ -1,36 +1,34 @@
 // src/db.ts
 import { Pool } from "pg";
 
+/**
+ * Fejlesztői / production pool létrehozása
+ */
 function makePool(): Pool {
-  // 1) Ha van DATABASE_URL (Render/Heroku), azt használjuk
-  const url = process.env.DATABASE_URL;
-  if (url) {
-    const sslNeeded =
-      process.env.PGSSLMODE === "require" ||
-      process.env.NODE_ENV === "production";
+  const isProd = process.env.NODE_ENV === "production";
+
+  // Render / production: DATABASE_URL
+  if (isProd && process.env.DATABASE_URL) {
     return new Pool({
-      connectionString: url,
-      ssl: sslNeeded ? { rejectUnauthorized: false } : false,
-    } as any);
+      connectionString: process.env.DATABASE_URL,
+      ssl:
+        process.env.DB_SSL === "1"
+          ? { rejectUnauthorized: false }
+          : undefined,
+    });
   }
 
-  // 2) Egyébként klasszikus paraméterek
+  // Lokális fejlesztés
   return new Pool({
-    host: process.env.PGHOST || "127.0.0.1",
-    port: Number(process.env.PGPORT || 5432),
-    user: process.env.PGUSER || "postgres",
-    password: process.env.PGPASSWORD || "",
-    database: process.env.PGDATABASE || "postgres",
-    ssl: process.env.PGSSL === "1" ? { rejectUnauthorized: false } : false,
-  } as any);
+    host: process.env.DB_HOST ?? "localhost",
+    port: Number(process.env.DB_PORT ?? "5432"),
+    user: process.env.DB_USER ?? "postgres",
+    password: process.env.DB_PASSWORD ?? "postgres",
+    database: process.env.DB_NAME ?? "kleoszalon",
+  });
 }
 
 const pool = makePool();
 
-// Egyszerű "ping"
-export async function pingDb(): Promise<boolean> {
-  const r = await pool.query("SELECT 1");
-  return r.rowCount === 1;
-}
-
 export default pool;
+export { pool };
