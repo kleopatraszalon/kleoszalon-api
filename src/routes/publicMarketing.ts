@@ -1,84 +1,88 @@
 // src/routes/publicMarketing.ts
-import { Router, Request, Response, NextFunction } from "express";
-import pool from "../db"; // ha máshogy exportálod a pool-t, ezt igazítsd hozzá
+import { Router, Request, Response } from "express";
+import pool from "../db";
 
 const router = Router();
 
 /**
- * Public szalon lista – a marketing oldalnak
- * GET /api/public/salons
+ * Statikus szalonlista – marketing oldalnak.
  */
-router.get(
-  "/salons",
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      // Itt azt a táblát használd, ami nálad valóban létezik!
-      // Példa: locations vagy salons tábla – igazítsd a saját oszlopneveidhez.
-      const sql = `
-        SELECT
-          id,
-          name,
-          -- AZ ALÁBBI OSZLOPOKAT IGAZÍTSD A SAJÁT ADATBÁZISODHOZ!
-          COALESCE(city, '')         AS city,
-          COALESCE(address, '')      AS address,
-          COALESCE(phone, '')        AS phone,
-          COALESCE(email, '')        AS email,
-          COALESCE(website, '')      AS website,
-          COALESCE(description, '')  AS description,
-          COALESCE(image_url, '')    AS image_url
-        FROM public.salons
-        WHERE is_active = TRUE
-        ORDER BY name ASC;
-      `;
+const PUBLIC_SALONS = [
+  {
+    id: "budapest-ix",
+    slug: "budapest-ix",
+    city_label: "Kleopátra Szépségszalon – Budapest IX.",
+    address: "Mester u. 1.",
+  },
+  {
+    id: "budapest-viii",
+    slug: "budapest-viii",
+    city_label: "Kleopátra Szépségszalon – Budapest VIII.",
+    address: "Rákóczi u. 63.",
+  },
+  {
+    id: "budapest-xii",
+    slug: "budapest-xii",
+    city_label: "Kleopátra Szépségszalon – Budapest XII.",
+    address: "Krisztina krt. 23.",
+  },
+  {
+    id: "budapest-xiii",
+    slug: "budapest-xiii",
+    city_label: "Kleopátra Szépségszalon – Budapest XIII.",
+    address: "Visegrádi u. 3.",
+  },
+  {
+    id: "eger",
+    slug: "eger",
+    city_label: "Kleopátra Szépségszalon – Eger",
+    address: "Dr. Nagy János u. 8.",
+  },
+  {
+    id: "gyongyos",
+    slug: "gyongyos",
+    city_label: "Kleopátra Szépségszalon – Gyöngyös",
+    address: "Koháry u. 29.",
+  },
+  {
+    id: "salgotarjan",
+    slug: "salgotarjan",
+    city_label: "Kleopátra Szépségszalon – Salgótarján",
+    address: "Füleki u. 44.",
+  },
+];
 
-      const result = await pool.query(sql);
-
-      // Mindig küldünk értelmes JSON-t
-      res.json(result.rows ?? []);
-    } catch (err) {
-      console.error("GET /api/public/salons ERROR:", err);
-      next(err); // a globális error handlered intézi a választ
-    }
-  }
-);
+/**
+ * GET /api/public/salons
+ * Statikus lista, nem tud elhasalni.
+ */
+router.get("/salons", (req: Request, res: Response) => {
+  res.json(PUBLIC_SALONS);
+});
 
 /**
  * GET /api/public/services
- * Opcionális ?locationId=1 paraméterrel.
- * - ha nincs locationId: összes aktív szolgáltatás
- * - ha van: csak az adott telephely szolgáltatásai
+ * Összes aktív szolgáltatás a `services` táblából.
+ * A frontend fog telephely szerint szűrni `location_id` alapján.
  */
 router.get("/services", async (req: Request, res: Response) => {
-  const rawLocation = req.query.locationId as string | undefined;
-
-  // locationId opcionális (null = összes telephely)
-  const locationId = rawLocation ? Number(rawLocation) : null;
-
   try {
-    const params: any[] = [];
-    let sql = `
+    const sql = `
       SELECT
-        s.id::text            AS id,
-        s.name                AS name,
-        s.duration_min        AS duration_min,
-        s.price               AS price,
-        s.category_id         AS category_id,
-        s.location_id         AS location_id
+        s.id::text      AS id,
+        s.name          AS name,
+        s.duration_min  AS duration_min,
+        s.price         AS price,
+        s.category_id   AS category_id,
+        s.location_id   AS location_id
       FROM public.services s
-    `;
-
-    if (locationId) {
-      params.push(locationId);
-      sql += ` WHERE s.location_id = $${params.length}`;
-    }
-
-    sql += `
+      WHERE s.is_active = TRUE
       ORDER BY
         s.category_id,
         s.name;
     `;
 
-    const result = await pool.query(sql, params);
+    const result = await pool.query(sql);
     return res.json(result.rows);
   } catch (err) {
     console.error("GET /api/public/services hiba:", err);
@@ -89,4 +93,3 @@ router.get("/services", async (req: Request, res: Response) => {
 });
 
 export default router;
-

@@ -5,39 +5,91 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/publicMarketing.ts
 const express_1 = require("express");
-const db_1 = __importDefault(require("../db")); // ha máshogy exportálod a pool-t, ezt igazítsd hozzá
+const db_1 = __importDefault(require("../db"));
 const router = (0, express_1.Router)();
 /**
- * Public szalon lista – a marketing oldalnak
- * GET /api/public/salons
+ * Statikus szalonlista – marketing oldalnak.
  */
-router.get("/salons", async (req, res, next) => {
+const PUBLIC_SALONS = [
+    {
+        id: "budapest-ix",
+        slug: "budapest-ix",
+        city_label: "Kleopátra Szépségszalon – Budapest IX.",
+        address: "Mester u. 1.",
+    },
+    {
+        id: "budapest-viii",
+        slug: "budapest-viii",
+        city_label: "Kleopátra Szépségszalon – Budapest VIII.",
+        address: "Rákóczi u. 63.",
+    },
+    {
+        id: "budapest-xii",
+        slug: "budapest-xii",
+        city_label: "Kleopátra Szépségszalon – Budapest XII.",
+        address: "Krisztina krt. 23.",
+    },
+    {
+        id: "budapest-xiii",
+        slug: "budapest-xiii",
+        city_label: "Kleopátra Szépségszalon – Budapest XIII.",
+        address: "Visegrádi u. 3.",
+    },
+    {
+        id: "eger",
+        slug: "eger",
+        city_label: "Kleopátra Szépségszalon – Eger",
+        address: "Dr. Nagy János u. 8.",
+    },
+    {
+        id: "gyongyos",
+        slug: "gyongyos",
+        city_label: "Kleopátra Szépségszalon – Gyöngyös",
+        address: "Koháry u. 29.",
+    },
+    {
+        id: "salgotarjan",
+        slug: "salgotarjan",
+        city_label: "Kleopátra Szépségszalon – Salgótarján",
+        address: "Füleki u. 44.",
+    },
+];
+/**
+ * GET /api/public/salons
+ * Statikus lista, nem tud elhasalni.
+ */
+router.get("/salons", (req, res) => {
+    res.json(PUBLIC_SALONS);
+});
+/**
+ * GET /api/public/services
+ * Összes aktív szolgáltatás a `services` táblából.
+ * A frontend fog telephely szerint szűrni `location_id` alapján.
+ */
+router.get("/services", async (req, res) => {
     try {
-        // Itt azt a táblát használd, ami nálad valóban létezik!
-        // Példa: locations vagy salons tábla – igazítsd a saját oszlopneveidhez.
         const sql = `
-        SELECT
-          id,
-          name,
-          -- AZ ALÁBBI OSZLOPOKAT IGAZÍTSD A SAJÁT ADATBÁZISODHOZ!
-          COALESCE(city, '')         AS city,
-          COALESCE(address, '')      AS address,
-          COALESCE(phone, '')        AS phone,
-          COALESCE(email, '')        AS email,
-          COALESCE(website, '')      AS website,
-          COALESCE(description, '')  AS description,
-          COALESCE(image_url, '')    AS image_url
-        FROM public.salons
-        WHERE is_active = TRUE
-        ORDER BY name ASC;
-      `;
+      SELECT
+        s.id::text      AS id,
+        s.name          AS name,
+        s.duration_min  AS duration_min,
+        s.price         AS price,
+        s.category_id   AS category_id,
+        s.location_id   AS location_id
+      FROM public.services s
+      WHERE s.is_active = TRUE
+      ORDER BY
+        s.category_id,
+        s.name;
+    `;
         const result = await db_1.default.query(sql);
-        // Mindig küldünk értelmes JSON-t
-        res.json(result.rows ?? []);
+        return res.json(result.rows);
     }
     catch (err) {
-        console.error("GET /api/public/salons ERROR:", err);
-        next(err); // a globális error handlered intézi a választ
+        console.error("GET /api/public/services hiba:", err);
+        return res
+            .status(500)
+            .json({ error: "Nem sikerült betölteni a szolgáltatásokat." });
     }
 });
 exports.default = router;

@@ -299,7 +299,7 @@ app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
-/* app.use("/api/public", publicMarketingRouter); */
+ app.use("/api/public", publicMarketingRouter); 
 
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req: Request, res: Response) => {

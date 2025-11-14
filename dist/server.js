@@ -29,6 +29,7 @@ const appointments_1 = __importDefault(require("./routes/appointments"));
 const auth_1 = __importDefault(require("./routes/auth")); // auth route-ok
 const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
+const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
 const app = (0, express_1.default)();
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
@@ -247,7 +248,7 @@ app.use("/api/bookings", bookings_1.default);
 app.use("/api/transactions", transactions_1.default);
 app.use("/api/schedule/day", schedule_day_1.default);
 app.use("/api/appointments", appointments_1.default);
-/* app.use("/api/public", publicMarketingRouter); */
+app.use("/api/public", publicMarketing_1.default);
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req, res) => {
     try {
