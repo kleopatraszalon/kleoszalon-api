@@ -1,38 +1,47 @@
 "use strict";
-// 🔹 Összes felhasználó listázása (admin funkció)
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+// src/utils/api.ts
 Object.defineProperty(exports, "__esModule", { value: true });
-const express_1 = __importDefault(require("express"));
-const db_js_1 = __importDefault(require("./db.js")); // vagy "../db", ha a routes mappában van
-const router = express_1.default.Router();
-// 🔹 Összes felhasználó lekérdezése
-router.get("/", async (req, res) => {
+exports.apiFetch = apiFetch;
+// API alap URL:
+// - ha van REACT_APP_API_URL, azt használjuk (pl. Render-en: https://kleoszalon-api.onrender.com)
+// - különben default: http://localhost:5000 (helyi backend)
+const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:5000").replace(/\/$/, "");
+/**
+ * Egységes API hívás:
+ * - path lehet relatív ("/api/appointments") vagy teljes URL
+ * - credentials: "include" a cookie-s auth miatt
+ * - JSON body/response kezelés
+ */
+async function apiFetch(path, options) {
+    const url = path.startsWith("http://") || path.startsWith("https://")
+        ? path
+        : `${API_BASE}${path}`;
+    const res = await fetch(url, {
+        credentials: "include",
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options?.headers || {}),
+        },
+    });
+    if (!res.ok) {
+        let msg = `API hiba: ${res.status} ${res.statusText}`;
+        try {
+            const text = await res.text();
+            if (text)
+                msg += ` – ${text}`;
+        }
+        catch {
+            // ha nem olvasható a body, nem baj
+        }
+        throw new Error(msg);
+    }
+    // ha nincs body (204), adjunk vissza üres objectet/arrayt
     try {
-        const result = await db_js_1.default.query("SELECT id, name, email, role, is_active, created_at FROM users ORDER BY created_at DESC");
-        res.json(result.rows);
+        return (await res.json());
     }
-    catch (err) {
-        console.error("❌ Hiba a felhasználók lekérdezésénél:", err);
-        res.status(500).json({ error: "Adatbázis hiba" });
+    catch {
+        return {};
     }
-});
-router.get("/", (_req, res) => {
-    res.json([]);
-});
-// 🔹 Felhasználó aktiválása admin által
-router.put("/activate/:id", async (req, res) => {
-    try {
-        const { id } = req.params;
-        const result = await db_js_1.default.query("UPDATE users SET is_active = true WHERE id = $1 RETURNING id, name, email, role, is_active", [id]);
-        if (result.rowCount === 0)
-            return res.status(404).json({ error: "Felhasználó nem található" });
-        res.json({ success: true, user: result.rows[0] });
-    }
-    catch (err) {
-        console.error("❌ Hiba az aktiválás során:", err);
-        res.status(500).json({ error: "Adatbázis hiba" });
-    }
-});
-exports.default = router;
+}
+exports.default = apiFetch;

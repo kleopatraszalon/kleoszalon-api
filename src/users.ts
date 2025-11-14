@@ -1,46 +1,51 @@
-// 🔹 Összes felhasználó listázása (admin funkció)
+// src/utils/api.ts
 
-import express, { Router, Request, Response } from "express";
-import pool from "./db.js"; // vagy "../db", ha a routes mappában van
+// API alap URL:
+// - ha van REACT_APP_API_URL, azt használjuk (pl. Render-en: https://kleoszalon-api.onrender.com)
+// - különben default: http://localhost:5000 (helyi backend)
+const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:5000").replace(
+  /\/$/,
+  ""
+);
 
-const router = express.Router();
+/**
+ * Egységes API hívás:
+ * - path lehet relatív ("/api/appointments") vagy teljes URL
+ * - credentials: "include" a cookie-s auth miatt
+ * - JSON body/response kezelés
+ */
+export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const url =
+    path.startsWith("http://") || path.startsWith("https://")
+      ? path
+      : `${API_BASE}${path}`;
 
-// 🔹 Összes felhasználó lekérdezése
-router.get("/", async (req: Request, res: Response) => {
-  try {
-    const result = await pool.query(
-      "SELECT id, name, email, role, is_active, created_at FROM users ORDER BY created_at DESC"
-    );
-    res.json(result.rows);
-  } catch (err) {
-    console.error("❌ Hiba a felhasználók lekérdezésénél:", err);
-    res.status(500).json({ error: "Adatbázis hiba" });
+  const res = await fetch(url, {
+    credentials: "include",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options?.headers || {}),
+    },
+  });
+
+  if (!res.ok) {
+    let msg = `API hiba: ${res.status} ${res.statusText}`;
+    try {
+      const text = await res.text();
+      if (text) msg += ` – ${text}`;
+    } catch {
+      // ha nem olvasható a body, nem baj
+    }
+    throw new Error(msg);
   }
-});
 
-router.get("/", (_req: Request, res: Response) => {
-  res.json([]);
-});
-
-
-// 🔹 Felhasználó aktiválása admin által
-router.put("/activate/:id", async (req: Request, res: Response) => {
+  // ha nincs body (204), adjunk vissza üres objectet/arrayt
   try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      "UPDATE users SET is_active = true WHERE id = $1 RETURNING id, name, email, role, is_active",
-      [id]
-    );
-
-    if (result.rowCount === 0)
-      return res.status(404).json({ error: "Felhasználó nem található" });
-
-    res.json({ success: true, user: result.rows[0] });
-  } catch (err) {
-    console.error("❌ Hiba az aktiválás során:", err);
-    res.status(500).json({ error: "Adatbázis hiba" });
+    return (await res.json()) as T;
+  } catch {
+    return {} as T;
   }
-});
+}
 
-export default router;
+export default apiFetch;

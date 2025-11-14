@@ -3,16 +3,17 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express, { Request, Response, NextFunction } from "express";
-
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
+import jwt, { JwtPayload } from "jsonwebtoken";
 import crypto from "crypto";
+import cors from "cors";
+
 import pool from "./db";
 
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
-import meRoutes from "./routes/me";
+/*  import meRoutes from "./routes/me"; */
 import workorderRoutes from "./routes/workorders";
 import bookingsRoutes from "./routes/bookings";
 import transactionsRoutes from "./routes/transactions";
@@ -22,15 +23,22 @@ import employeesRouter from "./routes/employees";
 import servicesRouter from "./routes/services";
 import servicesAvailableRoutes from "./routes/services_available";
 import employeeCalendarRoutes from "./routes/employee_calendar";
+import scheduleDayRoutes from "./routes/schedule_day";
+import appointmentsRouter from "./routes/appointments";
 import authRouter from "./routes/auth";  // auth route-ok
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
-import scheduleDayRoutes from "./routes/schedule_day";
+import publicMarketingRouter from "./routes/publicMarketing";
 const app = express();
+
+
 
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
+
+
+
 
 /* ===== Proxy és alap middlewares ===== */
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -145,6 +153,28 @@ function extractTokenFromReq(req: Request): string | null {
     null
   );
 }
+/* ===== JWT payload segédtípus + location_id kinyerése ===== */
+interface AuthTokenPayload extends JwtPayload {
+  id: string;
+  email: string;
+  role: string;
+  location_id?: string;
+}
+
+function getLocationIdFromReq(req: Request): string | null {
+  const token = extractTokenFromReq(req);
+  if (!token) return null;
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as AuthTokenPayload;
+    return decoded.location_id ?? null;
+  } catch (err) {
+    if (DEBUG_AUTH) {
+      console.warn("⚠️ JWT decode error in getLocationIdFromReq:", err);
+    }
+    return null;
+  }
+}
 
 /* ===== Hash detektálás + ellenőrzés ===== */
 type HashType = "bcrypt" | "argon2" | "pbkdf2" | "sha256" | "plaintext" | "unknown";
@@ -223,11 +253,41 @@ app.get("/api/health", (_req, res) =>
 app.get("/", (_req, res) =>
   res.send("✅ Backend fut és CORS be van állítva")
 );
+interface MePayload {
+  id: string;
+  email: string;
+  role: string;
+  location_id?: string;
+}
 
+app.get("/api/me", (req: Request, res: Response) => {
+  const token = extractTokenFromReq(req);
+  if (!token) {
+    return res.status(401).json({ error: "Nincs token" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as MePayload;
+
+    return res.json({
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+      location_id: decoded.location_id ?? null,
+    });
+  } catch (err) {
+    console.error("GET /api/me token hiba:", err);
+    return res.status(401).json({ error: "Érvénytelen vagy lejárt token" });
+  }
+});
+
+
+/* ===== Nem-auth route-ok ===== */
+/* ===== Nem-auth route-ok ===== */
 /* ===== Nem-auth route-ok ===== */
 app.use("/api/menu", menuRoutes);
 app.use("/api/menus", menuRoutes);
-app.use("/api/me", meRoutes);
+/*  app.use("/api/me", meRoutes); */
 app.use("/api/employees", employeesRouter);
 app.use("/api/services/available", servicesAvailableRoutes);
 app.use("/api/services", servicesRouter);
@@ -237,14 +297,130 @@ app.use("/api/locations", locationsRoutes);
 app.use("/api/workorders", workorderRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
+app.use("/api/schedule/day", scheduleDayRoutes);
+app.use("/api/appointments", appointmentsRouter);
+/* app.use("/api/public", publicMarketingRouter); */
+
+/* ===== Ügyfelek lista – /api/clients ===== */
+app.get("/api/clients", async (req: Request, res: Response) => {
+  try {
+    const locationId = getLocationIdFromReq(req);
+
+    const params: any[] = [];
+    let where = "";
+    if (locationId) {
+      where = "WHERE c.location_id = $1";
+      params.push(locationId);
+    }
+
+    const sql = `
+      SELECT
+        c.id,
+        c.location_id,
+        c.full_name AS name,
+        c.phone,
+        c.email
+      FROM public.clients c
+      ${where}
+      ORDER BY c.full_name;
+    `;
+
+    const { rows } = await pool.query(sql, params);
+
+    // A frontend a fetchArray<T>()-t használja, ami sima tömböt is tud kezelni
+    return res.json(rows);
+  } catch (err) {
+    console.error("❌ /api/clients hiba:", err);
+    return res
+      .status(500)
+      .json({ error: "Nem sikerült betölteni az ügyfeleket." });
+  }
+});
+/* ===== Foglalási ütközés-ellenőrzés – /api/appointments/conflicts ===== */
+app.get("/api/appointments/conflicts", async (req: Request, res: Response) => {
+  try {
+    const { employee_id, location_id, start, end } = req.query;
+
+    if (!employee_id || !location_id || !start || !end) {
+      return res.status(400).json({
+        error: "Hiányzó paraméter(ek)",
+        details: { employee_id, location_id, start, end },
+      });
+    }
+
+    const sql = `
+      SELECT
+        id,
+        employee_id,
+        location_id,
+        client_id,
+        start_time,
+        end_time,
+        status
+      FROM public.appointments
+      WHERE location_id = $1
+        AND employee_id = $2
+        AND status IN ('booked','confirmed')
+        AND NOT (end_time <= $3::timestamp OR start_time >= $4::timestamp)
+      ORDER BY start_time
+      LIMIT 50
+    `;
+
+    const params = [
+      String(location_id),
+      String(employee_id),
+      String(start),
+      String(end),
+    ];
+
+    const { rows } = await pool.query(sql, params);
+
+    // Frontendnek elég, ha sima tömb jön vissza
+    return res.json(rows);
+  } catch (err) {
+    console.error("❌ /api/appointments/conflicts hiba:", err);
+    return res
+      .status(500)
+      .json({ error: "Nem sikerült ellenőrizni az ütközéseket." });
+  }
+});
+
+
+// 🔹 Publikus marketing endpoint – Szalonjaink oldalnak
+app.get("/api/public/salons", async (req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        city_label,
+        address,
+        slug
+      FROM public.v_public_salons
+      ORDER BY city_label, address
+      `
+    );
+
+    console.log(">> GET /api/public/salons - rows:", rows.length);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/public/salons error:", err);
+    res
+      .status(500)
+      .json({ error: "Nem sikerült betölteni a szalonokat." });
+  }
+});
 
 /* ===== Auth route-ok ===== */
 app.use("/api", authRouter);
 
-// 404
-app.use((req, res) =>
+// 404 – EZ MARADJON A ROUTE-OK UTÁN
+ app.use((req, res) =>
   res.status(404).json({ error: "Not found", path: req.originalUrl })
+
 );
+
 
 /* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
 async function loginHandler(req: Request, res: Response) {
@@ -421,11 +597,10 @@ async function verifyCodeHandler(req: Request, res: Response) {
         : record.location_id) ?? null,
   });
 }
+// FELÜL: itt már legyen importálva a pool
+// import pool from "./db";  <-- ezt valószínűleg már használod máshol
 
-/* ===== 404 ===== */
-app.use((req, res) =>
-  res.status(404).json({ error: "Not found", path: req.originalUrl })
-);
+
 
 /* ===== Globális hiba-kezelő ===== */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
