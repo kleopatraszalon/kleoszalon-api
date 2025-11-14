@@ -42,4 +42,51 @@ router.get(
   }
 );
 
+/**
+ * GET /api/public/services
+ * Opcionális ?locationId=1 paraméterrel.
+ * - ha nincs locationId: összes aktív szolgáltatás
+ * - ha van: csak az adott telephely szolgáltatásai
+ */
+router.get("/services", async (req: Request, res: Response) => {
+  const rawLocation = req.query.locationId as string | undefined;
+
+  // locationId opcionális (null = összes telephely)
+  const locationId = rawLocation ? Number(rawLocation) : null;
+
+  try {
+    const params: any[] = [];
+    let sql = `
+      SELECT
+        s.id::text            AS id,
+        s.name                AS name,
+        s.duration_min        AS duration_min,
+        s.price               AS price,
+        s.category_id         AS category_id,
+        s.location_id         AS location_id
+      FROM public.services s
+    `;
+
+    if (locationId) {
+      params.push(locationId);
+      sql += ` WHERE s.location_id = $${params.length}`;
+    }
+
+    sql += `
+      ORDER BY
+        s.category_id,
+        s.name;
+    `;
+
+    const result = await pool.query(sql, params);
+    return res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/public/services hiba:", err);
+    return res
+      .status(500)
+      .json({ error: "Nem sikerült betölteni a szolgáltatásokat." });
+  }
+});
+
 export default router;
+
