@@ -1,7 +1,7 @@
 /* ===== .env betöltése AZONNAL ===== */
 import dotenv from "dotenv";
 dotenv.config();
-
+import pool from "./db";
 import express, { Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
@@ -9,7 +9,7 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 import crypto from "crypto";
 import cors from "cors";
 
-import pool from "./db";
+
 
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
@@ -30,6 +30,10 @@ import authRouter from "./routes/auth";  // auth route-ok
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 import publicMarketingRouter from "./routes/publicMarketing";
+
+import App from "./App";
+import serviceTypesRouter from "./routes/serviceTypes";
+
 const app = express();
 
 
@@ -85,6 +89,7 @@ app.set("trust proxy", 1);
 /*   })
 /* );
 
+
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
   .split(",")
@@ -101,6 +106,32 @@ function originMatches(origin: string, patterns: string[]): boolean {
   return false;
 }
 app.use("/api/schedule/day", scheduleDayRoutes);
+
+app.get("/api/locations", async (_req, res) => {
+  try {
+ const result = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        address,
+        city,
+        phone,
+        true AS active
+      FROM public.locations
+      ORDER BY city, name;
+      `
+    );
+
+    res.json({ items: result.rows });
+  } catch (err) {
+    console.error("❌ Szalon lekérési hiba:", err);
+    res.status(500).json({ error: "Szalon lekérési hiba" });
+  }
+});
+
+
+
 /*const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
@@ -246,6 +277,46 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
   }
 }
 
+
+
+
+// Telephelyek listázása
+app.get("/api/locations", async (_req, res) => {
+  try {
+    // TODO: itt állítsd be a SAJÁT táblád nevét és mezőit!
+
+    // 1) Ha van külön locations tábla:
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        city
+      FROM locations
+      WHERE is_active = TRUE
+      ORDER BY city, name;
+      `
+    );
+
+    return res.json(result.rows);
+  } catch (err: any) {
+    console.error("GET /api/locations error:", err);
+
+    // ⬇ FEJLESZTÉSI fallback – hogy a frontend MOST azonnal működjön
+    if (process.env.NODE_ENV !== "production") {
+      return res.json([
+        { id: "demo-1", name: "Budapest – Kleopátra Központ" },
+        { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
+      ]);
+    }
+
+    // élesben maradjon a 500
+    return res.status(500).json({
+      success: false,
+      error: "Nem sikerült lekérni a telephelyeket.",
+    });
+  }
+});
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
@@ -300,6 +371,8 @@ app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
  app.use("/api/public", publicMarketingRouter); 
+ app.use("/api/services", servicesRouter);
+app.use("/api/service-types", serviceTypesRouter);
 
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req: Request, res: Response) => {
@@ -414,7 +487,7 @@ app.get("/api/public/salons", async (req: Request, res: Response) => {
 
 /* ===== Auth route-ok ===== */
 app.use("/api", authRouter);
-
+app.use("/api", locationsRoutes);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
  app.use((req, res) =>
   res.status(404).json({ error: "Not found", path: req.originalUrl })

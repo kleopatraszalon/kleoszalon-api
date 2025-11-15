@@ -6,12 +6,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 /* ===== .env betöltése AZONNAL ===== */
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
+const db_1 = __importDefault(require("./db"));
 const express_1 = __importDefault(require("express"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
-const db_1 = __importDefault(require("./db"));
 /* ===== ROUTES (nem auth) ===== */
 const menu_1 = __importDefault(require("./routes/menu"));
 /*  import meRoutes from "./routes/me"; */
@@ -30,6 +30,7 @@ const auth_1 = __importDefault(require("./routes/auth")); // auth route-ok
 const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
 const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
+const serviceTypes_1 = __importDefault(require("./routes/serviceTypes"));
 const app = (0, express_1.default)();
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
@@ -67,6 +68,7 @@ app.set("trust proxy", 1);
 /*   })
 /* );
 
+
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
     .split(",")
@@ -84,6 +86,26 @@ function originMatches(origin, patterns) {
     return false;
 }
 app.use("/api/schedule/day", schedule_day_1.default);
+app.get("/api/locations", async (_req, res) => {
+    try {
+        const result = await db_1.default.query(`
+      SELECT
+        id,
+        name,
+        address,
+        city,
+        phone,
+        true AS active
+      FROM public.locations
+      ORDER BY city, name;
+      `);
+        res.json({ items: result.rows });
+    }
+    catch (err) {
+        console.error("❌ Szalon lekérési hiba:", err);
+        res.status(500).json({ error: "Szalon lekérési hiba" });
+    }
+});
 /*const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
@@ -209,6 +231,38 @@ async function verifyPassword(stored, plain) {
         return false;
     }
 }
+// Telephelyek listázása
+app.get("/api/locations", async (_req, res) => {
+    try {
+        // TODO: itt állítsd be a SAJÁT táblád nevét és mezőit!
+        // 1) Ha van külön locations tábla:
+        const result = await db_1.default.query(`
+      SELECT
+        id,
+        name,
+        city
+      FROM locations
+      WHERE is_active = TRUE
+      ORDER BY city, name;
+      `);
+        return res.json(result.rows);
+    }
+    catch (err) {
+        console.error("GET /api/locations error:", err);
+        // ⬇ FEJLESZTÉSI fallback – hogy a frontend MOST azonnal működjön
+        if (process.env.NODE_ENV !== "production") {
+            return res.json([
+                { id: "demo-1", name: "Budapest – Kleopátra Központ" },
+                { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
+            ]);
+        }
+        // élesben maradjon a 500
+        return res.status(500).json({
+            success: false,
+            error: "Nem sikerült lekérni a telephelyeket.",
+        });
+    }
+});
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get("/", (_req, res) => res.send("✅ Backend fut és CORS be van állítva"));
@@ -249,6 +303,8 @@ app.use("/api/transactions", transactions_1.default);
 app.use("/api/schedule/day", schedule_day_1.default);
 app.use("/api/appointments", appointments_1.default);
 app.use("/api/public", publicMarketing_1.default);
+app.use("/api/services", services_1.default);
+app.use("/api/service-types", serviceTypes_1.default);
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req, res) => {
     try {
@@ -350,6 +406,7 @@ app.get("/api/public/salons", async (req, res) => {
 });
 /* ===== Auth route-ok ===== */
 app.use("/api", auth_1.default);
+app.use("/api", locations_1.default);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
 app.use((req, res) => res.status(404).json({ error: "Not found", path: req.originalUrl }));
 /* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
