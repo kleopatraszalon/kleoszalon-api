@@ -31,7 +31,7 @@ import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
 import publicMarketingRouter from "./routes/publicMarketing";
 
-import App from "./App";
+import App from "./app";
 import serviceTypesRouter from "./routes/serviceTypes";
 
 const app = express();
