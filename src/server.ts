@@ -34,6 +34,11 @@ import publicMarketingRouter from "./routes/publicMarketing";
 import App from "./app";
 import serviceTypesRouter from "./routes/serviceTypes";
 
+import productsRouter from "./routes/products";
+import productGroupsRouter from "./routes/productGroups";
+import productCategoriesRouter from "./routes/productCategories";
+
+
 const app = express();
 
 
@@ -130,6 +135,9 @@ app.get("/api/locations", async (_req, res) => {
   }
 });
 
+app.use("/api/products", productsRouter);
+app.use("/api/product-groups", productGroupsRouter);
+app.use("/api/product-categories", productCategoriesRouter);
 
 
 /*const corsOptions: CorsOptions = {

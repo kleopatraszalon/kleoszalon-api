@@ -31,6 +31,9 @@ const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
 const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
 const serviceTypes_1 = __importDefault(require("./routes/serviceTypes"));
+const products_1 = __importDefault(require("./routes/products"));
+const productGroups_1 = __importDefault(require("./routes/productGroups"));
+const productCategories_1 = __importDefault(require("./routes/productCategories"));
 const app = (0, express_1.default)();
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
@@ -106,6 +109,9 @@ app.get("/api/locations", async (_req, res) => {
         res.status(500).json({ error: "Szalon lekérési hiba" });
     }
 });
+app.use("/api/products", products_1.default);
+app.use("/api/product-groups", productGroups_1.default);
+app.use("/api/product-categories", productCategories_1.default);
 /*const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true);
