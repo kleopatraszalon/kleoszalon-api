@@ -37,7 +37,9 @@ import serviceTypesRouter from "./routes/serviceTypes";
 import productsRouter from "./routes/products";
 import productGroupsRouter from "./routes/productGroups";
 import productCategoriesRouter from "./routes/productCategories";
-
+import path from "path";
+import publicWebshopRouter from "./routes/publicWebshop";
+import adminWebshopRouter from "./routes/adminWebshop";
 
 const app = express();
 
@@ -75,6 +77,18 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 app.use(express.json());
 app.use(cookieParser());
 app.set("trust proxy", 1);
+
+// statikus feltöltések, hogy a weblap is elérje a képeket
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "..", "uploads"))
+);
+
+// PUBLIC WEBSHOP
+app.use("/api/public/webshop", publicWebshopRouter);
+
+// ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
+app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
 
 /* const allowedOrigins = [
 /*   "http://localhost:3000",

@@ -34,6 +34,9 @@ const serviceTypes_1 = __importDefault(require("./routes/serviceTypes"));
 const products_1 = __importDefault(require("./routes/products"));
 const productGroups_1 = __importDefault(require("./routes/productGroups"));
 const productCategories_1 = __importDefault(require("./routes/productCategories"));
+const path_1 = __importDefault(require("path"));
+const publicWebshop_1 = __importDefault(require("./routes/publicWebshop"));
+const adminWebshop_1 = __importDefault(require("./routes/adminWebshop"));
 const app = (0, express_1.default)();
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
@@ -53,6 +56,12 @@ app.use((req, res, next) => {
 app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
 app.set("trust proxy", 1);
+// statikus feltöltések, hogy a weblap is elérje a képeket
+app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
+// PUBLIC WEBSHOP
+app.use("/api/public/webshop", publicWebshop_1.default);
+// ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
+app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
 /* const allowedOrigins = [
 /*   "http://localhost:3000",
 /*   "http://localhost:3001",
