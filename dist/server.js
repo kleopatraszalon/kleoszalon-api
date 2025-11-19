@@ -62,6 +62,9 @@ app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, ".."
 app.use("/api/public/webshop", publicWebshop_1.default);
 // ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
 app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
+// Webshop admin API
+app.use("/api/admin/webshop", adminWebshop_1.default);
+app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 /* const allowedOrigins = [
 /*   "http://localhost:3000",
 /*   "http://localhost:3001",

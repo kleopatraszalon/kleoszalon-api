@@ -1,56 +1,54 @@
 // src/routes/workorders.ts
 import { Router } from "express";
-import pool from "../db";               // ahogy nálad van
-import fs from "fs";
-import path from "path";
+// ❌ RÉGI:
+// import { db } from "../db";
+
+// ✅ ÚJ:
+import db from "../db";
 
 const router = Router();
 
-const workordersSql = fs.readFileSync(
-  path.join(__dirname, "..", "sql", "workorders_list.sql"),
-  "utf8"
-);
+// Már létező GET /api/workorders itt lehet…
 
-router.get("/", async (req, res, next) => {
+router.post("/workorders", async (req, res, next) => {
   try {
     const {
-      locationId,
+      title,
+      notes,
       status,
-      from,
-      to,
-      page = "1",
-      pageSize = "20",
-    } = req.query as Record<string, string | undefined>;
+      employee_id,
+      client_name,
+      client_phone,
+      client_email,
+      services,
+    } = req.body;
 
-    const pageNum = Number(page) || 1;
-    const limitNum = Number(pageSize) || 20;
-    const offsetNum = (pageNum - 1) * limitNum;
+    const result = await db.query(
+      `
+      INSERT INTO work_orders
+        (title, notes, status, employee_id, client_name, client_phone, client_email)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      RETURNING id
+      `,
+      [title, notes ?? null, status ?? "arrived", employee_id ?? null,
+       client_name ?? null, client_phone ?? null, client_email ?? null]
+    );
 
-    // 1) locationId: UUID vagy NULL
-    const pLocationId =
-      locationId && locationId !== "all" && locationId.trim() !== ""
-        ? locationId
-        : null;
+    const workOrderId = result.rows[0].id;
 
-    // 2) status: TEXT vagy NULL
-    const pStatus =
-      status && status !== "all" && status.trim() !== "" ? status : null;
+    if (Array.isArray(services) && services.length > 0) {
+      for (const item of services) {
+        await db.query(
+          `
+          INSERT INTO work_order_items (work_order_id, service_id, quantity)
+          VALUES ($1, $2, $3)
+          `,
+          [workOrderId, item.service_id, item.quantity ?? 1]
+        );
+      }
+    }
 
-    // 3–4) dátumok: timestamp vagy NULL
-    const pFrom = from && from.trim() !== "" ? new Date(from) : null;
-    const pTo = to && to.trim() !== "" ? new Date(to) : null;
-
-    // 5–6) limit & offset: számok
-    const pLimit = limitNum;
-    const pOffset = offsetNum;
-
-    const params = [pLocationId, pStatus, pFrom, pTo, pLimit, pOffset];
-
-    // DEBUG-hez:
-    console.log("workorders params:", params);
-
-    const { rows } = await pool.query(workordersSql, params);
-    res.json(rows);
+    res.status(201).json({ id: workOrderId });
   } catch (err) {
     next(err);
   }

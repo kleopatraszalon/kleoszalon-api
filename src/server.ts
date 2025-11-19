@@ -89,6 +89,13 @@ app.use("/api/public/webshop", publicWebshopRouter);
 
 // ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
 app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
+// Webshop admin API
+app.use("/api/admin/webshop", adminWebshopRouter);
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "..", "uploads"))
+);
+
 
 /* const allowedOrigins = [
 /*   "http://localhost:3000",

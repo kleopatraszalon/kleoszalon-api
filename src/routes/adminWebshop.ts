@@ -1,43 +1,47 @@
 import { Router, Request, Response } from "express";
 import path from "path";
 import fs from "fs";
-import multer, { StorageEngine } from "multer";
-import pool from "../db"; // ha nálad { pool } az export, akkor írd át
+import multer from "multer";
+import pool from "../db";
 
 const router = Router();
 
-/**
- * Fájlok feltöltési helye: /uploads/products
- * A server.ts-ben legyen:
- *   app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
- */
+// =========================
+//  FÁJL FELTÖLTÉS BEÁLLÍTÁS
+// =========================
+
 const uploadDir = path.join(__dirname, "..", "..", "uploads", "products");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-const storage: StorageEngine = multer.diskStorage({
-  destination(
-    _req: Request,
-    _file: Express.Multer.File,
-    cb: (error: Error | null, destination: string) => void
-  ) {
+const storage = multer.diskStorage({
+  destination: (_req: Request, _file: any, cb: any) => {
     cb(null, uploadDir);
   },
-  filename(
-    _req: Request,
-    file: Express.Multer.File,
-    cb: (error: Error | null, filename: string) => void
-  ) {
-    const ext = path.extname(file.originalname || "");
-    const base = path.basename(file.originalname || "", ext);
-    const safeBase = base.replace(/[^a-zA-Z0-9_-]+/g, "_");
-    const ts = Date.now();
-    cb(null, `${safeBase}_${ts}${ext || ".jpg"}`);
+  filename: (_req: Request, file: any, cb: any) => {
+    // Egyedi fájlnév: timestamp + eredeti név
+    const safeOriginalName = String(file.originalname || "file").replace(
+      /[^a-zA-Z0-9_.-]/g,
+      "_"
+    );
+    const uniqueName = `${Date.now()}_${safeOriginalName}`;
+    cb(null, uniqueName);
   },
 });
 
 const upload = multer({ storage });
+
+// Szám konverzió helper
+function toNumber(value: any): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(String(value).replace(",", "."));
+  return Number.isNaN(n) ? null : n;
+}
+
+// =========================
+//  TERMÉKEK
+// =========================
 
 /**
  * GET /api/admin/webshop/products
@@ -61,10 +65,79 @@ router.get("/products", async (_req: Request, res: Response) => {
       ORDER BY COALESCE(web_sort_order, 9999), name
       `
     );
+
     return res.json(result.rows);
   } catch (err) {
     console.error("❌ Admin webshop products error:", err);
     return res.status(500).send("Hiba a termékek listázásakor.");
+  }
+});
+
+/**
+ * POST /api/admin/webshop/products
+ * Új termék felvitele webshophoz.
+ */
+router.post("/products", async (req: Request, res: Response) => {
+  try {
+    const {
+      name,
+      retail_price_gross,
+      sale_price,
+      web_is_visible,
+      is_retail,
+      web_sort_order,
+      web_description,
+    } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).send("A terméknév kötelező.");
+    }
+
+    const retailPrice = toNumber(retail_price_gross);
+    const salePrice = toNumber(sale_price);
+    const sortOrder = toNumber(web_sort_order);
+    const visible =
+      typeof web_is_visible === "boolean" ? web_is_visible : true;
+    const retail = typeof is_retail === "boolean" ? is_retail : true;
+
+    const result = await pool.query(
+      `
+      INSERT INTO products (
+        name,
+        retail_price_gross,
+        sale_price,
+        web_is_visible,
+        is_retail,
+        web_sort_order,
+        web_description
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING
+        id,
+        name,
+        retail_price_gross,
+        sale_price,
+        web_is_visible,
+        is_retail,
+        web_sort_order,
+        web_description,
+        image_url
+      `,
+      [
+        String(name).trim(),
+        retailPrice,
+        salePrice,
+        visible,
+        retail,
+        sortOrder,
+        web_description || null,
+      ]
+    );
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Admin create product error:", err);
+    return res.status(500).send("Hiba az új termék létrehozásakor.");
   }
 });
 
@@ -100,13 +173,13 @@ router.put("/products/:id", async (req: Request, res: Response) => {
       `,
       [
         id,
-        name,
-        retail_price_gross,
-        sale_price,
+        name ?? null,
+        toNumber(retail_price_gross),
+        toNumber(sale_price),
         web_is_visible,
         is_retail,
-        web_sort_order,
-        web_description,
+        toNumber(web_sort_order),
+        web_description ?? null,
       ]
     );
 
@@ -119,8 +192,7 @@ router.put("/products/:id", async (req: Request, res: Response) => {
 
 /**
  * POST /api/admin/webshop/products/:id/image
- * Kép feltöltése egy termékhez
- * form-data: file
+ * Kép feltöltése egy termékhez (form-data: file)
  */
 router.post(
   "/products/:id/image",
@@ -129,20 +201,24 @@ router.post(
     try {
       const { id } = req.params;
 
-      // Nem használunk Express.Multer típust, hogy ne kelljen TS-nek a namespace
-      const file = (req as any).file as { filename: string } | undefined;
+      interface UploadedFile {
+        filename: string;
+        mimetype: string;
+        size: number;
+      }
+
+      const file = (req as any).file as UploadedFile | undefined;
 
       if (!file) {
         return res.status(400).send("Nem érkezett fájl.");
       }
 
-      // A frontend a /uploads/...-t fogja használni
       const publicUrl = `/uploads/products/${file.filename}`;
 
-      await pool.query(
-        `UPDATE products SET image_url = $2 WHERE id = $1`,
-        [id, publicUrl]
-      );
+      await pool.query(`UPDATE products SET image_url = $2 WHERE id = $1`, [
+        id,
+        publicUrl,
+      ]);
 
       return res.json({
         status: "ok",
@@ -154,6 +230,10 @@ router.post(
     }
   }
 );
+
+// =========================
+//  KUPONOK
+// =========================
 
 /**
  * GET /api/admin/webshop/coupons
@@ -172,7 +252,6 @@ router.get("/coupons", async (_req: Request, res: Response) => {
 
 /**
  * POST /api/admin/webshop/coupons
- * Új kupon létrehozása
  */
 router.post("/coupons", async (req: Request, res: Response) => {
   try {
@@ -189,10 +268,8 @@ router.post("/coupons", async (req: Request, res: Response) => {
       is_active,
     } = req.body || {};
 
-    if (!code || !discount_type || discount_value == null) {
-      return res
-        .status(400)
-        .send("Kuponkód, kedvezmény típusa és értéke kötelező.");
+    if (!code || !discount_value) {
+      return res.status(400).send("Kuponkód és kedvezmény értéke kötelező.");
     }
 
     const result = await pool.query(
@@ -209,19 +286,30 @@ router.post("/coupons", async (req: Request, res: Response) => {
         usage_limit,
         is_active
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10, true))
+      VALUES (
+        $1,
+        $2,
+        COALESCE($3, 'percent'),
+        $4,
+        COALESCE($5, 0),
+        $6,
+        $7,
+        $8,
+        $9,
+        COALESCE($10, true)
+      )
       RETURNING *
       `,
       [
-        String(code).toUpperCase(),
+        String(code).trim().toUpperCase(),
         description || null,
-        discount_type,
-        discount_value,
-        min_order_total || 0,
-        max_discount_value || null,
+        discount_type || "percent",
+        toNumber(discount_value),
+        toNumber(min_order_total) ?? 0,
+        toNumber(max_discount_value),
         valid_from || null,
         valid_until || null,
-        usage_limit || null,
+        usage_limit ? Number(usage_limit) : null,
         is_active,
       ]
     );
@@ -232,31 +320,18 @@ router.post("/coupons", async (req: Request, res: Response) => {
     return res.status(500).send("Hiba a kupon létrehozásakor.");
   }
 });
+
+// =========================
+//  RENDELÉSEK & SZÁMLÁK
+// =========================
+
 /**
  * GET /api/admin/webshop/orders
- * Rendelések listája (egyszerű lista, opcionális státusz szűrővel)
  */
-router.get("/orders", async (req: Request, res: Response) => {
+router.get("/orders", async (_req: Request, res: Response) => {
   try {
-    const { status, payment_status } = req.query;
-
-    const conditions: string[] = [];
-    const params: any[] = [];
-
-    if (status) {
-      params.push(status);
-      conditions.push(`status = $${params.length}`);
-    }
-
-    if (payment_status) {
-      params.push(payment_status);
-      conditions.push(`payment_status = $${params.length}`);
-    }
-
-    const where =
-      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-    const query = `
+    const result = await pool.query(
+      `
       SELECT
         id,
         created_at,
@@ -272,13 +347,9 @@ router.get("/orders", async (req: Request, res: Response) => {
         payment_status,
         coupon_code
       FROM webshop_orders
-      ${where}
       ORDER BY created_at DESC
-      LIMIT 200
-    `;
-
-    const result = await pool.query(query, params);
-
+      `
+    );
     return res.json(result.rows);
   } catch (err) {
     console.error("❌ Admin list orders error:", err);
@@ -287,84 +358,45 @@ router.get("/orders", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/admin/webshop/orders/:id
- * Egy rendelés részletei (items_json is)
- */
-router.get("/orders/:id", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      `
-      SELECT *
-      FROM webshop_orders
-      WHERE id = $1
-      LIMIT 1
-      `,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).send("Rendelés nem található.");
-    }
-
-    return res.json(result.rows[0]);
-  } catch (err) {
-    console.error("❌ Admin get order error:", err);
-    return res.status(500).send("Hiba a rendelés betöltésekor.");
-  }
-});
-
-/**
  * PATCH /api/admin/webshop/orders/:id
- * Rendelés státuszainak / belső mezőknek frissítése
- *
- * Body: { status?, payment_status?, internal_note?, shipping_tracking? }
  */
 router.patch("/orders/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { status, payment_status, internal_note, shipping_tracking } =
-      req.body || {};
+    const { status, payment_status } = req.body || {};
 
-    const fields: string[] = [];
-    const params: any[] = [];
-
-    if (status) {
-      params.push(status);
-      fields.push(`status = $${params.length}`);
-    }
-    if (payment_status) {
-      params.push(payment_status);
-      fields.push(`payment_status = $${params.length}`);
-    }
-    if (internal_note !== undefined) {
-      params.push(internal_note);
-      fields.push(`internal_note = $${params.length}`);
-    }
-    if (shipping_tracking !== undefined) {
-      params.push(shipping_tracking);
-      fields.push(`shipping_tracking = $${params.length}`);
-    }
-
-    if (fields.length === 0) {
-      return res.status(400).send("Nincs frissítendő mező.");
-    }
-
-    params.push(id);
-    const query = `
+    await pool.query(
+      `
       UPDATE webshop_orders
-      SET ${fields.join(", ")},
-          updated_at = now()
-      WHERE id = $${params.length}
-      RETURNING *
-    `;
+      SET
+        status = COALESCE($2, status),
+        payment_status = COALESCE($3, payment_status)
+      WHERE id = $1
+      `,
+      [id, status ?? null, payment_status ?? null]
+    );
 
-    const result = await pool.query(query, params);
-
-    if (result.rows.length === 0) {
-      return res.status(404).send("Rendelés nem található.");
-    }
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        created_at,
+        customer_full_name,
+        customer_email,
+        customer_phone,
+        subtotal_gross,
+        discount_gross,
+        total_gross,
+        currency,
+        payment_method,
+        status,
+        payment_status,
+        coupon_code
+      FROM webshop_orders
+      WHERE id = $1
+      `,
+      [id]
+    );
 
     return res.json(result.rows[0]);
   } catch (err) {
@@ -373,5 +405,80 @@ router.patch("/orders/:id", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/admin/webshop/invoices
+ * (ha még nincs webshop_invoices tábla, később csinálunk migrációt)
+ */
+router.get("/invoices", async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        invoice_number,
+        order_id,
+        customer_name,
+        customer_tax_number,
+        total_gross,
+        currency,
+        status,
+        created_at,
+        payment_due_date,
+        payment_method
+      FROM webshop_invoices
+      ORDER BY created_at DESC
+      `
+    );
+
+    return res.json(result.rows);
+  } catch (err) {
+    console.error("❌ Admin list invoices error:", err);
+    return res.status(500).send("Hiba a számlák listázásakor.");
+  }
+});
+
+/**
+ * PATCH /api/admin/webshop/invoices/:id
+ */
+router.patch("/invoices/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body || {};
+
+    await pool.query(
+      `
+      UPDATE webshop_invoices
+      SET status = COALESCE($2, status)
+      WHERE id = $1
+      `,
+      [id, status ?? null]
+    );
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        invoice_number,
+        order_id,
+        customer_name,
+        customer_tax_number,
+        total_gross,
+        currency,
+        status,
+        created_at,
+        payment_due_date,
+        payment_method
+      FROM webshop_invoices
+      WHERE id = $1
+      `,
+      [id]
+    );
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Admin update invoice error:", err);
+    return res.status(500).send("Hiba a számla frissítésekor.");
+  }
+});
 
 export default router;
