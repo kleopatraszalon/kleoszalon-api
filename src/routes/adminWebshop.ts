@@ -232,5 +232,146 @@ router.post("/coupons", async (req: Request, res: Response) => {
     return res.status(500).send("Hiba a kupon létrehozásakor.");
   }
 });
+/**
+ * GET /api/admin/webshop/orders
+ * Rendelések listája (egyszerű lista, opcionális státusz szűrővel)
+ */
+router.get("/orders", async (req: Request, res: Response) => {
+  try {
+    const { status, payment_status } = req.query;
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (status) {
+      params.push(status);
+      conditions.push(`status = $${params.length}`);
+    }
+
+    if (payment_status) {
+      params.push(payment_status);
+      conditions.push(`payment_status = $${params.length}`);
+    }
+
+    const where =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const query = `
+      SELECT
+        id,
+        created_at,
+        customer_full_name,
+        customer_email,
+        customer_phone,
+        subtotal_gross,
+        discount_gross,
+        total_gross,
+        currency,
+        payment_method,
+        status,
+        payment_status,
+        coupon_code
+      FROM webshop_orders
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT 200
+    `;
+
+    const result = await pool.query(query, params);
+
+    return res.json(result.rows);
+  } catch (err) {
+    console.error("❌ Admin list orders error:", err);
+    return res.status(500).send("Hiba a rendelések listázásakor.");
+  }
+});
+
+/**
+ * GET /api/admin/webshop/orders/:id
+ * Egy rendelés részletei (items_json is)
+ */
+router.get("/orders/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM webshop_orders
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).send("Rendelés nem található.");
+    }
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Admin get order error:", err);
+    return res.status(500).send("Hiba a rendelés betöltésekor.");
+  }
+});
+
+/**
+ * PATCH /api/admin/webshop/orders/:id
+ * Rendelés státuszainak / belső mezőknek frissítése
+ *
+ * Body: { status?, payment_status?, internal_note?, shipping_tracking? }
+ */
+router.patch("/orders/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, payment_status, internal_note, shipping_tracking } =
+      req.body || {};
+
+    const fields: string[] = [];
+    const params: any[] = [];
+
+    if (status) {
+      params.push(status);
+      fields.push(`status = $${params.length}`);
+    }
+    if (payment_status) {
+      params.push(payment_status);
+      fields.push(`payment_status = $${params.length}`);
+    }
+    if (internal_note !== undefined) {
+      params.push(internal_note);
+      fields.push(`internal_note = $${params.length}`);
+    }
+    if (shipping_tracking !== undefined) {
+      params.push(shipping_tracking);
+      fields.push(`shipping_tracking = $${params.length}`);
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).send("Nincs frissítendő mező.");
+    }
+
+    params.push(id);
+    const query = `
+      UPDATE webshop_orders
+      SET ${fields.join(", ")},
+          updated_at = now()
+      WHERE id = $${params.length}
+      RETURNING *
+    `;
+
+    const result = await pool.query(query, params);
+
+    if (result.rows.length === 0) {
+      return res.status(404).send("Rendelés nem található.");
+    }
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Admin update order error:", err);
+    return res.status(500).send("Hiba a rendelés frissítésekor.");
+  }
+});
+
 
 export default router;
