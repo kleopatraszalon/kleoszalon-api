@@ -7,6 +7,20 @@ import crypto from "crypto";
 
 const authRouter = express.Router();
 
+
+  const token = "itt-generálod-a-JWT-et-vagy-más tokent";
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production", // fejlesztésnél localhoston is működik
+    sameSite: "none", // 🔴 EZ A LÉNYEG: különben blokkolja
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path: "/",
+  });
+
+  res.json({ success: true });
+
+
 /* ===== JWT segédek ===== */
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
