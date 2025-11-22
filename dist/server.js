@@ -12,6 +12,7 @@ const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
+const cors_1 = __importDefault(require("cors"));
 /* ===== ROUTES (nem auth) ===== */
 const menu_1 = __importDefault(require("./routes/menu"));
 /*  import meRoutes from "./routes/me"; */
@@ -37,9 +38,19 @@ const productCategories_1 = __importDefault(require("./routes/productCategories"
 const path_1 = __importDefault(require("path"));
 const publicWebshop_1 = __importDefault(require("./routes/publicWebshop"));
 const adminWebshop_1 = __importDefault(require("./routes/adminWebshop"));
+const publicWebshop_2 = __importDefault(require("./routes/publicWebshop"));
+const auth_2 = __importDefault(require("./routes/auth"));
 const app = (0, express_1.default)();
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
+app.use(express_1.default.json());
+app.use((0, cookie_parser_1.default)());
+// CORS – ahogy eddig is
+app.use((0, cors_1.default)({
+    origin: "http://localhost:3001", // vagy ami a frontend
+    credentials: true,
+}));
+app.use("/api", auth_2.default);
 /* ===== Proxy és alap middlewares ===== */
 app.use((req, res, next) => {
     const origin = req.headers.origin || "*";
@@ -60,6 +71,7 @@ app.set("trust proxy", 1);
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 // PUBLIC WEBSHOP
 app.use("/api/public/webshop", publicWebshop_1.default);
+app.use("/api/public/webshop", publicWebshop_2.default);
 // ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
 app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
 // Webshop admin API
@@ -423,6 +435,7 @@ app.get("/api/public/salons", async (req, res) => {
     }
 });
 /* ===== Auth route-ok ===== */
+app.use("/api", auth_2.default);
 app.use("/api", auth_1.default);
 app.use("/api", locations_1.default);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
