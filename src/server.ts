@@ -190,7 +190,7 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
-app.use(express.json());
+
 app.use(cookieParser());
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";

@@ -16,11 +16,10 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 const storage = multer.diskStorage({
-  destination: (_req: Request, _file: any, cb: any) => {
+  destination: (_req, _file, cb) => {
     cb(null, uploadDir);
   },
-  filename: (_req: Request, file: any, cb: any) => {
-    // Egyedi fájlnév: timestamp + eredeti név
+  filename: (_req, file, cb) => {
     const safeOriginalName = String(file.originalname || "file").replace(
       /[^a-zA-Z0-9_.-]/g,
       "_"
@@ -76,6 +75,9 @@ router.get("/products", async (_req: Request, res: Response) => {
 /**
  * POST /api/admin/webshop/products
  * Új termék felvitele webshophoz.
+ *
+ * Itt biztosítjuk, hogy legyen érvényes product_group_id ÉS unit_id,
+ * mert a products táblában ezek NOT NULL.
  */
 router.post("/products", async (req: Request, res: Response) => {
   try {
@@ -87,6 +89,8 @@ router.post("/products", async (req: Request, res: Response) => {
       is_retail,
       web_sort_order,
       web_description,
+      product_group_id,
+      unit_id,
     } = req.body || {};
 
     if (!name || !String(name).trim()) {
@@ -100,9 +104,41 @@ router.post("/products", async (req: Request, res: Response) => {
       typeof web_is_visible === "boolean" ? web_is_visible : true;
     const retail = typeof is_retail === "boolean" ? is_retail : true;
 
+    // Biztosítjuk a kötelező product_group_id és unit_id értékeket
+    let groupId: string | null = product_group_id || null;
+    let unitId: string | null = unit_id || null;
+
+    // Ha nincs a body-ban megadva, kérjük le az első létezőt
+    if (!groupId) {
+      const groupResult = await pool.query(
+        `SELECT id FROM product_groups ORDER BY id LIMIT 1`
+      );
+      groupId = groupResult.rows[0]?.id ?? null;
+    }
+
+    if (!unitId) {
+      const unitResult = await pool.query(
+        `SELECT id FROM units ORDER BY id LIMIT 1`
+      );
+      unitId = unitResult.rows[0]?.id ?? null;
+    }
+
+    if (!groupId || !unitId) {
+      console.error(
+        "❌ Admin create product error: nincs elérhető product_group vagy unit a beszúráshoz."
+      );
+      return res
+        .status(500)
+        .send(
+          "Nem található alapértelmezett termékcsoport vagy mértékegység (unit)."
+        );
+    }
+
     const result = await pool.query(
       `
       INSERT INTO products (
+        product_group_id,
+        unit_id,
         name,
         retail_price_gross,
         sale_price,
@@ -111,7 +147,7 @@ router.post("/products", async (req: Request, res: Response) => {
         web_sort_order,
         web_description
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING
         id,
         name,
@@ -124,6 +160,8 @@ router.post("/products", async (req: Request, res: Response) => {
         image_url
       `,
       [
+        groupId,
+        unitId,
         String(name).trim(),
         retailPrice,
         salePrice,
@@ -269,7 +307,9 @@ router.post("/coupons", async (req: Request, res: Response) => {
     } = req.body || {};
 
     if (!code || !discount_value) {
-      return res.status(400).send("Kuponkód és kedvezmény értéke kötelező.");
+      return res
+        .status(400)
+        .send("Kuponkód és kedvezmény értéke kötelező.");
     }
 
     const result = await pool.query(
@@ -359,6 +399,7 @@ router.get("/orders", async (_req: Request, res: Response) => {
 
 /**
  * PATCH /api/admin/webshop/orders/:id
+ * Rendelés státusz / fizetési státusz frissítése
  */
 router.patch("/orders/:id", async (req: Request, res: Response) => {
   try {
@@ -407,7 +448,6 @@ router.patch("/orders/:id", async (req: Request, res: Response) => {
 
 /**
  * GET /api/admin/webshop/invoices
- * (ha még nincs webshop_invoices tábla, később csinálunk migrációt)
  */
 router.get("/invoices", async (_req: Request, res: Response) => {
   try {
@@ -429,7 +469,6 @@ router.get("/invoices", async (_req: Request, res: Response) => {
       ORDER BY created_at DESC
       `
     );
-
     return res.json(result.rows);
   } catch (err) {
     console.error("❌ Admin list invoices error:", err);

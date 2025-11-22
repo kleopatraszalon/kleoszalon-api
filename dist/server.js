@@ -153,7 +153,6 @@ app.use((req, res, next) => {
         return res.sendStatus(204);
     next();
 });
-app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";

@@ -21,7 +21,6 @@ const storage = multer_1.default.diskStorage({
         cb(null, uploadDir);
     },
     filename: (_req, file, cb) => {
-        // Egyedi fájlnév: timestamp + eredeti név
         const safeOriginalName = String(file.originalname || "file").replace(/[^a-zA-Z0-9_.-]/g, "_");
         const uniqueName = `${Date.now()}_${safeOriginalName}`;
         cb(null, uniqueName);
@@ -68,10 +67,13 @@ router.get("/products", async (_req, res) => {
 /**
  * POST /api/admin/webshop/products
  * Új termék felvitele webshophoz.
+ *
+ * Itt biztosítjuk, hogy legyen érvényes product_group_id ÉS unit_id,
+ * mert a products táblában ezek NOT NULL.
  */
 router.post("/products", async (req, res) => {
     try {
-        const { name, retail_price_gross, sale_price, web_is_visible, is_retail, web_sort_order, web_description, } = req.body || {};
+        const { name, retail_price_gross, sale_price, web_is_visible, is_retail, web_sort_order, web_description, product_group_id, unit_id, } = req.body || {};
         if (!name || !String(name).trim()) {
             return res.status(400).send("A terméknév kötelező.");
         }
@@ -80,8 +82,28 @@ router.post("/products", async (req, res) => {
         const sortOrder = toNumber(web_sort_order);
         const visible = typeof web_is_visible === "boolean" ? web_is_visible : true;
         const retail = typeof is_retail === "boolean" ? is_retail : true;
+        // Biztosítjuk a kötelező product_group_id és unit_id értékeket
+        let groupId = product_group_id || null;
+        let unitId = unit_id || null;
+        // Ha nincs a body-ban megadva, kérjük le az első létezőt
+        if (!groupId) {
+            const groupResult = await db_1.default.query(`SELECT id FROM product_groups ORDER BY id LIMIT 1`);
+            groupId = groupResult.rows[0]?.id ?? null;
+        }
+        if (!unitId) {
+            const unitResult = await db_1.default.query(`SELECT id FROM units ORDER BY id LIMIT 1`);
+            unitId = unitResult.rows[0]?.id ?? null;
+        }
+        if (!groupId || !unitId) {
+            console.error("❌ Admin create product error: nincs elérhető product_group vagy unit a beszúráshoz.");
+            return res
+                .status(500)
+                .send("Nem található alapértelmezett termékcsoport vagy mértékegység (unit).");
+        }
         const result = await db_1.default.query(`
       INSERT INTO products (
+        product_group_id,
+        unit_id,
         name,
         retail_price_gross,
         sale_price,
@@ -90,7 +112,7 @@ router.post("/products", async (req, res) => {
         web_sort_order,
         web_description
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING
         id,
         name,
@@ -102,6 +124,8 @@ router.post("/products", async (req, res) => {
         web_description,
         image_url
       `, [
+            groupId,
+            unitId,
             String(name).trim(),
             retailPrice,
             salePrice,
@@ -202,7 +226,9 @@ router.post("/coupons", async (req, res) => {
     try {
         const { code, description, discount_type, discount_value, min_order_total, max_discount_value, valid_from, valid_until, usage_limit, is_active, } = req.body || {};
         if (!code || !discount_value) {
-            return res.status(400).send("Kuponkód és kedvezmény értéke kötelező.");
+            return res
+                .status(400)
+                .send("Kuponkód és kedvezmény értéke kötelező.");
         }
         const result = await db_1.default.query(`
       INSERT INTO coupons (
@@ -284,6 +310,7 @@ router.get("/orders", async (_req, res) => {
 });
 /**
  * PATCH /api/admin/webshop/orders/:id
+ * Rendelés státusz / fizetési státusz frissítése
  */
 router.patch("/orders/:id", async (req, res) => {
     try {
@@ -323,7 +350,6 @@ router.patch("/orders/:id", async (req, res) => {
 });
 /**
  * GET /api/admin/webshop/invoices
- * (ha még nincs webshop_invoices tábla, később csinálunk migrációt)
  */
 router.get("/invoices", async (_req, res) => {
     try {
