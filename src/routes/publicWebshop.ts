@@ -28,7 +28,10 @@ router.get("/products", async (_req: Request, res: Response) => {
         image_url,
         web_description,
         is_retail,
-        web_is_visible
+        web_is_visible,
+        main_category,
+        sub_category,
+        service_category
       FROM products
       WHERE is_retail = true
         AND web_is_visible = true
@@ -42,6 +45,122 @@ router.get("/products", async (_req: Request, res: Response) => {
     return res.status(500).send("Hiba a webshop termékek betöltésekor.");
   }
 });
+/**
+ * GET /api/public/webshop/products/:productId
+ * Egy konkrét termék adatainak lekérése a webshophoz.
+ */
+router.get("/products/:productId", async (req: Request, res: Response) => {
+  try {
+    const { productId } = req.params;
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        retail_price_gross,
+        sale_price,
+        image_url,
+        web_description,
+        is_retail,
+        web_is_visible,
+        main_category,
+        sub_category,
+        service_category
+      FROM products
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [productId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Termék nem található." });
+    }
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Webshop product detail error:", err);
+    return res.status(500).send("Hiba a webshop termék betöltésekor.");
+  }
+});
+/**
+ * GET /api/public/webshop/products/:productId/reviews
+ * Jóváhagyott vélemények listája egy termékhez.
+ */
+router.get(
+  "/products/:productId/reviews",
+  async (req: Request, res: Response) => {
+    const { productId } = req.params;
+
+    if (!productId) {
+      return res.status(400).json({ error: "Hiányzik a productId." });
+    }
+
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          product_id,
+          rating,
+          text,
+          author_name,
+          created_at
+        FROM product_reviews
+        WHERE product_id = $1
+        ORDER BY created_at DESC
+        `,
+        [productId]
+      );
+
+      // Ha nincs vélemény, üres listát adunk vissza – ez nem hiba.
+      return res.json(result.rows);
+    } catch (err) {
+      console.error("❌ Webshop product reviews error:", err);
+      return res
+        .status(500)
+        .json({ error: "Hiba történt a termék véleményeinek betöltésekor." });
+    }
+  }
+);
+/**
+ router.get(
+  "/products/:productId/reviews",
+  async (req: Request, res: Response) => {
+    const { productId } = req.params;
+
+    if (!productId) {
+      return res.status(400).json({ error: "Hiányzik a productId." });
+    }
+
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          product_id,
+          rating,
+          text,
+          author_name,
+          created_at
+        FROM product_reviews
+        WHERE product_id = $1
+        ORDER BY created_at DESC
+        `,
+        [productId]
+      );
+
+      // Ha nincs vélemény, üres listát adunk vissza – ez nem hiba.
+      return res.json(result.rows);
+    } catch (err) {
+      console.error("❌ Webshop product reviews error:", err);
+      return res
+        .status(500)
+        .json({ error: "Hiba történt a termék véleményeinek betöltésekor." });
+    }
+  }
+);
 
 /**
  * POST /api/public/webshop/register

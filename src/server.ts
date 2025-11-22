@@ -40,6 +40,8 @@ import productCategoriesRouter from "./routes/productCategories";
 import path from "path";
 import publicWebshopRouter from "./routes/publicWebshop";
 import adminWebshopRouter from "./routes/adminWebshop";
+import publicWebshopRoutes from "./routes/publicWebshop";
+import authRoutes from "./routes/auth";
 
 const app = express();
 
@@ -50,6 +52,18 @@ console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzi
 
 
 
+app.use(express.json());
+app.use(cookieParser());
+
+// CORS – ahogy eddig is
+app.use(
+  cors({
+    origin: "http://localhost:3001", // vagy ami a frontend
+    credentials: true,
+  })
+);
+
+app.use("/api", authRoutes);
 
 /* ===== Proxy és alap middlewares ===== */
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -86,6 +100,7 @@ app.use(
 
 // PUBLIC WEBSHOP
 app.use("/api/public/webshop", publicWebshopRouter);
+app.use("/api/public/webshop", publicWebshopRoutes);
 
 // ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
 app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
@@ -515,6 +530,7 @@ app.get("/api/public/salons", async (req: Request, res: Response) => {
 });
 
 /* ===== Auth route-ok ===== */
+app.use("/api", authRoutes);
 app.use("/api", authRouter);
 app.use("/api", locationsRoutes);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
