@@ -11,28 +11,47 @@ const router = Router();
  */
 async function listLocations(_req: Request, res: Response): Promise<void> {
   try {
-    // TODO: ha nálad nem "locations" a tábla neve, itt állítsd át!
-    // Itt most csak egy egyszerű lekérdezés van, hogy minél kevesebb oszlopon bukjon el.
     const result = await pool.query(
       `
       SELECT
         id,
-        name
-      FROM locations
-      ORDER BY name;
+        name,
+        address,
+        city,
+        phone,
+        COALESCE(is_active, TRUE) AS active
+      FROM public.locations
+      WHERE COALESCE(is_active, TRUE)
+      ORDER BY city, name;
       `
     );
 
-    res.json(result.rows);
+    res.json({ items: result.rows });
   } catch (err) {
     console.error("GET /api/locations error:", err);
 
     // FEJLESZTÉSKOR adjunk vissza demo adatot, hogy a frontend tudjon működni
     if (process.env.NODE_ENV !== "production") {
-      res.json([
-        { id: "demo-1", name: "Budapest – Kleopátra Központ" },
-        { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
-      ]);
+      res.json({
+        items: [
+          {
+            id: "demo-1",
+            name: "Budapest – Kleopátra Központ",
+            address: "Demo utca 1.",
+            city: "Budapest",
+            phone: "+361234567",
+            active: true,
+          },
+          {
+            id: "demo-2",
+            name: "Gödöllő – Kleopátra Szalon",
+            address: "Demo tér 2.",
+            city: "Gödöllő",
+            phone: "+3620123456",
+            active: true,
+          },
+        ],
+      });
       return;
     }
 

@@ -89,12 +89,6 @@ app.use("/api/public/webshop", publicWebshopRouter);
 
 // ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
 app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
-// Webshop admin API
-app.use("/api/admin/webshop", adminWebshopRouter);
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "..", "uploads"))
-);
 
 
 /* const allowedOrigins = [
@@ -131,30 +125,6 @@ function originMatches(origin: string, patterns: string[]): boolean {
   }
   return false;
 }
-app.use("/api/schedule/day", scheduleDayRoutes);
-
-app.get("/api/locations", async (_req, res) => {
-  try {
- const result = await pool.query(
-      `
-      SELECT
-        id,
-        name,
-        address,
-        city,
-        phone,
-        true AS active
-      FROM public.locations
-      ORDER BY city, name;
-      `
-    );
-
-    res.json({ items: result.rows });
-  } catch (err) {
-    console.error("❌ Szalon lekérési hiba:", err);
-    res.status(500).json({ error: "Szalon lekérési hiba" });
-  }
-});
 
 app.use("/api/products", productsRouter);
 app.use("/api/product-groups", productGroupsRouter);
@@ -309,43 +279,6 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
 
 
 
-// Telephelyek listázása
-app.get("/api/locations", async (_req, res) => {
-  try {
-    // TODO: itt állítsd be a SAJÁT táblád nevét és mezőit!
-
-    // 1) Ha van külön locations tábla:
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        name,
-        city
-      FROM locations
-      WHERE is_active = TRUE
-      ORDER BY city, name;
-      `
-    );
-
-    return res.json(result.rows);
-  } catch (err: any) {
-    console.error("GET /api/locations error:", err);
-
-    // ⬇ FEJLESZTÉSI fallback – hogy a frontend MOST azonnal működjön
-    if (process.env.NODE_ENV !== "production") {
-      return res.json([
-        { id: "demo-1", name: "Budapest – Kleopátra Központ" },
-        { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
-      ]);
-    }
-
-    // élesben maradjon a 500
-    return res.status(500).json({
-      success: false,
-      error: "Nem sikerült lekérni a telephelyeket.",
-    });
-  }
-});
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) =>
   res.json({ ok: true, time: new Date().toISOString() })
@@ -393,14 +326,13 @@ app.use("/api/services/available", servicesAvailableRoutes);
 app.use("/api/services", servicesRouter);
 app.use("/api/employee-calendar", employeeCalendarRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/locations", locationsRoutes);
+ app.use("/api", locationsRoutes);
 app.use("/api/workorders", workorderRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
- app.use("/api/public", publicMarketingRouter); 
- app.use("/api/services", servicesRouter);
+ app.use("/api/public", publicMarketingRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
 /* ===== Ügyfelek lista – /api/clients ===== */
@@ -514,9 +446,8 @@ app.get("/api/public/salons", async (req: Request, res: Response) => {
   }
 });
 
-/* ===== Auth route-ok ===== */
-app.use("/api", authRouter);
-app.use("/api", locationsRoutes);
+ /* ===== Auth route-ok ===== */
+ app.use("/api", authRouter);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
  app.use((req, res) =>
   res.status(404).json({ error: "Not found", path: req.originalUrl })
