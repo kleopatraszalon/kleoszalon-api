@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
-const db_1 = __importDefault(require("../db")); // default export (pool), a név mindegy
+const db_1 = __importDefault(require("../db"));
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const router = express_1.default.Router();
@@ -15,16 +15,13 @@ const router = express_1.default.Router();
  */
 router.post("/login", async (req, res) => {
     console.log("[/api/login] body:", req.body);
-    const { email, identifier, username, login, phone, password, location_id, // ha kell, később használhatod
-     } = req.body || {};
-    // Többféle kulcsnévből állítjuk össze az azonosítót
+    const { email, identifier, username, login, phone, password, location_id, } = (req.body || {});
     const loginIdentifier = (identifier || email || username || login || phone || "").trim();
     if (!loginIdentifier || !password) {
         console.warn("[/api/login] Hiányzó loginIdentifier vagy password.");
         return res.status(400).json({ error: "Hiányzó azonosító vagy jelszó." });
     }
     try {
-        // MINIMALISTA LEKÉRDEZÉS – ne hibázzon 'phone', 'role' stb. miatt
         const result = await db_1.default.query(`
       SELECT *
       FROM users
@@ -35,7 +32,7 @@ router.post("/login", async (req, res) => {
             return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
         }
         const user = result.rows[0];
-        // Elfogadjuk, ha a DB-ben password_hash VAGY password mező van
+        // Elfogadjuk, ha a DB-ben password_hash VAGY password van
         const hash = user.password_hash || user.password;
         if (!hash) {
             console.error("[/api/login] Nincs password_hash vagy password mező a users táblában!");
@@ -48,13 +45,12 @@ router.post("/login", async (req, res) => {
             console.warn("[/api/login] Hibás jelszó:", loginIdentifier);
             return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
         }
-        // JWT generálás – ha használod
         const token = jsonwebtoken_1.default.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET || "dev-secret", { expiresIn: "7d" });
-        // Token sütibe
+        // Token süti
         res.cookie("token", token, {
             httpOnly: true,
-            sameSite: "lax", // localhostra elég
-            secure: false, // Renderen majd true
+            sameSite: "lax",
+            secure: false, // Renderen https alatt majd lehet true
         });
         console.log("[/api/login] Sikeres belépés:", loginIdentifier);
         return res.json({
