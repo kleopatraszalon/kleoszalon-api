@@ -56,12 +56,19 @@ app.use(express.json());
 app.use(cookieParser());
 
 // CORS – ahogy eddig is
-app.use(
-  cors({
-    origin: "http://localhost:3001", // vagy ami a frontend
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: function (origin, callback) {
+    // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true // Ha sütiket vagy hitelesítést is használsz
+}));
 
 app.use("/api", authRoutes);
 
@@ -112,25 +119,53 @@ app.use(
 );
 
 
-/* const allowedOrigins = [
-/*   "http://localhost:3000",
-/*   "http://localhost:3001",
-/*   "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
-/* ];
+const allowedOrigins = [
+   "http://localhost:3000",
+   "http://localhost:3001",
+   "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
+ ];
 
-/* app.use(
-/*   cors({
-/*     origin(origin, callback) {
-/*       if (!origin || allowedOrigins.includes(origin)) {
-/*         return callback(null, true);
-/*       }
-/*       return callback(new Error("Not allowed by CORS"));
-/*     },
-/*     credentials: true,
-/*   })
-/* );
+app.use(cors({
+  origin: function (origin, callback) {
+    // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true // Ha sütiket vagy hitelesítést is használsz
+}));
 
+// Adatbázis kapcsolat
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Render PostgreSQL-hez szükséges lehet
+  },
+});
 
+// Teszt végpont
+app.get("/", (req, res) => {
+  res.send("A Kleoszalon API fut! 🚀");
+});
+
+// Példa API végpont: Telephelyek lekérése (a hibaüzeneted alapján ez hiányzott)
+app.get("/api/locations", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM locations"); // Feltételezve, hogy van 'locations' tábla
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Szerver hiba az adatok lekérésekor" });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Szerver fut a ${port}-es porton`);
+});
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
   .split(",")
