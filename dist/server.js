@@ -47,8 +47,17 @@ app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
 // CORS – ahogy eddig is
 app.use((0, cors_1.default)({
-    origin: "http://localhost:3001", // vagy ami a frontend
-    credentials: true,
+    origin: function (origin, callback) {
+        // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+        if (!origin)
+            return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
+    credentials: true // Ha sütiket vagy hitelesítést is használsz
 }));
 app.use("/api", auth_2.default);
 /* ===== Proxy és alap middlewares ===== */
@@ -77,25 +86,24 @@ app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
 // Webshop admin API
 app.use("/api/admin/webshop", adminWebshop_1.default);
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
-/* const allowedOrigins = [
-/*   "http://localhost:3000",
-/*   "http://localhost:3001",
-/*   "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
-/* ];
-
-/* app.use(
-/*   cors({
-/*     origin(origin, callback) {
-/*       if (!origin || allowedOrigins.includes(origin)) {
-/*         return callback(null, true);
-/*       }
-/*       return callback(new Error("Not allowed by CORS"));
-/*     },
-/*     credentials: true,
-/*   })
-/* );
-
-
+const allowedOrigins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
+];
+app.use((0, cors_1.default)({
+    origin: function (origin, callback) {
+        // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+        if (!origin)
+            return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
+            return callback(new Error(msg), false);
+        }
+        return callback(null, true);
+    },
+    credentials: true // Ha sütiket vagy hitelesítést is használsz
+}));
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
     .split(",")

@@ -139,33 +139,7 @@ app.use(cors({
   credentials: true // Ha sütiket vagy hitelesítést is használsz
 }));
 
-// Adatbázis kapcsolat
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, // Render PostgreSQL-hez szükséges lehet
-  },
-});
 
-// Teszt végpont
-app.get("/", (req, res) => {
-  res.send("A Kleoszalon API fut! 🚀");
-});
-
-// Példa API végpont: Telephelyek lekérése (a hibaüzeneted alapján ez hiányzott)
-app.get("/api/locations", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT * FROM locations"); // Feltételezve, hogy van 'locations' tábla
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Szerver hiba az adatok lekérésekor" });
-  }
-});
-
-app.listen(port, () => {
-  console.log(`Szerver fut a ${port}-es porton`);
-});
 /* ===== CORS – rugalmas, wildcard támogatás ===== */
 const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
   .split(",")
