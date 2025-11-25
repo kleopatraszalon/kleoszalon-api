@@ -39,44 +39,15 @@ const path_1 = __importDefault(require("path"));
 const publicWebshop_1 = __importDefault(require("./routes/publicWebshop"));
 const adminWebshop_1 = __importDefault(require("./routes/adminWebshop"));
 const publicWebshop_2 = __importDefault(require("./routes/publicWebshop"));
-const auth_2 = __importDefault(require("./routes/auth"));
 const app = (0, express_1.default)();
-console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
-console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
-app.use(express_1.default.json());
-app.use((0, cookie_parser_1.default)());
-// CORS – ahogy eddig is
-app.use((0, cors_1.default)({
-    origin: function (origin, callback) {
-        // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
-        if (!origin)
-            return callback(null, true);
-        if (allowedOrigins.indexOf(origin) === -1) {
-            var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
-            return callback(new Error(msg), false);
-        }
-        return callback(null, true);
-    },
-    credentials: true // Ha sütiket vagy hitelesítést is használsz
-}));
-app.use("/api", auth_2.default);
-/* ===== Proxy és alap middlewares ===== */
-app.use((req, res, next) => {
-    const origin = req.headers.origin || "*";
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Vary", "Origin"); // cache miatt fontos
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Credentials", "true");
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(204);
-    }
-    next();
-});
-app.use(express_1.default.json());
-app.use((0, cookie_parser_1.default)());
+// Render / proxy mögött fut, kell a secure cookie-hoz
 app.set("trust proxy", 1);
-// statikus feltöltések, hogy a weblap is elérje a képeket
+/* ===========================
+   ALAP MIDDLEWARE-EK, LOGGING
+   =========================== */
+console.log("🔧 NODE_ENV:", process.env.NODE_ENV);
+console.log("🔧 CORS_ORIGIN:", process.env.CORS_ORIGIN);
+/* ===== Statikus feltöltések, hogy a weblap is elérje a képeket ===== */
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 // PUBLIC WEBSHOP
 app.use("/api/public/webshop", publicWebshop_1.default);
@@ -86,10 +57,12 @@ app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
 // Webshop admin API
 app.use("/api/admin/webshop", adminWebshop_1.default);
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
+/* ===== CORS – egyszerű, de biztonságos beállítás ===== */
 const allowedOrigins = [
     "http://localhost:3000",
     "http://localhost:3001",
-    "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
+    "https://kleoszalon-frontend.onrender.com",
+    "https://weblap-o3g6.onrender.com", // IDE a Render frontend és weblap pontos URL-jei
 ];
 app.use((0, cors_1.default)({
     origin: function (origin, callback) {
@@ -97,84 +70,24 @@ app.use((0, cors_1.default)({
         if (!origin)
             return callback(null, true);
         if (allowedOrigins.indexOf(origin) === -1) {
-            var msg = 'A CORS házirend nem engedélyezi a hozzáférést erről az eredetről.';
+            const msg = "A CORS házirend nem engedélyezi a hozzáférést erről az eredetről: " +
+                origin;
+            console.warn(msg);
             return callback(new Error(msg), false);
         }
         return callback(null, true);
     },
-    credentials: true // Ha sütiket vagy hitelesítést is használsz
+    credentials: true, // sütik / Authorization engedélyezése
 }));
-/* ===== CORS – rugalmas, wildcard támogatás ===== */
-const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean));
-const allowAll = rawOrigins.includes("*") || rawOrigins.length === 0;
-function originMatches(origin, patterns) {
-    for (const p of patterns) {
-        if (p === "*")
-            return true;
-        const re = new RegExp("^" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*") + "$");
-        if (re.test(origin))
-            return true;
-    }
-    return false;
-}
-app.use("/api/schedule/day", schedule_day_1.default);
-app.get("/api/locations", async (_req, res) => {
-    try {
-        const result = await db_1.default.query(`
-      SELECT
-        id,
-        name,
-        address,
-        city,
-        phone,
-        true AS active
-      FROM public.locations
-      ORDER BY city, name;
-      `);
-        res.json({ items: result.rows });
-    }
-    catch (err) {
-        console.error("❌ Szalon lekérési hiba:", err);
-        res.status(500).json({ error: "Szalon lekérési hiba" });
-    }
-});
-app.use("/api/products", products_1.default);
-app.use("/api/product-groups", productGroups_1.default);
-app.use("/api/product-categories", productCategories_1.default);
-/*const corsOptions: CorsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (allowAll) return cb(null, true);
-    if (originMatches(origin, rawOrigins)) return cb(null, true);
-    return cb(null, false);
-  },
-  credentials: true,
-  optionsSuccessStatus: 204,
-};
-
-app.use((_, res, next) => { res.header("Vary", "Origin"); next(); });
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
-app.use(express.json({ limit: "1mb" }));
-app.use(cookieParser());
-
-/* ===== JWT segédek ===== */
-app.use((req, res, next) => {
-    const origin = req.headers.origin || "*";
-    res.header("Access-Control-Allow-Origin", origin); // vagy fix: https://kleoszalon-frontend.onrender.com
+// Vary: Origin – hogy a cache helyesen működjön
+app.use((_, res, next) => {
     res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Credentials", "true");
-    if (req.method === "OPTIONS")
-        return res.sendStatus(204);
     next();
 });
-app.use(express_1.default.json());
+// JSON + sütik
+app.use(express_1.default.json({ limit: "1mb" }));
 app.use((0, cookie_parser_1.default)());
+/* ===== JWT segédek ===== */
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
@@ -182,7 +95,8 @@ function signToken(payload) {
     return jsonwebtoken_1.default.sign(payload, JWT_SECRET, { expiresIn: "8h" });
 }
 function extractBearer(req) {
-    const h = (req.headers["authorization"] || req.headers["Authorization"]);
+    const h = (req.headers["authorization"] ||
+        req.headers["Authorization"]);
     return h && /^Bearer\s+/i.test(h) ? h.replace(/^Bearer\s+/i, "") : null;
 }
 function extractTokenFromReq(req) {
@@ -191,6 +105,21 @@ function extractTokenFromReq(req) {
         req.query?.token ||
         req.body?.token ||
         null);
+}
+function getUserIdFromReq(req) {
+    const token = extractTokenFromReq(req);
+    if (!token)
+        return null;
+    try {
+        const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+        return decoded.id ?? null;
+    }
+    catch (err) {
+        if (DEBUG_AUTH) {
+            console.warn("⚠️ JWT decode error in getUserIdFromReq:", err);
+        }
+        return null;
+    }
 }
 function getLocationIdFromReq(req) {
     const token = extractTokenFromReq(req);
@@ -224,238 +153,40 @@ function detectHashType(hash) {
 }
 async function verifyPassword(stored, plain) {
     const t = detectHashType(stored);
-    const s = stored || "";
-    try {
-        switch (t) {
-            case "bcrypt":
-                return bcryptjs_1.default.compareSync(plain, s);
-            case "argon2":
-                try {
-                    // opcionális csomag: npm i argon2
-                    // eslint-disable-next-line @typescript-eslint/no-var-requires
-                    const argon2 = require("argon2");
-                    return await argon2.verify(s, plain);
-                }
-                catch {
-                    console.warn("⚠️ Argon2 hash és 'argon2' csomag nincs telepítve. (npm i argon2)");
-                    return false;
-                }
-            case "pbkdf2": {
-                // formátum: pbkdf2$ITER$SALT$HEX
-                const parts = s.split("$");
-                if (parts.length !== 4)
-                    return false;
-                const iter = parseInt(parts[1], 10) || 100000;
-                const salt = parts[2];
-                const hex = parts[3];
-                const derived = crypto_1.default
-                    .pbkdf2Sync(plain, salt, iter, hex.length / 2, "sha256")
-                    .toString("hex");
-                return crypto_1.default.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(derived, "hex"));
-            }
-            case "sha256": {
-                const hex = s.slice("sha256:".length);
-                const digest = crypto_1.default.createHash("sha256").update(plain).digest("hex");
-                return crypto_1.default.timingSafeEqual(Buffer.from(hex, "hex"), Buffer.from(digest, "hex"));
-            }
-            case "plaintext":
-                return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
-            default:
-                return AUTH_ACCEPT_PLAINTEXT_DEV ? s === plain : false;
-        }
+    if (DEBUG_AUTH) {
+        console.log("🔐 Hash type:", t, "stored length:", stored?.length);
     }
-    catch (e) {
-        console.error("❌ verifyPassword error:", e);
+    if (!stored)
         return false;
+    if (t === "bcrypt") {
+        return bcryptjs_1.default.compare(plain, stored);
     }
+    if (t === "sha256") {
+        const [, hashPart] = stored.split(":", 2);
+        const hash = crypto_1.default.createHash("sha256").update(plain, "utf8").digest("hex");
+        return hash === hashPart;
+    }
+    if (t === "plaintext") {
+        if (!AUTH_ACCEPT_PLAINTEXT_DEV && process.env.NODE_ENV === "production") {
+            // Productionban NEM fogadunk el plaintext jelszót
+            return false;
+        }
+        return stored === plain;
+    }
+    // Egyéb ismeretlen/argon/pbkdf2 esetén most nem támogatjuk
+    return false;
 }
-// Telephelyek listázása
-app.get("/api/locations", async (_req, res) => {
-    try {
-        // TODO: itt állítsd be a SAJÁT táblád nevét és mezőit!
-        // 1) Ha van külön locations tábla:
-        const result = await db_1.default.query(`
-      SELECT
-        id,
-        name,
-        city
-      FROM locations
-      WHERE is_active = TRUE
-      ORDER BY city, name;
-      `);
-        return res.json(result.rows);
-    }
-    catch (err) {
-        console.error("GET /api/locations error:", err);
-        // ⬇ FEJLESZTÉSI fallback – hogy a frontend MOST azonnal működjön
-        if (process.env.NODE_ENV !== "production") {
-            return res.json([
-                { id: "demo-1", name: "Budapest – Kleopátra Központ" },
-                { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
-            ]);
-        }
-        // élesben maradjon a 500
-        return res.status(500).json({
-            success: false,
-            error: "Nem sikerült lekérni a telephelyeket.",
-        });
-    }
-});
-/* ===== Health + root ===== */
-app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
-app.get("/", (_req, res) => res.send("✅ Backend fut és CORS be van állítva"));
-app.get("/api/me", (req, res) => {
-    const token = extractTokenFromReq(req);
-    if (!token) {
-        return res.status(401).json({ error: "Nincs token" });
-    }
-    try {
-        const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
-        return res.json({
-            id: decoded.id,
-            email: decoded.email,
-            role: decoded.role,
-            location_id: decoded.location_id ?? null,
-        });
-    }
-    catch (err) {
-        console.error("GET /api/me token hiba:", err);
-        return res.status(401).json({ error: "Érvénytelen vagy lejárt token" });
-    }
-});
-/* ===== Nem-auth route-ok ===== */
-/* ===== Nem-auth route-ok ===== */
-/* ===== Nem-auth route-ok ===== */
-app.use("/api/menu", menu_1.default);
-app.use("/api/menus", menu_1.default);
-/*  app.use("/api/me", meRoutes); */
-app.use("/api/employees", employees_1.default);
-app.use("/api/services/available", services_available_1.default);
-app.use("/api/services", services_1.default);
-app.use("/api/employee-calendar", employee_calendar_1.default);
-app.use("/api/dashboard", dashboard_1.default);
-app.use("/api/locations", locations_1.default);
-app.use("/api/workorders", workorders_1.default);
-app.use("/api/bookings", bookings_1.default);
-app.use("/api/transactions", transactions_1.default);
-app.use("/api/schedule/day", schedule_day_1.default);
-app.use("/api/appointments", appointments_1.default);
-app.use("/api/public", publicMarketing_1.default);
-app.use("/api/services", services_1.default);
-app.use("/api/service-types", serviceTypes_1.default);
-/* ===== Ügyfelek lista – /api/clients ===== */
-app.get("/api/clients", async (req, res) => {
-    try {
-        const locationId = getLocationIdFromReq(req);
-        const params = [];
-        let where = "";
-        if (locationId) {
-            where = "WHERE c.location_id = $1";
-            params.push(locationId);
-        }
-        const sql = `
-      SELECT
-        c.id,
-        c.location_id,
-        c.full_name AS name,
-        c.phone,
-        c.email
-      FROM public.clients c
-      ${where}
-      ORDER BY c.full_name;
-    `;
-        const { rows } = await db_1.default.query(sql, params);
-        // A frontend a fetchArray<T>()-t használja, ami sima tömböt is tud kezelni
-        return res.json(rows);
-    }
-    catch (err) {
-        console.error("❌ /api/clients hiba:", err);
-        return res
-            .status(500)
-            .json({ error: "Nem sikerült betölteni az ügyfeleket." });
-    }
-});
-/* ===== Foglalási ütközés-ellenőrzés – /api/appointments/conflicts ===== */
-app.get("/api/appointments/conflicts", async (req, res) => {
-    try {
-        const { employee_id, location_id, start, end } = req.query;
-        if (!employee_id || !location_id || !start || !end) {
-            return res.status(400).json({
-                error: "Hiányzó paraméter(ek)",
-                details: { employee_id, location_id, start, end },
-            });
-        }
-        const sql = `
-      SELECT
-        id,
-        employee_id,
-        location_id,
-        client_id,
-        start_time,
-        end_time,
-        status
-      FROM public.appointments
-      WHERE location_id = $1
-        AND employee_id = $2
-        AND status IN ('booked','confirmed')
-        AND NOT (end_time <= $3::timestamp OR start_time >= $4::timestamp)
-      ORDER BY start_time
-      LIMIT 50
-    `;
-        const params = [
-            String(location_id),
-            String(employee_id),
-            String(start),
-            String(end),
-        ];
-        const { rows } = await db_1.default.query(sql, params);
-        // Frontendnek elég, ha sima tömb jön vissza
-        return res.json(rows);
-    }
-    catch (err) {
-        console.error("❌ /api/appointments/conflicts hiba:", err);
-        return res
-            .status(500)
-            .json({ error: "Nem sikerült ellenőrizni az ütközéseket." });
-    }
-});
-// 🔹 Publikus marketing endpoint – Szalonjaink oldalnak
-app.get("/api/public/salons", async (req, res) => {
-    try {
-        const { rows } = await db_1.default.query(`
-      SELECT
-        id,
-        name,
-        city_label,
-        address,
-        slug
-      FROM public.v_public_salons
-      ORDER BY city_label, address
-      `);
-        console.log(">> GET /api/public/salons - rows:", rows.length);
-        res.json(rows);
-    }
-    catch (err) {
-        console.error("GET /api/public/salons error:", err);
-        res
-            .status(500)
-            .json({ error: "Nem sikerült betölteni a szalonokat." });
-    }
-});
-/* ===== Auth route-ok ===== */
-app.use("/api", auth_2.default);
-app.use("/api", auth_1.default);
-app.use("/api", locations_1.default);
-// 404 – EZ MARADJON A ROUTE-OK UTÁN
-app.use((req, res) => res.status(404).json({ error: "Not found", path: req.originalUrl }));
-/* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
+/* ====== Belépés (1. lépcső: jelszó + kód küldés) ====== */
 async function loginHandler(req, res) {
     const { email, login_name, password } = (req.body ?? {});
-    const ident = String(email ?? login_name ?? "").trim().toLowerCase();
+    const ident = (email || login_name || "").trim().toLowerCase();
     if (!ident || !password) {
         return res
             .status(400)
-            .json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
+            .json({
+            success: false,
+            error: "Hiányzó e-mail/felhasználónév vagy jelszó",
+        });
     }
     try {
         const q = `
@@ -471,25 +202,22 @@ async function loginHandler(req, res) {
             console.warn(`[AUTH] user not found: ${ident}`);
             return res
                 .status(401)
-                .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+                .json({ success: false, error: "Érvénytelen felhasználónév/jelszó" });
         }
         const user = rows[0];
-        if (user.active === false) {
-            console.warn(`[AUTH] inactive account: ${ident}`);
-            return res.status(403).json({ success: false, error: "Fiók inaktív" });
+        if (!user.active) {
+            return res
+                .status(403)
+                .json({ success: false, error: "A felhasználó inaktív" });
         }
-        const hashType = detectHashType(user.password_hash);
-        if (hashType === "bcrypt" && Number(user.len) < 60) {
-            console.error(`[AUTH] bcrypt hash rövid (truncált?) len=${user.len}, head=${user.head}, ident=${ident}`);
-        }
-        const isMatch = await verifyPassword(user.password_hash, String(password));
-        if (!isMatch) {
-            console.warn(`[AUTH] bad password (type=${hashType}, len=${user.len}, head=${user.head}) ident=${ident}`);
+        const ok = await verifyPassword(user.password_hash, password);
+        if (!ok) {
+            console.warn(`[AUTH] bad password for: ${ident}`);
             return res
                 .status(401)
-                .json({ success: false, error: "Hibás e-mail/felhasználónév vagy jelszó" });
+                .json({ success: false, error: "Érvénytelen felhasználónév/jelszó" });
         }
-        // 6 jegyű kód generálása és ideiglenes tárolása
+        // 2) Kód generálása és mentése
         const code = Math.floor(100000 + Math.random() * 900000).toString();
         const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN ?? "5", 10);
         const emailKey = String(user.email || ident).toLowerCase();
@@ -505,10 +233,9 @@ async function loginHandler(req, res) {
         }
         catch (mailErr) {
             console.error("❌ E-mail küldési hiba:", mailErr);
-            return res.status(500).json({
-                success: false,
-                error: "Nem sikerült elküldeni a belépési kódot",
-            });
+            return res
+                .status(500)
+                .json({ success: false, error: "Hiba történt a kód küldésekor" });
         }
         return res.json({
             success: true,
@@ -543,14 +270,14 @@ async function verifyCodeHandler(req, res) {
             }
         }
         catch (err) {
-            console.error("verifyCodeHandler login_name lookup hiba:", err);
+            console.error("❌ verifyCodeHandler - e-mail feloldási hiba:", err);
         }
     }
-    // 2) E-mail + kód ellenőrzése
     if (!emailKey || !code) {
-        return res
-            .status(400)
-            .json({ success: false, error: "Hiányzó e-mail vagy kód" });
+        return res.status(400).json({
+            success: false,
+            error: "Hiányzó e-mail és/vagy kód",
+        });
     }
     const record = (0, tempCodeStore_1.consumeCode)(emailKey);
     if (!record) {
@@ -576,7 +303,7 @@ async function verifyCodeHandler(req, res) {
     // 4) Token sütiben is, plusz JSON-ben vissza
     res.cookie("token", token, {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         secure: process.env.NODE_ENV === "production",
         path: "/",
         maxAge: 8 * 60 * 60 * 1000, // 8 óra
@@ -592,17 +319,61 @@ async function verifyCodeHandler(req, res) {
 }
 // FELÜL: itt már legyen importálva a pool
 // import pool from "./db";  <-- ezt valószínűleg már használod máshol
+/* ===== API ROUTE-OK REGISZTRÁLÁSA ===== */
+// Étlap / menü
+app.use("/api/menu", menu_1.default);
+// app.use("/api/me", meRoutes);
+app.use("/api/workorders", workorders_1.default);
+app.use("/api/bookings", bookings_1.default);
+app.use("/api/transactions", transactions_1.default);
+app.use("/api/locations", locations_1.default);
+app.use("/api/dashboard", dashboard_1.default);
+app.use("/api/employees", employees_1.default);
+app.use("/api/services", services_1.default);
+app.use("/api/services-available", services_available_1.default);
+app.use("/api/employee-calendar", employee_calendar_1.default);
+app.use("/api/schedule/day", schedule_day_1.default);
+app.use("/api/appointments", appointments_1.default);
+app.use("/api/public", publicMarketing_1.default);
+app.use("/api/service-types", serviceTypes_1.default);
+// Szalon lista a webshop/marketing oldalhoz
+app.get("/api/locations", async (_req, res) => {
+    try {
+        const result = await db_1.default.query(`
+      SELECT
+        id,
+        name,
+        city
+      FROM locations
+      WHERE is_active = TRUE
+      ORDER BY city, name;
+      `);
+        return res.json({ items: result.rows });
+    }
+    catch (err) {
+        console.error("❌ Szalon lekérési hiba:", err);
+        res.status(500).json({ error: "Szalon lekérési hiba" });
+    }
+});
+app.use("/api/products", products_1.default);
+app.use("/api/product-groups", productGroups_1.default);
+app.use("/api/product-categories", productCategories_1.default);
+// Auth saját végpontok (ha a routes/auth mellett is kell):
+app.post("/api/auth/login", loginHandler);
+app.post("/api/auth/verify-code", verifyCodeHandler);
+// Router alapú auth (ha ott vannak további route-ok)
+app.use("/api/auth", auth_1.default);
 /* ===== Globális hiba-kezelő ===== */
 app.use((err, _req, res, _next) => {
     console.error("❌ Unhandled error:", err);
     res.status(500).json({ error: "Szerver hiba" });
 });
-/* ===== Indítás ===== */
-const port = Number(process.env.PORT) || 5000;
-const host = process.env.HOST || "0.0.0.0";
-const server = app.listen(port, host, () => console.log(`✅ Server running on http://${host}:${port}`));
-server.keepAliveTimeout = 120000;
-server.headersTimeout = 120000;
+/* ===== Szerver indítása ===== */
+const port = process.env.PORT || 5000;
+const server = app.listen(port, () => {
+    console.log(`🚀 API szerver fut a(z) ${port} porton`);
+});
+// Graceful shutdown
 server.on("error", (err) => {
     if (err.code === "EADDRINUSE")
         console.error(`❌ Port ${port} már használatban van.`);
