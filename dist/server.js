@@ -28,7 +28,6 @@ const employee_calendar_1 = __importDefault(require("./routes/employee_calendar"
 const schedule_day_1 = __importDefault(require("./routes/schedule_day"));
 const appointments_1 = __importDefault(require("./routes/appointments"));
 const auth_1 = __importDefault(require("./routes/auth")); // auth route-ok
-const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
 const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
 const serviceTypes_1 = __importDefault(require("./routes/serviceTypes"));
@@ -178,26 +177,23 @@ async function verifyPassword(stored, plain) {
 }
 /* ====== Belépés (1. lépcső: jelszó + kód küldés) ====== */
 async function loginHandler(req, res) {
-    const { email, login_name, password } = (req.body ?? {});
-    const ident = (email || login_name || "").trim().toLowerCase();
+    const { email, login_name, password, location_id } = (req.body ?? {});
+    const identRaw = email || login_name || "";
+    const ident = identRaw.trim().toLowerCase();
     if (!ident || !password) {
-        return res
-            .status(400)
-            .json({
+        return res.status(400).json({
             success: false,
             error: "Hiányzó e-mail/felhasználónév vagy jelszó",
         });
     }
     try {
-        const q = `
-      SELECT id, email, login_name, password_hash, role, location_id, active,
-             length(password_hash) AS len,
-             left(coalesce(password_hash,''), 7) AS head
+        // Csak biztosan létező oszlopokat kérünk le
+        const { rows } = await db_1.default.query(`
+      SELECT id, email, password_hash, role, location_id, full_name
       FROM users
-      WHERE lower(email) = lower($1) OR lower(login_name) = lower($1)
+      WHERE lower(email) = lower($1)
       LIMIT 1
-    `;
-        const { rows } = await db_1.default.query(q, [ident]);
+      `, [ident]);
         if (rows.length === 0) {
             console.warn(`[AUTH] user not found: ${ident}`);
             return res
@@ -205,11 +201,6 @@ async function loginHandler(req, res) {
                 .json({ success: false, error: "Érvénytelen felhasználónév/jelszó" });
         }
         const user = rows[0];
-        if (!user.active) {
-            return res
-                .status(403)
-                .json({ success: false, error: "A felhasználó inaktív" });
-        }
         const ok = await verifyPassword(user.password_hash, password);
         if (!ok) {
             console.warn(`[AUTH] bad password for: ${ident}`);
@@ -217,30 +208,30 @@ async function loginHandler(req, res) {
                 .status(401)
                 .json({ success: false, error: "Érvénytelen felhasználónév/jelszó" });
         }
-        // 2) Kód generálása és mentése
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresMin = parseInt(process.env.CODE_EXPIRES_MIN ?? "5", 10);
-        const emailKey = String(user.email || ident).toLowerCase();
-        (0, tempCodeStore_1.saveCodeForEmail)(emailKey, {
-            code,
-            userId: user.id,
+        const resolvedLocationId = typeof location_id !== "undefined" && location_id !== null
+            ? location_id
+            : user.location_id ?? null;
+        const payload = {
+            id: String(user.id),
+            email: String(user.email),
             role: user.role ?? "guest",
-            location_id: user.location_id ?? null,
-            expiresAt: Date.now() + expiresMin * 60 * 1000,
+            location_id: resolvedLocationId ?? null,
+        };
+        const token = signToken(payload);
+        res.cookie("token", token, {
+            httpOnly: true,
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/",
+            maxAge: 8 * 60 * 60 * 1000,
         });
-        try {
-            await (0, mailer_1.default)(emailKey, code);
-        }
-        catch (mailErr) {
-            console.error("❌ E-mail küldési hiba:", mailErr);
-            return res
-                .status(500)
-                .json({ success: false, error: "Hiba történt a kód küldésekor" });
-        }
         return res.json({
             success: true,
-            step: "code_required",
-            message: "Belépési kód elküldve az e-mail címre.",
+            token,
+            role: user.role ?? "guest",
+            location_id: resolvedLocationId,
+            full_name: user.full_name ?? null,
+            email: user.email ?? null,
         });
     }
     catch (err) {
@@ -319,9 +310,67 @@ async function verifyCodeHandler(req, res) {
 }
 // FELÜL: itt már legyen importálva a pool
 // import pool from "./db";  <-- ezt valószínűleg már használod máshol
+/* ===== /api/me – bejelentkezett felhasználó adatai ===== */
+app.get("/api/me", async (req, res) => {
+    try {
+        const token = extractTokenFromReq(req);
+        if (!token) {
+            return res
+                .status(401)
+                .json({ success: false, error: "Nincs bejelentkezett felhasználó (hiányzó token)." });
+        }
+        let decoded;
+        try {
+            decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+        }
+        catch (err) {
+            if (DEBUG_AUTH) {
+                console.warn("⚠️ JWT decode error in /api/me:", err);
+            }
+            return res
+                .status(401)
+                .json({ success: false, error: "Érvénytelen vagy lejárt token." });
+        }
+        const userId = decoded.id || decoded.userId || decoded.user_id;
+        if (!userId) {
+            return res
+                .status(401)
+                .json({ success: false, error: "A token nem tartalmaz felhasználó azonosítót." });
+        }
+        const { rows } = await db_1.default.query(`
+      SELECT id, email, role, full_name, location_id
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+      `, [userId]);
+        if (rows.length === 0) {
+            return res
+                .status(404)
+                .json({ success: false, error: "A felhasználó nem található." });
+        }
+        const user = rows[0];
+        return res.json({
+            success: true,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role,
+                full_name: user.full_name ?? null,
+                location_id: user.location_id ?? null,
+            },
+        });
+    }
+    catch (err) {
+        console.error("❌ /api/me hiba:", err);
+        return res
+            .status(500)
+            .json({ success: false, error: "Hiba történt a felhasználói adatok lekérése közben." });
+    }
+});
 /* ===== API ROUTE-OK REGISZTRÁLÁSA ===== */
 // Étlap / menü
 app.use("/api/menu", menu_1.default);
+app.use("/api/menus", menu_1.default);
 // app.use("/api/me", meRoutes);
 app.use("/api/workorders", workorders_1.default);
 app.use("/api/bookings", bookings_1.default);
