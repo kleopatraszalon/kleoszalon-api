@@ -15,27 +15,54 @@ function toNumber(value: any): number {
 /**
  * GET /api/public/webshop/products
  * Csak azokat a termékeket listázza, amelyek webshopban eladhatók.
+ * A név és leírás a ?lang=hu|en|ru paraméter alapján kerül kiválasztásra.
  */
-router.get("/products", async (_req: Request, res: Response) => {
+router.get("/products", async (req: Request, res: Response) => {
   try {
+    const langRaw = (req.query.lang as string | undefined) || "hu";
+    const lang = langRaw.toLowerCase();
+
+    let nameExpr: string;
+    let descExpr: string;
+
+    switch (lang) {
+      case "en":
+        nameExpr = "COALESCE(name_en, name_hu, name)";
+        descExpr =
+          "COALESCE(web_description_en, web_description_hu, web_description)";
+        break;
+      case "ru":
+        nameExpr = "COALESCE(name_ru, name_en, name_hu, name)";
+        descExpr =
+          "COALESCE(web_description_ru, web_description_en, web_description_hu, web_description)";
+        break;
+      case "hu":
+      default:
+        nameExpr = "COALESCE(name_hu, name)";
+        descExpr = "COALESCE(web_description_hu, web_description)";
+        break;
+    }
+
     const result = await pool.query(
       `
       SELECT
         id,
-        name,
+        ${nameExpr} AS name,
         retail_price_gross,
         sale_price,
         image_url,
-        web_description,
+        thumbnail_url,
+        ${descExpr} AS web_description,
         is_retail,
         web_is_visible,
+        product_category_id,
         main_category,
         sub_category,
         service_category
       FROM products
       WHERE is_retail = true
         AND web_is_visible = true
-      ORDER BY COALESCE(web_sort_order, 9999), name
+      ORDER BY COALESCE(web_sort_order, 9999), ${nameExpr}
       `
     );
 
