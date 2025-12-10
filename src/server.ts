@@ -53,25 +53,6 @@ app.set("trust proxy", 1);
 console.log("🔧 NODE_ENV:", process.env.NODE_ENV);
 console.log("🔧 CORS_ORIGIN:", process.env.CORS_ORIGIN);
 
-/* ===== Statikus feltöltések, hogy a weblap is elérje a képeket ===== */
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "..", "uploads"))
-);
-
-// PUBLIC WEBSHOP
-app.use("/api/public/webshop", publicWebshopRouter);
-app.use("/api/public/webshop", publicWebshopRoutes);
-
-// ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
-app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
-// Webshop admin API
-app.use("/api/admin/webshop", adminWebshopRouter);
-app.use(
-  "/uploads",
-  express.static(path.join(__dirname, "..", "uploads"))
-);
-
 /* ===== CORS – egyszerű, de biztonságos beállítás ===== */
 
 const allowedOrigins = [
@@ -124,6 +105,25 @@ app.use((_, res, next) => {
   res.header("Vary", "Origin");
   next();
 });
+/* ===== Statikus feltöltések, hogy a weblap is elérje a képeket ===== */
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "..", "uploads"))
+);
+
+// PUBLIC WEBSHOP
+app.use("/api/public/webshop", publicWebshopRouter);
+app.use("/api/public/webshop", publicWebshopRoutes);
+
+// ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
+app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshopRouter);
+// Webshop admin API
+app.use("/api/admin/webshop", adminWebshopRouter);
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "..", "uploads"))
+);
+
 
 // JSON + sütik
 app.use(express.json({ limit: "1mb" }));

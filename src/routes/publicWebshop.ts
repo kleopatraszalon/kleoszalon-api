@@ -76,7 +76,7 @@ router.get("/products", async (req: Request, res: Response) => {
  * GET /api/public/webshop/products/:productId
  * Egy konkrét termék adatainak lekérése a webshophoz.
  */
-router.get("/public/webshop/main-categories", async (req, res, next) => {
+router.get("/main-categories", async (req, res, next) => {
   try {
     const lang = (req.query.lang as string) || "hu";
 
