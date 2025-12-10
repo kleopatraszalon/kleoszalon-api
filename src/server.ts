@@ -99,22 +99,25 @@ app.options("*", cors({
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+    origin(origin, callback) {
+      // pl. Postman / Curl esetén nincs origin → engedjük
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.indexOf(origin) === -1) {
-        const msg =
-          "A CORS házirend nem engedélyezi a hozzáférést erről az eredetről: " +
-          origin;
-        console.warn(msg);
-        return callback(new Error(msg), false);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
-      return callback(null, true);
+
+      // ide akár logolhatsz is
+      return callback(new Error(`CORS blocked origin: ${origin}`), false);
     },
-    credentials: true, // sütik / Authorization engedélyezése
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   })
 );
+
+// preflight OPTIONS mindenre
+app.options("*", cors());
 
 // Vary: Origin – hogy a cache helyesen működjön
 app.use((_, res, next) => {
