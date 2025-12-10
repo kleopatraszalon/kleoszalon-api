@@ -76,6 +76,36 @@ router.get("/products", async (req: Request, res: Response) => {
  * GET /api/public/webshop/products/:productId
  * Egy konkrét termék adatainak lekérése a webshophoz.
  */
+router.get("/public/webshop/main-categories", async (req, res, next) => {
+  try {
+    const lang = (req.query.lang as string) || "hu";
+
+    const { rows } = await pool.query(
+      `
+      SELECT key,
+             name_hu,
+             name_en,
+             name_ru
+      FROM product_groups
+      WHERE key IN (
+        'GIFT_VOUCHERS',
+        'PASSES',
+        'GUEST_ACCOUNT',
+        'KLEO_PRODUCTS',
+        'COMPANY_DISCOUNTS'
+      )
+      ORDER BY sort_order NULLS LAST, name_hu
+      `
+    );
+
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
 router.get("/products/:productId", async (req: Request, res: Response) => {
   try {
     const { productId } = req.params;

@@ -6,7 +6,7 @@ amit külön portra tudsz indítani, függetlenül a meglévő vállalatirányí
 ## Fájlok
 
 - `index.html` – az egyoldalas landing oldal
-- `styles.css` – modern, Kleopátra-brandhez igazított dizájn
+- `kleo-theme v3.css` – modern, Kleopátra-brandhez igazított dizájn
 - `script.js` – mobilmenü, smooth scroll, évszám kitöltés
 - `server.js` – egyszerű Express szerver (külön port)
 - `package.json` – Node/Express beállítások

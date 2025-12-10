@@ -77,9 +77,25 @@ app.use(
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
+  "http://localhost:5173",
   "https://kleoszalon-frontend.onrender.com",
   "https://weblap-o3g6.onrender.com", // IDE a Render frontend és weblap pontos URL-jei
 ];
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+// preflight OPTIONS – biztos ami biztos
+app.options("*", cors({
+  origin: allowedOrigins,
+}));
+
+
 
 app.use(
   cors({

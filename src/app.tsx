@@ -2,6 +2,7 @@
 import React, { Suspense, lazy, type ReactElement } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import EmployeeDetailsPage from "./pages/EmployeeDetails";
+import KioskPage from "./pages/KioskPage";
 
 const AppointmentsCalendar = lazy(() => import("./pages/AppointmentsCalendar"));
 
@@ -241,6 +242,14 @@ export default function App() {
           />
           <Route
             path="/masters/services"
+            element={
+              <RequireAuth>
+                <ServicesList />
+              </RequireAuth>
+            }
+          />
+             {/* 🔹 Kiosk */}
+           <Route path="/kiosk" element={<KioskPage />} />
             element={
               <RequireAuth>
                 <ServicesList />
