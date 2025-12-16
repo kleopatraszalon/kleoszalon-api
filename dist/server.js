@@ -13,9 +13,10 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
 const cors_1 = __importDefault(require("cors"));
+const path_1 = __importDefault(require("path"));
 /* ===== ROUTES (nem auth) ===== */
 const menu_1 = __importDefault(require("./routes/menu"));
-/*  import meRoutes from "./routes/me"; */
+/* import meRoutes from "./routes/me"; */
 const workorders_1 = __importDefault(require("./routes/workorders"));
 const bookings_1 = __importDefault(require("./routes/bookings"));
 const transactions_1 = __importDefault(require("./routes/transactions"));
@@ -34,58 +35,63 @@ const serviceTypes_1 = __importDefault(require("./routes/serviceTypes"));
 const products_1 = __importDefault(require("./routes/products"));
 const productGroups_1 = __importDefault(require("./routes/productGroups"));
 const productCategories_1 = __importDefault(require("./routes/productCategories"));
-const path_1 = __importDefault(require("path"));
 const publicWebshop_1 = __importDefault(require("./routes/publicWebshop"));
 const adminWebshop_1 = __importDefault(require("./routes/adminWebshop"));
-const publicWebshop_2 = __importDefault(require("./routes/publicWebshop"));
 const app = (0, express_1.default)();
-// Render / proxy mögött fut, kell a secure cookie-hoz
+/**
+ * Render / reverse proxy mögött fut a szerver.
+ * Secure cookie-k + helyes IP/proto detektálás miatt ajánlott.
+ */
 app.set("trust proxy", 1);
-/* ===========================
-   ALAP MIDDLEWARE-EK, LOGGING
-   =========================== */
 console.log("🔧 NODE_ENV:", process.env.NODE_ENV);
 console.log("🔧 CORS_ORIGIN:", process.env.CORS_ORIGIN);
-/* ===== Statikus feltöltések, hogy a weblap is elérje a képeket ===== */
-app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
-// PUBLIC WEBSHOP
-app.use("/api/public/webshop", publicWebshop_1.default);
-app.use("/api/public/webshop", publicWebshop_2.default);
-// ADMIN WEBSHOP (itt érdemes auth middleware-t rakni, pl. verifyAdmin)
-app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
-// Webshop admin API
-app.use("/api/admin/webshop", adminWebshop_1.default);
-app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
-/* ===== CORS – egyszerű, de biztonságos beállítás ===== */
-const allowedOrigins = [
+/* ===== CORS – credentiales (cookie-s) kérésekhez is helyes beállítás ===== */
+const defaultAllowedOrigins = [
+    "https://kleoszalon-frontend.onrender.com",
+    "https://weblap-o3g6.onrender.com",
+    // dev
+    "http://localhost:5173",
     "http://localhost:3000",
     "http://localhost:3001",
-    "https://kleoszalon-frontend.onrender.com",
-    "https://weblap-o3g6.onrender.com", // IDE a Render frontend és weblap pontos URL-jei
 ];
-app.use((0, cors_1.default)({
-    origin: function (origin, callback) {
-        // Ha nincs origin (pl. szerver-szerver kommunikáció vagy Postman), engedélyezzük
+// Opcionálisan engedj további origin(eke)t env-ből (pl. Render preview URL-ek)
+const envAllowedOrigins = (process.env.CORS_ORIGIN ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...envAllowedOrigins]));
+const corsOptions = {
+    origin: (origin, cb) => {
+        // Postman/curl/server-to-server esetén origin lehet undefined → engedjük
         if (!origin)
-            return callback(null, true);
-        if (allowedOrigins.indexOf(origin) === -1) {
-            const msg = "A CORS házirend nem engedélyezi a hozzáférést erről az eredetről: " +
-                origin;
-            console.warn(msg);
-            return callback(new Error(msg), false);
-        }
-        return callback(null, true);
+            return cb(null, true);
+        if (allowedOrigins.includes(origin))
+            return cb(null, true);
+        return cb(new Error(`CORS blocked for origin: ${origin}`), false);
     },
-    credentials: true, // sütik / Authorization engedélyezése
-}));
-// Vary: Origin – hogy a cache helyesen működjön
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    maxAge: 86400,
+};
+// CORS MINDIG a route-ok előtt!
+app.use((0, cors_1.default)(corsOptions));
+// Preflight (OPTIONS) globálisan – így nem lesz 404 és biztosan lesznek CORS headerek
+app.options("*", (0, cors_1.default)(corsOptions));
+// Vary: Origin – cache korrekt működéséhez
 app.use((_, res, next) => {
     res.header("Vary", "Origin");
     next();
 });
-// JSON + sütik
+// JSON + sütik (szintén route-ok előtt)
 app.use(express_1.default.json({ limit: "1mb" }));
 app.use((0, cookie_parser_1.default)());
+/* ===== Statikus feltöltések, hogy a weblap is elérje a képeket ===== */
+app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
+// PUBLIC WEBSHOP
+app.use("/api/public/webshop", publicWebshop_1.default);
+// ADMIN WEBSHOP (ide később érdemes auth middleware-t rakni, pl. verifyAdmin)
+app.use("/api/admin/webshop", adminWebshop_1.default);
 /* ===== JWT segédek ===== */
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";

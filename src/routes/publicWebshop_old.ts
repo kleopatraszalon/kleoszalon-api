@@ -27,20 +27,18 @@ router.get("/products", async (req: Request, res: Response) => {
 
     switch (lang) {
       case "en":
-        nameExpr =
-          "COALESCE(display_name_en, name_en, display_name_hu, name_hu, name)";
+        nameExpr = "COALESCE(name_en, name_hu, name)";
         descExpr =
           "COALESCE(web_description_en, web_description_hu, web_description)";
         break;
       case "ru":
-        nameExpr =
-          "COALESCE(display_name_ru, name_ru, display_name_en, name_en, display_name_hu, name_hu, name)";
+        nameExpr = "COALESCE(name_ru, name_en, name_hu, name)";
         descExpr =
           "COALESCE(web_description_ru, web_description_en, web_description_hu, web_description)";
         break;
       case "hu":
       default:
-        nameExpr = "COALESCE(display_name_hu, name_hu, name)";
+        nameExpr = "COALESCE(name_hu, name)";
         descExpr = "COALESCE(web_description_hu, web_description)";
         break;
     }
@@ -78,26 +76,25 @@ router.get("/products", async (req: Request, res: Response) => {
  * GET /api/public/webshop/products/:productId
  * Egy konkrét termék adatainak lekérése a webshophoz.
  */
-router.get("/public/webshop/main-categories", async (req, res, next) => {
+router.get("/main-categories", async (req, res, next) => {
   try {
     const lang = (req.query.lang as string) || "hu";
 
     const { rows } = await pool.query(
       `
-      SELECT
-        code AS key,
-        name AS name_hu,
-        name_en,
-        name_ru
+      SELECT key,
+             name_hu,
+             name_en,
+             name_ru
       FROM product_groups
-      WHERE code IN (
+      WHERE key IN (
         'GIFT_VOUCHERS',
         'PASSES',
         'GUEST_ACCOUNT',
         'KLEO_PRODUCTS',
         'COMPANY_DISCOUNTS'
       )
-      ORDER BY sort_order NULLS LAST, name
+      ORDER BY sort_order NULLS LAST, name_hu
       `
     );
 
@@ -112,41 +109,16 @@ router.get("/public/webshop/main-categories", async (req, res, next) => {
 router.get("/products/:productId", async (req: Request, res: Response) => {
   try {
     const { productId } = req.params;
-    const langRaw = (req.query.lang as string | undefined) || "hu";
-    const lang = langRaw.toLowerCase();
-
-    let nameExpr: string;
-    let descExpr: string;
-
-    switch (lang) {
-      case "en":
-        nameExpr =
-          "COALESCE(display_name_en, name_en, display_name_hu, name_hu, name)";
-        descExpr =
-          "COALESCE(web_description_en, web_description_hu, web_description)";
-        break;
-      case "ru":
-        nameExpr =
-          "COALESCE(display_name_ru, name_ru, display_name_en, name_en, display_name_hu, name_hu, name)";
-        descExpr =
-          "COALESCE(web_description_ru, web_description_en, web_description_hu, web_description)";
-        break;
-      case "hu":
-      default:
-        nameExpr = "COALESCE(display_name_hu, name_hu, name)";
-        descExpr = "COALESCE(web_description_hu, web_description)";
-        break;
-    }
 
     const result = await pool.query(
       `
       SELECT
         id,
-        ${nameExpr} AS name,
+        name,
         retail_price_gross,
         sale_price,
         image_url,
-        ${descExpr} AS web_description,
+        web_description,
         is_retail,
         web_is_visible,
         main_category,

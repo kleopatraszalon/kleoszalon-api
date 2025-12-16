@@ -551,7 +551,7 @@ router.get("/orders", async (_req: Request, res: Response) => {
       SELECT
         id,
         created_at,
-        customer_full_name,
+        customer_full_name AS customer_name,
         customer_email,
         customer_phone,
         subtotal_gross,
@@ -586,7 +586,7 @@ router.get("/orders/:id", async (req: Request, res: Response) => {
       SELECT
         id,
         created_at,
-        customer_full_name,
+        customer_full_name AS customer_name,
         customer_email,
         customer_phone,
         subtotal_gross,
@@ -619,6 +619,65 @@ router.get("/orders/:id", async (req: Request, res: Response) => {
  * (tipikusan státusz, fizetési státusz frissítése)
  */
 router.put("/orders/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, payment_status } = req.body || {};
+
+    const result = await pool.query(
+      `
+      UPDATE webshop_orders
+      SET
+        status = COALESCE($2, status),
+        payment_status = COALESCE($3, payment_status)
+      WHERE id = $1
+      RETURNING *
+      `,
+      [id, status || null, payment_status || null]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).send("A rendelés nem található.");
+    }
+
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ Admin update order error:", err);
+    return res.status(500).send("Hiba a rendelés frissítésekor.");
+  }
+});
+
+// =========================
+//  SZÁMLÁK
+// =========================
+
+/**
+ * GET /api/admin/webshop/invoices
+ */
+router.get("/invoices", async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        invoice_number,
+        order_id,
+        amount_gross,
+        currency,
+        pdf_url,
+        created_at
+      FROM webshop_invoices
+      ORDER BY created_at DESC
+      `
+    );
+
+    return res.json(result.rows);
+  } catch (err) {
+    console.error("❌ Admin list invoices error:", err);
+    return res.status(500).send("Hiba a számlák listázásakor.");
+  }
+});
+
+router.patch("/orders/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status, payment_status } = req.body || {};

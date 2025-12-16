@@ -19,26 +19,52 @@ function toNumber(value) {
 /**
  * GET /api/public/webshop/products
  * Csak azokat a termékeket listázza, amelyek webshopban eladhatók.
+ * A név és leírás a ?lang=hu|en|ru paraméter alapján kerül kiválasztásra.
  */
-router.get("/products", async (_req, res) => {
+router.get("/products", async (req, res) => {
     try {
+        const langRaw = req.query.lang || "hu";
+        const lang = langRaw.toLowerCase();
+        let nameExpr;
+        let descExpr;
+        switch (lang) {
+            case "en":
+                nameExpr =
+                    "COALESCE(display_name_en, name_en, display_name_hu, name_hu, name)";
+                descExpr =
+                    "COALESCE(web_description_en, web_description_hu, web_description)";
+                break;
+            case "ru":
+                nameExpr =
+                    "COALESCE(display_name_ru, name_ru, display_name_en, name_en, display_name_hu, name_hu, name)";
+                descExpr =
+                    "COALESCE(web_description_ru, web_description_en, web_description_hu, web_description)";
+                break;
+            case "hu":
+            default:
+                nameExpr = "COALESCE(display_name_hu, name_hu, name)";
+                descExpr = "COALESCE(web_description_hu, web_description)";
+                break;
+        }
         const result = await db_1.default.query(`
       SELECT
         id,
-        name,
+        ${nameExpr} AS name,
         retail_price_gross,
         sale_price,
         image_url,
-        web_description,
+        thumbnail_url,
+        ${descExpr} AS web_description,
         is_retail,
         web_is_visible,
+        product_category_id,
         main_category,
         sub_category,
         service_category
       FROM products
       WHERE is_retail = true
         AND web_is_visible = true
-      ORDER BY COALESCE(web_sort_order, 9999), name
+      ORDER BY COALESCE(web_sort_order, 9999), ${nameExpr}
       `);
         return res.json(result.rows);
     }
@@ -51,17 +77,65 @@ router.get("/products", async (_req, res) => {
  * GET /api/public/webshop/products/:productId
  * Egy konkrét termék adatainak lekérése a webshophoz.
  */
+router.get("/public/webshop/main-categories", async (req, res, next) => {
+    try {
+        const lang = req.query.lang || "hu";
+        const { rows } = await db_1.default.query(`
+      SELECT
+        code AS key,
+        name AS name_hu,
+        name_en,
+        name_ru
+      FROM product_groups
+      WHERE code IN (
+        'GIFT_VOUCHERS',
+        'PASSES',
+        'GUEST_ACCOUNT',
+        'KLEO_PRODUCTS',
+        'COMPANY_DISCOUNTS'
+      )
+      ORDER BY sort_order NULLS LAST, name
+      `);
+        res.json(rows);
+    }
+    catch (err) {
+        next(err);
+    }
+});
 router.get("/products/:productId", async (req, res) => {
     try {
         const { productId } = req.params;
+        const langRaw = req.query.lang || "hu";
+        const lang = langRaw.toLowerCase();
+        let nameExpr;
+        let descExpr;
+        switch (lang) {
+            case "en":
+                nameExpr =
+                    "COALESCE(display_name_en, name_en, display_name_hu, name_hu, name)";
+                descExpr =
+                    "COALESCE(web_description_en, web_description_hu, web_description)";
+                break;
+            case "ru":
+                nameExpr =
+                    "COALESCE(display_name_ru, name_ru, display_name_en, name_en, display_name_hu, name_hu, name)";
+                descExpr =
+                    "COALESCE(web_description_ru, web_description_en, web_description_hu, web_description)";
+                break;
+            case "hu":
+            default:
+                nameExpr = "COALESCE(display_name_hu, name_hu, name)";
+                descExpr = "COALESCE(web_description_hu, web_description)";
+                break;
+        }
         const result = await db_1.default.query(`
       SELECT
         id,
-        name,
+        ${nameExpr} AS name,
         retail_price_gross,
         sale_price,
         image_url,
-        web_description,
+        ${descExpr} AS web_description,
         is_retail,
         web_is_visible,
         main_category,
