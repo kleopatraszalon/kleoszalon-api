@@ -38,6 +38,7 @@ import productCategoriesRouter from "./routes/productCategories";
 
 import publicWebshopRouter from "./routes/publicWebshop";
 import adminWebshopRouter from "./routes/adminWebshop";
+<<<<<<< HEAD
 
 const app = express();
 
@@ -46,6 +47,19 @@ const app = express();
  * Secure cookie-k + helyes IP/proto detektálás miatt ajánlott.
  */
 app.set("trust proxy", 1);
+=======
+import publicWebshopRoutes from "./routes/publicWebshop";
+import authRoutes from "./routes/auth";
+import signagePublic from "./routes/signagePublic";
+import signageAdmin from "./routes/signageAdmin";
+import { ensureSignageTables } from "./signage/ensureSignageTables";
+
+const app = express();
+
+// Signage táblák biztosítása (kijelző modul)
+ensureSignageTables(pool).then(() => console.log('✅ Signage táblák OK')).catch((e)=>console.error('❌ Signage táblák hiba:', e));
+
+>>>>>>> 747dcfa (Első feltöltés)
 
 console.log("🔧 NODE_ENV:", process.env.NODE_ENV);
 console.log("🔧 CORS_ORIGIN:", process.env.CORS_ORIGIN);
@@ -75,6 +89,7 @@ const corsOptions: CorsOptions = {
     // Postman/curl/server-to-server esetén origin lehet undefined → engedjük
     if (!origin) return cb(null, true);
 
+<<<<<<< HEAD
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error(`CORS blocked for origin: ${origin}`), false);
   },
@@ -83,6 +98,16 @@ const corsOptions: CorsOptions = {
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   maxAge: 86400,
 };
+=======
+// SIGNAGE (kijelző)
+app.use("/api/signage", signagePublic);
+app.use("/api/admin/signage", signageAdmin);
+
+
+/* ===== Proxy és alap middlewares ===== */
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin || "*";
+>>>>>>> 747dcfa (Első feltöltés)
 
 // CORS MINDIG a route-ok előtt!
 app.use(cors(corsOptions));
@@ -242,7 +267,64 @@ async function loginHandler(req: Request, res: Response) {
     // Csak biztosan létező oszlopokat kérünk le
     const { rows } = await pool.query(
       `
+<<<<<<< HEAD
       SELECT id, email, password_hash, role, location_id, full_name
+=======
+      SELECT
+        id,
+        name,
+        city_label,
+        address,
+        slug
+      FROM public.v_public_salons
+      ORDER BY city_label, address
+      `
+    );
+
+    console.log(">> GET /api/public/salons - rows:", rows.length);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/public/salons error:", err);
+    res
+      .status(500)
+      .json({ error: "Nem sikerült betölteni a szalonokat." });
+  }
+});
+
+/* ===== Auth route-ok ===== */
+app.use("/api", authRoutes);
+
+// SIGNAGE (kijelző)
+app.use("/api/signage", signagePublic);
+app.use("/api/admin/signage", signageAdmin);
+
+app.use("/api", authRouter);
+app.use("/api", locationsRoutes);
+// 404 – EZ MARADJON A ROUTE-OK UTÁN
+ app.use((req, res) =>
+  res.status(404).json({ error: "Not found", path: req.originalUrl })
+
+);
+
+
+/* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */
+async function loginHandler(req: Request, res: Response) {
+  const { email, login_name, password } =
+    (req.body ?? {}) as { email?: string; login_name?: string; password?: string };
+
+  const ident = String(email ?? login_name ?? "").trim().toLowerCase();
+  if (!ident || !password) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Hiányzó e-mail/felhasználónév vagy jelszó" });
+  }
+
+  try {
+    const q = `
+      SELECT id, email, login_name, password_hash, role, location_id, active,
+             length(password_hash) AS len,
+             left(coalesce(password_hash,''), 7) AS head
+>>>>>>> 747dcfa (Első feltöltés)
       FROM users
       WHERE lower(email) = lower($1)
       LIMIT 1
