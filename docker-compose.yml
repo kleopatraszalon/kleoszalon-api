@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:16
+    container_name: kleo_db
+    environment:
+      POSTGRES_USER: kleo
+      POSTGRES_PASSWORD: supersecret
+      POSTGRES_DB: kleoszalon
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kleo -d kleoszalon"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    image: node:20
+    container_name: kleo_api
+    working_dir: /app
+    command: sh -c "npm ci && npm run build && node dist/server.js"
+    volumes:
+      - ./api:/app
+    environment:
+      DATABASE_URL: postgres://kleo:supersecret@db:5432/kleoszalon
+      PORT: 3001
+      CORS_ORIGIN: http://localhost:5173
+      JWT_SECRET: change_me
+      ADMIN_SQL_TOKEN: change_sql_token
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ["3001:3001"]
+
+  web:
+    image: node:20
+    container_name: kleo_web
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - ./web:/app
+    environment:
+      VITE_API_URL: http://localhost:3001
+      VITE_NOCODB_URL: http://localhost:8080
+    ports: ["5173:5173"]
+    depends_on: [api]
+
+  nocodb:
+    image: nocodb/nocodb:latest
+    container_name: kleo_nocodb
+    environment:
+      NC_DB: "pg://db:5432?u=kleo&p=supersecret&d=kleoszalon"
+      NC_AUTH_JWT_SECRET: change_noco_secret
+    ports: ["8080:8080"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - noco_data:/usr/app/data
+
+  # (opcionális) pgAdmin webfelület
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: kleo_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@kleo.local
+      PGADMIN_DEFAULT_PASSWORD: supersecret
+    ports: ["5050:80"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  noco_data:

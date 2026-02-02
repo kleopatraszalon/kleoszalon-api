@@ -1,0 +1,12 @@
+{
+  "name": "kleopatra-landing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kleopátra Szalon modern marketing landing – külön porton futó statikus szerver",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0"
+  }
+}

@@ -1,0 +1,247 @@
+.kiosk-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0b0b0f;
+  color: #f7f7f7;
+  font-family: "Montserrat", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+}
+
+.kiosk-header {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.kiosk-logo {
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  margin-right: 1.5rem;
+  font-size: 1rem;
+}
+
+.kiosk-title {
+  font-size: 1.25rem;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+.kiosk-main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem;
+  overflow: hidden;
+}
+
+.kiosk-services {
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.kiosk-group + .kiosk-group {
+  margin-top: 1.5rem;
+}
+
+.kiosk-group-title {
+  font-size: 0.9rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  margin-bottom: 0.5rem;
+}
+
+.kiosk-services-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.75rem;
+}
+
+.kiosk-service-card {
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: radial-gradient(
+      circle at top left,
+      rgba(255, 0, 128, 0.17),
+      transparent 55%
+    ),
+    rgba(17, 17, 23, 0.98);
+  padding: 1rem 1.1rem;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 90px;
+}
+
+.kiosk-service-card:hover {
+  border-color: rgba(255, 0, 128, 0.5);
+  box-shadow: 0 0 18px rgba(255, 0, 128, 0.28);
+}
+
+.kiosk-service-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.kiosk-service-duration {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin-top: 0.25rem;
+}
+
+.kiosk-service-price {
+  margin-top: 0.65rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.kiosk-summary {
+  border-radius: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(
+    145deg,
+    rgba(10, 10, 14, 0.96),
+    rgba(45, 7, 35, 0.96)
+  );
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 5.5rem);
+}
+
+.kiosk-summary h2 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1.1rem;
+}
+
+.kiosk-summary-list {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 0.75rem;
+  padding-right: 0.5rem;
+}
+
+.kiosk-summary-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+.kiosk-summary-name {
+  font-size: 0.9rem;
+}
+
+.kiosk-summary-sub {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+.kiosk-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.kiosk-qty-btn {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  background: rgba(255, 0, 128, 0.12);
+  color: #fff;
+}
+
+.kiosk-summary-qty {
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+.kiosk-summary-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0.5rem 0 0.75rem 0;
+  font-size: 1rem;
+}
+
+.kiosk-client-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+
+.kiosk-client-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  gap: 0.22rem;
+}
+
+.kiosk-client-form input,
+.kiosk-client-form textarea {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(6, 6, 10, 0.9);
+  color: #fff;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.kiosk-client-form input:focus,
+.kiosk-client-form textarea:focus {
+  border-color: rgba(255, 0, 128, 0.55);
+}
+
+.kiosk-error {
+  color: #ff9c9c;
+  font-size: 0.8rem;
+  margin-bottom: 0.4rem;
+}
+
+.kiosk-success {
+  color: #a6ffb0;
+  font-size: 0.8rem;
+  margin-bottom: 0.4rem;
+}
+
+.kiosk-submit-btn {
+  margin-top: auto;
+  border-radius: 999px;
+  border: none;
+  padding: 0.9rem 1.2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(
+    90deg,
+    #ff007f,
+    #ff00c8
+  );
+  color: #fff;
+  box-shadow: 0 0 24px rgba(255, 0, 128, 0.55);
+}
+
+.kiosk-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
+.kiosk-center {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
