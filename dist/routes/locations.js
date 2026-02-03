@@ -8,6 +8,33 @@ const express_1 = require("express");
 const db_1 = __importDefault(require("../db"));
 const router = (0, express_1.Router)();
 // ===========================================================
+// 🌐 PUBLIC TELEPHELY LISTA (login előtt is hívható)
+// GET /api/locations/public
+// Válasz: { ok: true, locations: [...] }
+// ===========================================================
+router.get("/public", async (_req, res) => {
+    try {
+        const result = await db_1.default.query(`
+      SELECT
+        id,
+        name,
+        address,
+        city,
+        phone,
+        email,
+        is_active
+      FROM locations
+      WHERE is_active = true
+      ORDER BY city, name;
+      `);
+        return res.json({ ok: true, locations: result.rows });
+    }
+    catch (err) {
+        console.error("❌ Szalon lekérési hiba (public):", err);
+        return res.status(500).json({ ok: false, error: "Nem sikerült lekérni a szalonokat" });
+    }
+});
+// ===========================================================
 // 🏢 SZALONOK / TELEPHELYEK LEKÉRÉSE
 // GET /api/locations  (ha a routert így kötöd be: app.use("/api/locations", router))
 // ===========================================================
