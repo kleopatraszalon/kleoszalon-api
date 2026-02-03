@@ -1,65 +1,164 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
-const db_1 = __importDefault(require("../db"));
+const db_1 = require("../db");
+// Admin CRUD for signage professionals.
+// Supports both the new field names (show, is_free) and legacy aliases (enabled/available)
+// so older frontends keep working.
 const router = (0, express_1.Router)();
-// Professionals CRUD with is_free
-router.get("/professionals", async (_req, res) => {
+function pickBool(v) {
+    if (v === undefined || v === null)
+        return undefined;
+    if (typeof v === "boolean")
+        return v;
+    if (typeof v === "number")
+        return v !== 0;
+    if (typeof v === "string") {
+        const s = v.trim().toLowerCase();
+        if (["true", "1", "yes", "y", "on"].includes(s))
+            return true;
+        if (["false", "0", "no", "n", "off"].includes(s))
+            return false;
+    }
+    return undefined;
+}
+function pickInt(v) {
+    if (v === undefined || v === null || v === "")
+        return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+router.get("/", async (_req, res) => {
     try {
-        const { rows } = await db_1.default.query(`SELECT *, id::text AS id_text FROM public.signage_professionals ORDER BY show DESC, priority DESC, updated_at DESC`);
-        res.json({ professionals: rows.map((r) => ({ ...r, id: r.id_text })) });
+        const { rows } = await db_1.pool.query(`
+      SELECT id, name, title, note,
+             show,
+             is_free,
+             priority,
+             created_at, updated_at
+      FROM signage_professionals
+      ORDER BY priority DESC, updated_at DESC
+      `);
+        // Return also legacy alias keys for clients that still expect them.
+        const professionals = rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            title: r.title,
+            note: r.note,
+            show: !!r.show,
+            is_free: !!r.is_free,
+            priority: Number(r.priority ?? 0),
+            // legacy aliases:
+            enabled: !!r.show,
+            available: !!r.is_free,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }));
+        res.json({ professionals });
     }
     catch (e) {
-        res.status(500).json({ error: String(e?.message || e) });
+        res.status(500).json({ error: e?.message ?? "Failed to list professionals" });
     }
 });
-router.post("/professionals", async (req, res) => {
+router.post("/", async (req, res) => {
     try {
-        const { name, title, note, photo_url, show, is_free, priority } = req.body || {};
+        const name = String(req.body?.name ?? "").trim();
         if (!name)
             return res.status(400).json({ error: "name required" });
-        const { rows } = await db_1.default.query(`INSERT INTO public.signage_professionals (name, title, note, photo_url, show, is_free, priority)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *, id::text AS id`, [name, title ?? "", note ?? "", photo_url ?? "", show ?? true, is_free ?? true, priority ?? 0]);
-        res.json({ professional: rows[0] });
+        const title = String(req.body?.title ?? "").trim();
+        const note = String(req.body?.note ?? "").trim();
+        const show = pickBool(req.body?.show) ??
+            pickBool(req.body?.enabled) ??
+            pickBool(req.body?.display) ??
+            true;
+        const is_free = pickBool(req.body?.is_free) ??
+            pickBool(req.body?.isFree) ??
+            pickBool(req.body?.available) ??
+            true;
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const { rows } = await db_1.pool.query(`
+      INSERT INTO signage_professionals (name, title, note, show, is_free, priority)
+      VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4, $5, $6)
+      RETURNING id, name, title, note, show, is_free, priority, created_at, updated_at
+      `, [name, title, note, show, is_free, priority]);
+        const r = rows[0];
+        res.json({
+            professional: {
+                id: r.id,
+                name: r.name,
+                title: r.title,
+                note: r.note,
+                show: !!r.show,
+                is_free: !!r.is_free,
+                priority: Number(r.priority ?? 0),
+                enabled: !!r.show,
+                available: !!r.is_free,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+        });
     }
     catch (e) {
-        res.status(500).json({ error: String(e?.message || e) });
+        res.status(500).json({ error: e?.message ?? "Failed to create professional" });
     }
 });
-router.put("/professionals/:id", async (req, res) => {
+router.put("/:id", async (req, res) => {
     try {
-        const id = String(req.params.id);
-        const fields = ["name", "title", "note", "photo_url", "show", "is_free", "priority"];
-        const sets = [];
-        const vals = [];
-        let i = 1;
-        for (const f of fields)
-            if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) {
-                sets.push(`${f}=$${i++}`);
-                vals.push(req.body[f]);
-            }
-        if (!sets.length)
-            return res.json({ ok: true });
-        vals.push(id);
-        const { rows } = await db_1.default.query(`UPDATE public.signage_professionals SET ${sets.join(", ")}, updated_at=now() WHERE id::text=$${i} RETURNING *, id::text AS id`, vals);
+        const id = req.params.id;
+        const name = req.body?.name !== undefined ? String(req.body.name).trim() : undefined;
+        const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined;
+        const note = req.body?.note !== undefined ? String(req.body.note).trim() : undefined;
+        const show = pickBool(req.body?.show) ??
+            pickBool(req.body?.enabled) ??
+            pickBool(req.body?.display);
+        const is_free = pickBool(req.body?.is_free) ??
+            pickBool(req.body?.isFree) ??
+            pickBool(req.body?.available);
+        const priority = pickInt(req.body?.priority);
+        const { rows } = await db_1.pool.query(`
+      UPDATE signage_professionals
+      SET
+        name = COALESCE($2, name),
+        title = COALESCE(NULLIF($3,''), title),
+        note = COALESCE(NULLIF($4,''), note),
+        show = COALESCE($5, show),
+        is_free = COALESCE($6, is_free),
+        priority = COALESCE($7, priority),
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, name, title, note, show, is_free, priority, created_at, updated_at
+      `, [id, name, title, note, show, is_free, priority]);
         if (!rows[0])
             return res.status(404).json({ error: "not found" });
-        res.json({ professional: rows[0] });
+        const r = rows[0];
+        res.json({
+            professional: {
+                id: r.id,
+                name: r.name,
+                title: r.title,
+                note: r.note,
+                show: !!r.show,
+                is_free: !!r.is_free,
+                priority: Number(r.priority ?? 0),
+                enabled: !!r.show,
+                available: !!r.is_free,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+        });
     }
     catch (e) {
-        res.status(500).json({ error: String(e?.message || e) });
+        res.status(500).json({ error: e?.message ?? "Failed to update professional" });
     }
 });
-router.delete("/professionals/:id", async (req, res) => {
+router.delete("/:id", async (req, res) => {
     try {
-        const { rowCount } = await db_1.default.query(`DELETE FROM public.signage_professionals WHERE id::text=$1`, [String(req.params.id)]);
+        const id = req.params.id;
+        const { rowCount } = await db_1.pool.query("DELETE FROM signage_professionals WHERE id = $1", [id]);
         res.json({ ok: (rowCount ?? 0) > 0 });
     }
     catch (e) {
-        res.status(500).json({ error: String(e?.message || e) });
+        res.status(500).json({ error: e?.message ?? "Failed to delete professional" });
     }
 });
 exports.default = router;
