@@ -48,32 +48,42 @@ const app = (0, express_1.default)();
 (0, ensureSignageTables_1.ensureSignageTables)(db_1.default).then(() => console.log('✅ Signage táblák OK')).catch((e) => console.error('❌ Signage táblák hiba:', e));
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
-app.use(express_1.default.json());
-app.use((0, cookie_parser_1.default)());
-// CORS – ahogy eddig is
-app.use((0, cors_1.default)({
-    origin: "http://localhost:3001", // vagy ami a frontend
+app.set("trust proxy", 1);
+/* ===== CORS (Render + local dev) =====
+   Render env javaslat:
+   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,http://localhost:3001,http://localhost:5173
+*/
+const allowedOrigins = (process.env.CORS_ORIGINS ??
+    "https://kleoszalon-frontend.onrender.com,http://localhost:3001,http://localhost:5173")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+const corsOptions = {
+    origin: (origin, cb) => {
+        // origin nélküli kérések (pl. curl, server-to-server) – engedjük
+        if (!origin)
+            return cb(null, true);
+        if (allowedOrigins.includes(origin))
+            return cb(null, true);
+        return cb(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
-}));
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    optionsSuccessStatus: 204,
+};
+app.use((_, res, next) => {
+    res.header("Vary", "Origin");
+    next();
+});
+app.use((0, cors_1.default)(corsOptions));
+app.options("*", (0, cors_1.default)(corsOptions));
+app.use(express_1.default.json({ limit: "1mb" }));
+app.use((0, cookie_parser_1.default)());
 app.use("/api", auth_2.default);
 // SIGNAGE (kijelző)
 app.use("/api/signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
-/* ===== Proxy és alap middlewares ===== */
-app.use((req, res, next) => {
-    const origin = req.headers.origin || "*";
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Vary", "Origin"); // cache miatt fontos
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Credentials", "true");
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(204);
-    }
-    next();
-});
-app.use(express_1.default.json());
-app.use((0, cookie_parser_1.default)());
 app.set("trust proxy", 1);
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
@@ -85,96 +95,9 @@ app.use("/api/admin/webshop", /* verifyAdmin, */ adminWebshop_1.default);
 // Webshop admin API
 app.use("/api/admin/webshop", adminWebshop_1.default);
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
-/* const allowedOrigins = [
-/*   "http://localhost:3000",
-/*   "http://localhost:3001",
-/*   "https://kleoszalon-frontend.onrender.com/login", // IDE a Render frontend pontos URL-je
-/* ];
-
-/* app.use(
-/*   cors({
-/*     origin(origin, callback) {
-/*       if (!origin || allowedOrigins.includes(origin)) {
-/*         return callback(null, true);
-/*       }
-/*       return callback(new Error("Not allowed by CORS"));
-/*     },
-/*     credentials: true,
-/*   })
-/* );
-
-
-/* ===== CORS – rugalmas, wildcard támogatás ===== */
-const rawOrigins = ((process.env.CORS_ORIGIN ?? "*")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean));
-const allowAll = rawOrigins.includes("*") || rawOrigins.length === 0;
-function originMatches(origin, patterns) {
-    for (const p of patterns) {
-        if (p === "*")
-            return true;
-        const re = new RegExp("^" + p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*") + "$");
-        if (re.test(origin))
-            return true;
-    }
-    return false;
-}
-app.use("/api/schedule/day", schedule_day_1.default);
-app.get("/api/locations", async (_req, res) => {
-    try {
-        const result = await db_1.default.query(`
-      SELECT
-        id,
-        name,
-        address,
-        city,
-        phone,
-        true AS active
-      FROM public.locations
-      ORDER BY city, name;
-      `);
-        res.json({ items: result.rows });
-    }
-    catch (err) {
-        console.error("❌ Szalon lekérési hiba:", err);
-        res.status(500).json({ error: "Szalon lekérési hiba" });
-    }
-});
 app.use("/api/products", products_1.default);
 app.use("/api/product-groups", productGroups_1.default);
 app.use("/api/product-categories", productCategories_1.default);
-/*const corsOptions: CorsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (allowAll) return cb(null, true);
-    if (originMatches(origin, rawOrigins)) return cb(null, true);
-    return cb(null, false);
-  },
-  credentials: true,
-  optionsSuccessStatus: 204,
-};
-
-app.use((_, res, next) => { res.header("Vary", "Origin"); next(); });
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
-app.use(express.json({ limit: "1mb" }));
-app.use(cookieParser());
-
-/* ===== JWT segédek ===== */
-app.use((req, res, next) => {
-    const origin = req.headers.origin || "*";
-    res.header("Access-Control-Allow-Origin", origin); // vagy fix: https://kleoszalon-frontend.onrender.com
-    res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
-    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Credentials", "true");
-    if (req.method === "OPTIONS")
-        return res.sendStatus(204);
-    next();
-});
-app.use(express_1.default.json());
-app.use((0, cookie_parser_1.default)());
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 const AUTH_ACCEPT_PLAINTEXT_DEV = process.env.AUTH_ACCEPT_PLAINTEXT_DEV === "1";
 const DEBUG_AUTH = process.env.DEBUG_AUTH === "1";
@@ -270,37 +193,6 @@ async function verifyPassword(stored, plain) {
     }
 }
 // Telephelyek listázása
-app.get("/api/locations", async (_req, res) => {
-    try {
-        // TODO: itt állítsd be a SAJÁT táblád nevét és mezőit!
-        // 1) Ha van külön locations tábla:
-        const result = await db_1.default.query(`
-      SELECT
-        id,
-        name,
-        city
-      FROM locations
-      WHERE is_active = TRUE
-      ORDER BY city, name;
-      `);
-        return res.json(result.rows);
-    }
-    catch (err) {
-        console.error("GET /api/locations error:", err);
-        // ⬇ FEJLESZTÉSI fallback – hogy a frontend MOST azonnal működjön
-        if (process.env.NODE_ENV !== "production") {
-            return res.json([
-                { id: "demo-1", name: "Budapest – Kleopátra Központ" },
-                { id: "demo-2", name: "Gödöllő – Kleopátra Szalon" },
-            ]);
-        }
-        // élesben maradjon a 500
-        return res.status(500).json({
-            success: false,
-            error: "Nem sikerült lekérni a telephelyeket.",
-        });
-    }
-});
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.get("/", (_req, res) => res.send("✅ Backend fut és CORS be van állítva"));
@@ -443,12 +335,10 @@ app.get("/api/public/salons", async (req, res) => {
     }
 });
 /* ===== Auth route-ok ===== */
-app.use("/api", auth_2.default);
 // SIGNAGE (kijelző)
 app.use("/api/signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
 app.use("/api", auth_1.default);
-app.use("/api", locations_1.default);
 // 404 – EZ MARADJON A ROUTE-OK UTÁN
 app.use((req, res) => res.status(404).json({ error: "Not found", path: req.originalUrl }));
 /* ====== Belépés (1. lépcső) – email VAGY login_name + jelszó ====== */

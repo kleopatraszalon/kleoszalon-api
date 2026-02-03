@@ -2,21 +2,54 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureSignageTables = ensureSignageTables;
 /**
- * Létrehozza a signage-hez szükséges DB táblákat (IF NOT EXISTS).
- * Ezek kizárólag a kijelző/admin felülethez kellenek.
+ * Signage (kijelző) táblák – teljesen külön a meglévő rendszertől.
+ * Kérésre: a szolgáltatások külön táblában vannak (signage_services),
+ * tehát nem függünk a public.services/service_types tábláktól (500 fix).
  */
 async function ensureSignageTables(pool) {
-    // pgcrypto kell a gen_random_uuid()-hoz (ha nincs jogosultság, nem állunk meg)
+    // gen_random_uuid (pgcrypto) – ha nincs jog, fallbackkel működik
     try {
         await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
     }
-    catch {
-        // ignore
+    catch { }
+    // van-e gen_random_uuid?
+    let hasGenRandomUuid = false;
+    try {
+        const r = await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'gen_random_uuid') AS ok;`);
+        hasGenRandomUuid = Boolean(r.rows?.[0]?.ok);
     }
-    // Deals
+    catch {
+        hasGenRandomUuid = false;
+    }
+    const idCol = hasGenRandomUuid
+        ? `id uuid PRIMARY KEY DEFAULT gen_random_uuid()`
+        : `id text PRIMARY KEY DEFAULT md5(random()::text || clock_timestamp()::text)`;
+    // --- Szolgáltatások (külön signage tábla) ---
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.signage_services (
+      ${idCol},
+      name text NOT NULL,
+      category text DEFAULT '',
+      duration_min int,
+      price_text text DEFAULT '',
+      show boolean NOT NULL DEFAULT true,
+      priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+    try {
+        await pool.query(`ALTER TABLE public.signage_services ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`);
+    }
+    catch { }
+    await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_signage_services_show
+    ON public.signage_services (show, priority, updated_at);
+  `);
+    // --- Akciók ---
     await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_deals (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      ${idCol},
       title text NOT NULL,
       subtitle text DEFAULT '',
       price_text text DEFAULT '',
@@ -32,10 +65,33 @@ async function ensureSignageTables(pool) {
     CREATE INDEX IF NOT EXISTS idx_signage_deals_active_valid
     ON public.signage_deals (active, valid_from, valid_to, priority);
   `);
-    // Quotes
+    // --- Szakemberek ---
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.signage_professionals (
+      ${idCol},
+      name text NOT NULL,
+      title text DEFAULT '',
+      note text DEFAULT '',
+      photo_url text DEFAULT '',
+      show boolean NOT NULL DEFAULT true,
+      available boolean NOT NULL DEFAULT true,
+      priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+    try {
+        await pool.query(`ALTER TABLE public.signage_professionals ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`);
+    }
+    catch { }
+    await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_signage_professionals_show_avail
+    ON public.signage_professionals (show, available, priority, updated_at);
+  `);
+    // --- Idézetek ---
     await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_quotes (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      ${idCol},
       category text NOT NULL CHECK (category IN ('fitness','beauty','general')),
       text text NOT NULL,
       author text DEFAULT '',
@@ -49,36 +105,21 @@ async function ensureSignageTables(pool) {
     CREATE INDEX IF NOT EXISTS idx_signage_quotes_active_cat
     ON public.signage_quotes (active, category, priority);
   `);
-    // Service overrides (services táblára épít)
+    // --- Videók (YouTube playlist) ---
     await pool.query(`
-    CREATE TABLE IF NOT EXISTS public.signage_service_overrides (
-      service_id uuid PRIMARY KEY REFERENCES public.services(id) ON DELETE CASCADE,
-      enabled boolean NOT NULL DEFAULT true,
-      price_text_override text,
-      priority int NOT NULL DEFAULT 0,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );
-  `);
-    await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_signage_service_overrides_enabled
-    ON public.signage_service_overrides (enabled, priority);
-  `);
-    // Professionals (kijelző specifikus, külön tábla)
-    await pool.query(`
-    CREATE TABLE IF NOT EXISTS public.signage_professionals (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      name text NOT NULL,
+    CREATE TABLE IF NOT EXISTS public.signage_videos (
+      ${idCol},
+      youtube_id text NOT NULL,
       title text DEFAULT '',
-      note text DEFAULT '',
-      photo_url text DEFAULT '',
-      available boolean NOT NULL DEFAULT true,
+      enabled boolean NOT NULL DEFAULT true,
       priority int NOT NULL DEFAULT 0,
+      duration_sec int NOT NULL DEFAULT 60,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
     await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_signage_professionals_available
-    ON public.signage_professionals (available, priority, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_signage_videos_enabled
+    ON public.signage_videos (enabled, priority, updated_at);
   `);
 }

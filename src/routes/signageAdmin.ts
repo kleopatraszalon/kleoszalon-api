@@ -1,200 +1,208 @@
 import { Router } from "express";
 import pool from "../db";
 
-// ⚠️ NYITOTT SIGNAGE ADMIN API: nincs admin/auth védelem (felhasználói kérésre).
-// Erősen javasolt később IP korlátozás / jelszó / token / basic auth.
+// ⚠️ NYITOTT SIGNAGE ADMIN API (kérésre): nincs auth/admin védelem.
 const router = Router();
 
-// ---- Services (override) ----
+// SERVICES
 router.get("/services", async (_req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT
-        s.id,
-        s.name,
-        st.name AS category_name,
-        s.duration_min,
-        s.price_from,
-        COALESCE(o.enabled, true) AS enabled,
-        COALESCE(o.priority, 0) AS priority,
-        o.price_text_override
-      FROM public.services s
-      LEFT JOIN public.service_types st ON st.id = s.service_type_id
-      LEFT JOIN public.signage_service_overrides o ON o.service_id = s.id
-      WHERE COALESCE(s.is_active, TRUE)
-      ORDER BY st.name NULLS LAST, s.name
-      LIMIT 500;
-    `);
-
-    const services = rows.map((r: any) => ({
-      id: r.id,
-      name: r.name,
-      category: r.category_name || "",
-      durationMin: r.duration_min ?? null,
-      price_text: r.price_text_override || (r.price_from != null ? `${Number(r.price_from).toLocaleString("hu-HU")} Ft` : ""),
-      enabled: Boolean(r.enabled),
-      priority: Number(r.priority || 0),
-    }));
-
-    res.json({ services });
-  } catch (e: any) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
+    const { rows } = await pool.query(`SELECT *, id::text AS id_text FROM public.signage_services ORDER BY show DESC, priority DESC, updated_at DESC`);
+    res.json({ services: rows.map((r:any)=>({ ...r, id: r.id_text })) });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
 });
-
-router.put("/services/:id/override", async (req, res) => {
+router.post("/services", async (req, res) => {
   try {
-    const serviceId = req.params.id;
-    const { enabled, price_text_override, priority } = req.body || {};
-
+    const { name, category, duration_min, price_text, show, priority } = req.body || {};
+    if (!name) return res.status(400).json({ error: "name required" });
     const { rows } = await pool.query(
-      `
-      INSERT INTO public.signage_service_overrides (service_id, enabled, price_text_override, priority, updated_at)
-      VALUES ($1, COALESCE($2, true), $3, COALESCE($4, 0), now())
-      ON CONFLICT (service_id) DO UPDATE SET
-        enabled = COALESCE(EXCLUDED.enabled, public.signage_service_overrides.enabled),
-        price_text_override = EXCLUDED.price_text_override,
-        priority = COALESCE(EXCLUDED.priority, public.signage_service_overrides.priority),
-        updated_at = now()
-      RETURNING *;
-      `,
-      [serviceId, enabled ?? null, price_text_override ?? null, priority ?? null]
+      `INSERT INTO public.signage_services (name, category, duration_min, price_text, show, priority)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING *, id::text AS id`,
+      [name, category ?? "", duration_min ?? null, price_text ?? "", show ?? true, priority ?? 0]
     );
-
-    res.json({ override: rows[0] });
-  } catch (e: any) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
+    res.json({ service: rows[0] });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
+});
+router.put("/services/:id", async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const fields = ["name","category","duration_min","price_text","show","priority"];
+    const sets:string[]=[]; const vals:any[]=[]; let i=1;
+    for (const f of fields) if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) { sets.push(`${f}=$${i++}`); vals.push(req.body[f]); }
+    if (!sets.length) return res.json({ ok:true });
+    vals.push(id);
+    const { rows } = await pool.query(
+      `UPDATE public.signage_services SET ${sets.join(", ")}, updated_at=now()
+       WHERE id::text = $${i}
+       RETURNING *, id::text AS id`, vals
+    );
+    if (!rows[0]) return res.status(404).json({ error: "not found" });
+    res.json({ service: rows[0] });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
+});
+router.delete("/services/:id", async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(`DELETE FROM public.signage_services WHERE id::text = $1`, [String(req.params.id)]);
+    res.json({ ok: (rowCount ?? 0) > 0 });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
 });
 
-// ---- Deals ----
+// DEALS
 router.get("/deals", async (_req, res) => {
-  const { rows } = await pool.query(`SELECT * FROM public.signage_deals ORDER BY active DESC, priority DESC, updated_at DESC`);
-  res.json({ deals: rows });
+  try {
+    const { rows } = await pool.query(`SELECT *, id::text AS id_text FROM public.signage_deals ORDER BY active DESC, priority DESC, updated_at DESC`);
+    res.json({ deals: rows.map((r:any)=>({ ...r, id: r.id_text })) });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
 });
-
 router.post("/deals", async (req, res) => {
-  const { title, subtitle, price_text, valid_from, valid_to, active, priority } = req.body || {};
-  if (!title) return res.status(400).json({ error: "title required" });
-  const { rows } = await pool.query(
-    `INSERT INTO public.signage_deals (title, subtitle, price_text, valid_from, valid_to, active, priority)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [title, subtitle ?? "", price_text ?? "", valid_from ?? null, valid_to ?? null, active ?? true, priority ?? 0]
-  );
-  res.json({ deal: rows[0] });
+  try {
+    const { title, subtitle, price_text, valid_from, valid_to, active, priority } = req.body || {};
+    if (!title) return res.status(400).json({ error: "title required" });
+    const { rows } = await pool.query(
+      `INSERT INTO public.signage_deals (title, subtitle, price_text, valid_from, valid_to, active, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *, id::text AS id`,
+      [title, subtitle ?? "", price_text ?? "", valid_from ?? null, valid_to ?? null, active ?? true, priority ?? 0]
+    );
+    res.json({ deal: rows[0] });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
 });
-
 router.put("/deals/:id", async (req, res) => {
-  const id = req.params.id;
-  const fields = ["title","subtitle","price_text","valid_from","valid_to","active","priority"];
-  const sets: string[] = [];
-  const vals: any[] = [];
-  let i = 1;
-  for (const f of fields) {
-    if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) {
-      sets.push(`${f} = $${i++}`);
-      vals.push(req.body[f]);
-    }
-  }
-  if (!sets.length) return res.json({ ok: true });
-  vals.push(id);
-  const { rows } = await pool.query(
-    `UPDATE public.signage_deals SET ${sets.join(", ")}, updated_at=now() WHERE id=$${i} RETURNING *`,
-    vals
-  );
-  res.json({ deal: rows[0] });
+  try {
+    const id = String(req.params.id);
+    const fields=["title","subtitle","price_text","valid_from","valid_to","active","priority"];
+    const sets:string[]=[]; const vals:any[]=[]; let i=1;
+    for (const f of fields) if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) { sets.push(`${f}=$${i++}`); vals.push(req.body[f]); }
+    if (!sets.length) return res.json({ ok:true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE public.signage_deals SET ${sets.join(", ")}, updated_at=now() WHERE id::text=$${i} RETURNING *, id::text AS id`, vals);
+    if (!rows[0]) return res.status(404).json({ error:"not found" });
+    res.json({ deal: rows[0] });
+  } catch (e:any) { res.status(500).json({ error: String(e?.message||e) }); }
+});
+router.delete("/deals/:id", async (req,res)=>{
+  try{
+    const { rowCount } = await pool.query(`DELETE FROM public.signage_deals WHERE id::text=$1`, [String(req.params.id)]);
+    res.json({ ok: (rowCount ?? 0) > 0 });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
-router.delete("/deals/:id", async (req, res) => {
-  const { rowCount } = await pool.query(`DELETE FROM public.signage_deals WHERE id=$1`, [req.params.id]);
-  res.json({ ok: (rowCount ?? 0) > 0 });
+// PROFESSIONALS
+router.get("/professionals", async (_req,res)=>{
+  try{
+    const { rows } = await pool.query(`SELECT *, id::text AS id_text FROM public.signage_professionals ORDER BY show DESC, available DESC, priority DESC, updated_at DESC`);
+    res.json({ professionals: rows.map((r:any)=>({ ...r, id: r.id_text })) });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.post("/professionals", async (req,res)=>{
+  try{
+    const { name, title, note, photo_url, show, available, priority } = req.body || {};
+    if(!name) return res.status(400).json({ error:"name required" });
+    const { rows } = await pool.query(
+      `INSERT INTO public.signage_professionals (name, title, note, photo_url, show, available, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *, id::text AS id`,
+      [name, title ?? "", note ?? "", photo_url ?? "", show ?? true, available ?? true, priority ?? 0]
+    );
+    res.json({ professional: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.put("/professionals/:id", async (req,res)=>{
+  try{
+    const id=String(req.params.id);
+    const fields=["name","title","note","photo_url","show","available","priority"];
+    const sets:string[]=[]; const vals:any[]=[]; let i=1;
+    for (const f of fields) if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) { sets.push(`${f}=$${i++}`); vals.push(req.body[f]); }
+    if(!sets.length) return res.json({ ok:true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE public.signage_professionals SET ${sets.join(", ")}, updated_at=now() WHERE id::text=$${i} RETURNING *, id::text AS id`, vals);
+    if(!rows[0]) return res.status(404).json({ error:"not found" });
+    res.json({ professional: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.delete("/professionals/:id", async (req,res)=>{
+  try{
+    const { rowCount } = await pool.query(`DELETE FROM public.signage_professionals WHERE id::text=$1`, [String(req.params.id)]);
+    res.json({ ok: (rowCount ?? 0) > 0 });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
-// ---- Quotes ----
-router.get("/quotes", async (_req, res) => {
-  const { rows } = await pool.query(`SELECT * FROM public.signage_quotes ORDER BY active DESC, category, priority DESC, updated_at DESC`);
-  res.json({ quotes: rows });
+// QUOTES
+router.get("/quotes", async (_req,res)=>{
+  try{
+    const { rows } = await pool.query(`SELECT *, id::text AS id_text FROM public.signage_quotes ORDER BY active DESC, category, priority DESC, updated_at DESC`);
+    res.json({ quotes: rows.map((r:any)=>({ ...r, id: r.id_text })) });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.post("/quotes", async (req,res)=>{
+  try{
+    const { category, text, author, active, priority } = req.body || {};
+    if(!category || !["fitness","beauty","general"].includes(category)) return res.status(400).json({ error:"category invalid" });
+    if(!text) return res.status(400).json({ error:"text required" });
+    const { rows } = await pool.query(
+      `INSERT INTO public.signage_quotes (category, text, author, active, priority)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *, id::text AS id`,
+      [category, text, author ?? "", active ?? true, priority ?? 0]
+    );
+    res.json({ quote: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.put("/quotes/:id", async (req,res)=>{
+  try{
+    const id=String(req.params.id);
+    const fields=["category","text","author","active","priority"];
+    const sets:string[]=[]; const vals:any[]=[]; let i=1;
+    for (const f of fields) if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) { sets.push(`${f}=$${i++}`); vals.push(req.body[f]); }
+    if(!sets.length) return res.json({ ok:true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE public.signage_quotes SET ${sets.join(", ")}, updated_at=now() WHERE id::text=$${i} RETURNING *, id::text AS id`, vals);
+    if(!rows[0]) return res.status(404).json({ error:"not found" });
+    res.json({ quote: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
+});
+router.delete("/quotes/:id", async (req,res)=>{
+  try{
+    const { rowCount } = await pool.query(`DELETE FROM public.signage_quotes WHERE id::text=$1`, [String(req.params.id)]);
+    res.json({ ok: (rowCount ?? 0) > 0 });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
-router.post("/quotes", async (req, res) => {
-  const { category, text, author, active, priority } = req.body || {};
-  if (!category || !["fitness","beauty","general"].includes(category)) return res.status(400).json({ error: "category invalid" });
-  if (!text) return res.status(400).json({ error: "text required" });
-  const { rows } = await pool.query(
-    `INSERT INTO public.signage_quotes (category, text, author, active, priority)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [category, text, author ?? "", active ?? true, priority ?? 0]
-  );
-  res.json({ quote: rows[0] });
+// VIDEOS
+router.get("/videos", async (_req,res)=>{
+  try{
+    const { rows } = await pool.query(`SELECT *, id::text AS id_text FROM public.signage_videos ORDER BY enabled DESC, priority DESC, updated_at DESC`);
+    res.json({ videos: rows.map((r:any)=>({ ...r, id: r.id_text })) });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
-
-router.put("/quotes/:id", async (req, res) => {
-  const id = req.params.id;
-  const fields = ["category","text","author","active","priority"];
-  const sets: string[] = [];
-  const vals: any[] = [];
-  let i = 1;
-  for (const f of fields) {
-    if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) {
-      sets.push(`${f} = $${i++}`);
-      vals.push(req.body[f]);
-    }
-  }
-  if (!sets.length) return res.json({ ok: true });
-  vals.push(id);
-  const { rows } = await pool.query(
-    `UPDATE public.signage_quotes SET ${sets.join(", ")}, updated_at=now() WHERE id=$${i} RETURNING *`,
-    vals
-  );
-  res.json({ quote: rows[0] });
+router.post("/videos", async (req,res)=>{
+  try{
+    const { youtube_id, title, enabled, priority, duration_sec } = req.body || {};
+    if(!youtube_id) return res.status(400).json({ error:"youtube_id required" });
+    const { rows } = await pool.query(
+      `INSERT INTO public.signage_videos (youtube_id, title, enabled, priority, duration_sec)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *, id::text AS id`,
+      [youtube_id, title ?? "", enabled ?? true, priority ?? 0, duration_sec ?? 60]
+    );
+    res.json({ video: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
-
-router.delete("/quotes/:id", async (req, res) => {
-  const { rowCount } = await pool.query(`DELETE FROM public.signage_quotes WHERE id=$1`, [req.params.id]);
-  res.json({ ok: (rowCount ?? 0) > 0 });
+router.put("/videos/:id", async (req,res)=>{
+  try{
+    const id=String(req.params.id);
+    const fields=["youtube_id","title","enabled","priority","duration_sec"];
+    const sets:string[]=[]; const vals:any[]=[]; let i=1;
+    for (const f of fields) if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) { sets.push(`${f}=$${i++}`); vals.push(req.body[f]); }
+    if(!sets.length) return res.json({ ok:true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE public.signage_videos SET ${sets.join(", ")}, updated_at=now() WHERE id::text=$${i} RETURNING *, id::text AS id`, vals);
+    if(!rows[0]) return res.status(404).json({ error:"not found" });
+    res.json({ video: rows[0] });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
-
-// ---- Professionals ----
-router.get("/professionals", async (_req, res) => {
-  const { rows } = await pool.query(`SELECT * FROM public.signage_professionals ORDER BY available DESC, priority DESC, updated_at DESC`);
-  res.json({ professionals: rows });
-});
-
-router.post("/professionals", async (req, res) => {
-  const { name, title, note, photo_url, available, priority } = req.body || {};
-  if (!name) return res.status(400).json({ error: "name required" });
-  const { rows } = await pool.query(
-    `INSERT INTO public.signage_professionals (name, title, note, photo_url, available, priority)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [name, title ?? "", note ?? "", photo_url ?? "", available ?? true, priority ?? 0]
-  );
-  res.json({ professional: rows[0] });
-});
-
-router.put("/professionals/:id", async (req, res) => {
-  const id = req.params.id;
-  const fields = ["name","title","note","photo_url","available","priority"];
-  const sets: string[] = [];
-  const vals: any[] = [];
-  let i = 1;
-  for (const f of fields) {
-    if (req.body && Object.prototype.hasOwnProperty.call(req.body, f)) {
-      sets.push(`${f} = $${i++}`);
-      vals.push(req.body[f]);
-    }
-  }
-  if (!sets.length) return res.json({ ok: true });
-  vals.push(id);
-  const { rows } = await pool.query(
-    `UPDATE public.signage_professionals SET ${sets.join(", ")}, updated_at=now() WHERE id=$${i} RETURNING *`,
-    vals
-  );
-  res.json({ professional: rows[0] });
-});
-
-router.delete("/professionals/:id", async (req, res) => {
-  const { rowCount } = await pool.query(`DELETE FROM public.signage_professionals WHERE id=$1`, [req.params.id]);
-  res.json({ ok: (rowCount ?? 0) > 0 });
+router.delete("/videos/:id", async (req,res)=>{
+  try{
+    const { rowCount } = await pool.query(`DELETE FROM public.signage_videos WHERE id::text=$1`, [String(req.params.id)]);
+    res.json({ ok: (rowCount ?? 0) > 0 });
+  } catch(e:any){ res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 export default router;
