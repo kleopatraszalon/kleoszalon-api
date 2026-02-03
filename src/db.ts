@@ -1,81 +1,59 @@
 // src/db.ts
-import { Pool, PoolConfig } from "pg";
+import { Pool } from "pg";
 
-const nodeEnv = process.env.NODE_ENV ?? "development";
+/**
+ * Render Postgres esetén a hibád (ETIMEDOUT) szinte biztosan azért van,
+ * mert a backend NEM a "Internal Database URL"-t használja.
+ *
+ * - Internal URL -> host: dpg-...-a , port: 5432 (privát háló)
+ * - External URL-> publikus IP + random port (nálad: 34056)
+ *
+ * Itt csak a DATABASE_URL-t használjuk, és gyors timeoutot adunk,
+ * hogy ne lógjon a szerver 30-60 mp-ig.
+ */
 
-// 1) Első próbálkozás: teljes connection string (Render DATABASE_URL)
 const databaseUrl = process.env.DATABASE_URL?.trim();
 
-let config: PoolConfig;
-
-if (databaseUrl && databaseUrl !== "") {
-  // Ha Render, PGSSLMODE=require vagy production, akkor SSL
-  const sslEnabled =
-    process.env.PGSSLMODE?.toLowerCase() === "require" ||
-    databaseUrl.includes("render.com") ||
-    nodeEnv === "production";
-
-  config = {
-    connectionString: databaseUrl,
-    ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
-  };
-
-  console.log("🔧 PG pool init (URL)", {
-    NODE_ENV: nodeEnv,
-    USE_URL: true,
-    SSL: sslEnabled ? "on" : "off",
-  });
+if (!databaseUrl) {
+console.warn("⚠️ DATABASE_URL nincs beállítva! A DB-s route-ok nem fognak működni.");
 } else {
-  // 2) Fallback: külön env változók
-  const host =
-    process.env.PGHOST ||
-    process.env.DB_HOST ||
-    "localhost";
-
-  const port = Number(
-    process.env.PGPORT ||
-      process.env.DB_PORT ||
-      5432
-  );
-
-  const user =
-    process.env.PGUSER ||
-    process.env.DB_USER ||
-    "postgres";
-
-  const password =
-    process.env.PGPASSWORD ||
-    process.env.DB_PASSWORD ||
-    undefined;
-
-  const database =
-    process.env.PGDATABASE ||
-    process.env.DB_NAME ||
-    "postgres";
-
-  const sslEnabled =
-    process.env.PGSSLMODE?.toLowerCase() === "require";
-
-  config = {
-    host,
-    port,
-    user,
-    password,
-    database,
-    ssl: sslEnabled ? { rejectUnauthorized: false } : undefined,
-  };
-
-  console.log("🔧 PG pool init (lokál/fallback)", {
-    NODE_ENV: nodeEnv,
-    host,
-    port,
-    user,
-    database,
-    ssl: sslEnabled ? "on" : "off",
-  });
+try {
+const u = new URL(databaseUrl);
+console.log("🔧 PG config", {
+host: u.hostname,
+port: u.port || "5432",
+db: (u.pathname || "").replace("/", ""),
+ssl: process.env.PGSSL === "off" ? "off" : "on",
+});
+} catch {
+console.warn("⚠️ DATABASE_URL nem URL formátumú, ellenőrizd az env-et.");
+}
 }
 
-const pool = new Pool(config);
+// SSL: Render Postgresnél az external kapcsolat igényel SSL-t.
+// Internal URL-lel általában SSL-lel is megy. Ha mégsem, tedd be az env-be: PGSSL=off
+const ssl =
+process.env.PGSSL === "off"
+? false
+: { rejectUnauthorized: false };
+
+export const pool = new Pool({
+connectionString: databaseUrl,
+ssl,
+connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5000),
+idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30000),
+max: Number(process.env.PG_POOL_MAX ?? 10),
+keepAlive: true,
+});
+
+// szerver oldali query timeout (ne várjon örökké lock miatt)
+pool.on("connect", (client) => {
+const st = Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 8000);
+client.query(`SET statement_timeout = ${st}`).catch(() => {});
+});
+
+pool.on("error", (err) => {
+console.error("❌ PG pool error:", err);
+});
 
 export default pool;
-export { pool };

@@ -48,11 +48,53 @@ import { ensureSignageTables } from "./signage/ensureSignageTables";
 
 const app = express();
 
+
+// ===========================================================
+// 🧠 DB állapot + gyors hibajelzés (ne lógjon 30-60 mp-ig a kérés)
+// ===========================================================
+const dbState = {
+  ok: false,
+  last_ok_at: null as string | null,
+  last_err_at: null as string | null,
+  last_error: "" as string,
+};
+
+async function tryDbPing(label: string) {
+  const t0 = Date.now();
+  try {
+    await pool.query("SELECT 1");
+    dbState.ok = true;
+    dbState.last_ok_at = new Date().toISOString();
+    dbState.last_error = "";
+    console.log(`✅ DB OK (${label}) ms=${Date.now() - t0}`);
+    return true;
+  } catch (e: any) {
+    dbState.ok = false;
+    dbState.last_err_at = new Date().toISOString();
+    dbState.last_error = e?.message ?? String(e);
+    console.error(`❌ DB FAIL (${label}) ms=${Date.now() - t0}`, dbState.last_error);
+    return false;
+  }
+}
+
+async function initDbDependentThings() {
+  const ok = await tryDbPing("startup");
+  if (ok) {
+    // csak akkor táblázunk, ha a DB tényleg elérhető
+    ensureSignageTables(pool)
+      .then(() => console.log("✅ Signage táblák OK"))
+      .catch((e) => console.error("❌ Signage táblák hiba:", e));
+  } else {
+    // újrapróbálkozás (pl. DB még ébred / env javítás után deploy)
+    setTimeout(() => initDbDependentThings().catch(() => {}), 15000);
+  }
+}
+
+// induláskor próbáljuk meg
+initDbDependentThings().catch(() => {});
+
 // Signage táblák biztosítása (kijelző modul)
-ensureSignageTables(pool).then(() => console.log('✅ Signage táblák OK')).catch((e)=>console.error('❌ Signage táblák hiba:', e));
-
-
-
+// (DB nélkül ne próbálkozzon, mert feleslegesen time-outol)
 console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
 
@@ -94,6 +136,24 @@ app.options("*", cors(corsOptions));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+
+
+// 🔒 DB guard: ha a DB nem elérhető, azonnal 503-at adunk (nem 500 + hosszú timeout)
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  // CORS preflight
+  if (req.method === "OPTIONS") return next();
+  // Health mindig menjen
+  if (req.path === "/health" || req.path === "/health/db") return next();
+  if (!dbState.ok) {
+    return res.status(503).json({
+      ok: false,
+      error: "db_unreachable",
+      message: "A szerver adatbázisa jelenleg nem elérhető (connection timeout).",
+      last_err_at: dbState.last_err_at,
+    });
+  }
+  return next();
+});
 app.use("/api", authRoutes);
 
 // SIGNAGE (kijelző)
@@ -250,8 +310,14 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
 // Telephelyek listázása
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, time: new Date().toISOString() })
+  res.json({ ok: true, time: new Date().toISOString(), db: dbState })
 );
+
+// DB ping endpoint (kézi ellenőrzéshez)
+app.get("/api/health/db", async (_req, res) => {
+  const ok = await tryDbPing("health");
+  return res.status(ok ? 200 : 503).json({ ok, db: dbState });
+});
 app.get("/", (_req, res) =>
   res.send("✅ Backend fut és CORS be van állítva")
 );

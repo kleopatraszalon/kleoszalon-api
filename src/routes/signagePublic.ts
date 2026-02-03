@@ -12,24 +12,20 @@ router.get("/services", async (_req, res) => {
       ORDER BY priority DESC, updated_at DESC
       LIMIT 500;
     `);
-    res.json({
+    return res.json({
       source: "db:public.signage_services",
       fetchedAt: new Date().toISOString(),
       services: rows.map((r:any)=>({
-        id: r.id,
-        name: r.name,
-        category: r.category || "",
-        durationMin: r.duration_min ?? null,
-        price_text: r.price_text || "",
-        priority: Number(r.priority || 0),
+        id: r.id, name: r.name, category: r.category || "", durationMin: r.duration_min ?? null,
+        price_text: r.price_text || "", priority: Number(r.priority || 0),
       })),
     });
-  } catch (e:any) { res.status(500).json({ error:String(e?.message||e) }); }
+  } catch(e:any){ return res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 router.get("/deals", async (_req, res) => {
   try {
-    const { rows } = await pool.query(`
+    const q1 = await pool.query(`
       SELECT *, id::text AS id
       FROM public.signage_deals
       WHERE active = true
@@ -38,21 +34,32 @@ router.get("/deals", async (_req, res) => {
       ORDER BY priority DESC, updated_at DESC
       LIMIT 50;
     `);
-    res.json({ deals: rows });
-  } catch (e:any) { res.status(500).json({ error:String(e?.message||e) }); }
+    if (!q1.rows || q1.rows.length === 0) {
+      const q2 = await pool.query(`
+        SELECT *, id::text AS id
+        FROM public.signage_deals
+        WHERE active = true
+        ORDER BY priority DESC, updated_at DESC
+        LIMIT 50;
+      `);
+      return res.json({ deals: q2.rows });
+    }
+    return res.json({ deals: q1.rows });
+  } catch(e:any){ return res.status(500).json({ error:String(e?.message||e) }); }
 });
 
+// show=true, include is_free for green/red dot. Never hide when is_free=false.
 router.get("/professionals", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT *, id::text AS id
       FROM public.signage_professionals
-      WHERE show = true AND available = true
-      ORDER BY priority DESC, updated_at DESC
+      WHERE show = true
+      ORDER BY priority DESC, is_free DESC, updated_at DESC
       LIMIT 30;
     `);
-    res.json({ professionals: rows });
-  } catch (e:any) { res.status(500).json({ error:String(e?.message||e) }); }
+    return res.json({ professionals: rows });
+  } catch(e:any){ return res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 router.get("/videos", async (_req, res) => {
@@ -64,8 +71,8 @@ router.get("/videos", async (_req, res) => {
       ORDER BY priority DESC, updated_at DESC
       LIMIT 50;
     `);
-    res.json({ videos: rows });
-  } catch (e:any) { res.status(500).json({ error:String(e?.message||e) }); }
+    return res.json({ videos: rows });
+  } catch(e:any){ return res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 router.get("/daily", async (_req, res) => {
@@ -88,13 +95,13 @@ router.get("/daily", async (_req, res) => {
       return { text:item.text, author:item.author || "" };
     };
 
-    res.json({
+    return res.json({
       date: new Date().toISOString().slice(0,10),
       fitness: pick(byCat.fitness, "A fegyelem akkor is dolgozik, amikor a motiváció eltűnik."),
       beauty: pick(byCat.beauty, "A konzisztens rutin többet ér, mint a ritka csodamegoldás."),
       general: pick(byCat.general, "A minőség a részletekben lakik: technika, higiénia, élmény."),
     });
-  } catch (e:any) { res.status(500).json({ error:String(e?.message||e) }); }
+  } catch(e:any){ return res.status(500).json({ error:String(e?.message||e) }); }
 });
 
 export default router;
