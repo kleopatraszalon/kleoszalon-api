@@ -90,12 +90,14 @@ console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
 app.set("trust proxy", 1);
 /* ===== CORS (Render + local dev) =====
-   Render env javaslat (FRONTEND origin-ek!):
-   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173
+   FONTOS:
+   - Az Origin fejléc sosem tartalmaz lezáró '/'-t, ezért a whitelist elemekből le kell venni.
+   - Renderen tipikusan ez kell:
+     CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
 */
-const normalizeOrigin = (s) => String(s || "").trim().replace(/\/+$/, "");
+const normalizeOrigin = (s) => s.trim().replace(/\/+$/, "");
 const allowedOrigins = (process.env.CORS_ORIGINS ??
-    "https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
+    "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
     .split(",")
     .map(normalizeOrigin)
     .filter(Boolean);
@@ -107,13 +109,11 @@ const corsOptions = {
         const o = normalizeOrigin(origin);
         if (allowedOrigins.includes(o))
             return cb(null, true);
-        // Ne dobjunk hibát (az 500-at eredményezhet CORS header nélkül),
-        // egyszerűen ne engedjük.
-        return cb(null, false);
+        return cb(new Error(`CORS blocked for origin: ${o}`));
     },
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
     optionsSuccessStatus: 204,
 };
 app.use((_, res, next) => {
@@ -142,10 +142,10 @@ app.use("/api", (req, res, next) => {
     }
     return next();
 });
-app.use("/api", auth_1.default);
 // SIGNAGE (kijelző)
 app.use("/api/signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
+app.use("/api", auth_1.default);
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 // PUBLIC WEBSHOP
@@ -525,7 +525,7 @@ async function verifyCodeHandler(req, res) {
     // 4) Token sütiben is, plusz JSON-ben vissza
     res.cookie("token", token, {
         httpOnly: true,
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        sameSite: "lax",
         secure: process.env.NODE_ENV === "production",
         path: "/",
         maxAge: 8 * 60 * 60 * 1000, // 8 óra

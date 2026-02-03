@@ -100,15 +100,13 @@ console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzi
 app.set("trust proxy", 1);
 
 /* ===== CORS (Render + local dev) =====
-   FONTOS:
-   - Az Origin fejléc sosem tartalmaz lezáró '/'-t, ezért a whitelist elemekből le kell venni.
-   - Renderen tipikusan ez kell:
-     CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
+   Render env javaslat (FRONTEND origin-ek!):
+   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173
 */
-const normalizeOrigin = (s: string) => s.trim().replace(/\/+$/, "");
+const normalizeOrigin = (s: string) => String(s || "").trim().replace(/\/+$/, "");
 
 const allowedOrigins = (process.env.CORS_ORIGINS ??
-  "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
+  "https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
   .split(",")
   .map(normalizeOrigin)
   .filter(Boolean);
@@ -121,11 +119,13 @@ const corsOptions: cors.CorsOptions = {
     const o = normalizeOrigin(origin);
     if (allowedOrigins.includes(o)) return cb(null, true);
 
-    return cb(new Error(`CORS blocked for origin: ${o}`));
+    // Ne dobjunk hibát (az 500-at eredményezhet CORS header nélkül),
+    // egyszerűen ne engedjük.
+    return cb(null, false);
   },
   credentials: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   optionsSuccessStatus: 204,
 };
 
@@ -156,11 +156,11 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   }
   return next();
 });
+app.use("/api", authRoutes);
+
 // SIGNAGE (kijelző)
 app.use("/api/signage", signagePublic);
 app.use("/api/admin/signage", signageAdmin);
-
-app.use("/api", authRoutes);
 
 
 
@@ -638,7 +638,7 @@ async function verifyCodeHandler(req: Request, res: Response) {
   // 4) Token sütiben is, plusz JSON-ben vissza
   res.cookie("token", token, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 8 * 60 * 60 * 1000, // 8 óra

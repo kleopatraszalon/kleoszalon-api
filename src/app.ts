@@ -1,5 +1,3 @@
 // src/app.ts
-// Kompatibilitási belépési pont: több build/start konfiguráció az app.ts-t importálja.
-// A teljes szerver-konfiguráció (route-ok, CORS, auth, signage, stb.) a server.ts-ben van.
-
+// Kompatibilitás: ha valahol a build/start az app.ts-t importálja, ugyanazt a teljesen konfigurált Express appot kapja, mint a server.ts-ből.
 export { default } from "./server";

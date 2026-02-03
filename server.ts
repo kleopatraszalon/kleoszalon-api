@@ -100,17 +100,13 @@ console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzi
 app.set("trust proxy", 1);
 
 /* ===== CORS (Render + local dev) =====
-   FONTOS:
-   - Az Origin fejléc sosem tartalmaz lezáró '/'-t, ezért a whitelist elemekből le kell venni.
-   - Renderen tipikusan ez kell:
-     CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
+   Render env javaslat:
+   CORS_ORIGINS=https://kleoszalon-api-1.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173
 */
-const normalizeOrigin = (s: string) => s.trim().replace(/\/+$/, "");
-
 const allowedOrigins = (process.env.CORS_ORIGINS ??
-  "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
+  "https://kleoszalon-api-1.onrender.com/,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
   .split(",")
-  .map(normalizeOrigin)
+  .map((s) => s.trim())
   .filter(Boolean);
 
 const corsOptions: cors.CorsOptions = {
@@ -118,14 +114,13 @@ const corsOptions: cors.CorsOptions = {
     // origin nélküli kérések (pl. curl, server-to-server) – engedjük
     if (!origin) return cb(null, true);
 
-    const o = normalizeOrigin(origin);
-    if (allowedOrigins.includes(o)) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
 
-    return cb(new Error(`CORS blocked for origin: ${o}`));
+    return cb(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   optionsSuccessStatus: 204,
 };
 
