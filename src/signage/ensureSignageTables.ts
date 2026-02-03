@@ -3,7 +3,6 @@ import type { Pool } from "pg";
 export async function ensureSignageTables(pool: Pool) {
   try { await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`); } catch {}
 
-  // gen_random_uuid availability
   let hasGenRandomUuid = false;
   try {
     const r = await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'gen_random_uuid') AS ok;`);
@@ -14,7 +13,6 @@ export async function ensureSignageTables(pool: Pool) {
     ? `id uuid PRIMARY KEY DEFAULT gen_random_uuid()`
     : `id text PRIMARY KEY DEFAULT md5(random()::text || clock_timestamp()::text)`;
 
-  // Services
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_services (
       ${idCol},
@@ -30,7 +28,6 @@ export async function ensureSignageTables(pool: Pool) {
   `);
   try { await pool.query(`ALTER TABLE public.signage_services ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`); } catch {}
 
-  // Deals
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_deals (
       ${idCol},
@@ -46,7 +43,6 @@ export async function ensureSignageTables(pool: Pool) {
     );
   `);
 
-  // Professionals
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_professionals (
       ${idCol},
@@ -55,7 +51,6 @@ export async function ensureSignageTables(pool: Pool) {
       note text DEFAULT '',
       photo_url text DEFAULT '',
       show boolean NOT NULL DEFAULT true,
-      available boolean NOT NULL DEFAULT true,
       is_free boolean NOT NULL DEFAULT true,
       priority int NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL DEFAULT now(),
@@ -65,7 +60,6 @@ export async function ensureSignageTables(pool: Pool) {
   try { await pool.query(`ALTER TABLE public.signage_professionals ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`); } catch {}
   try { await pool.query(`ALTER TABLE public.signage_professionals ADD COLUMN IF NOT EXISTS is_free boolean NOT NULL DEFAULT true;`); } catch {}
 
-  // Quotes
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_quotes (
       ${idCol},
@@ -79,7 +73,6 @@ export async function ensureSignageTables(pool: Pool) {
     );
   `);
 
-  // Videos
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_videos (
       ${idCol},
