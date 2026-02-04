@@ -180,9 +180,30 @@ app.use("/api", (req, res, next) => {
     return next();
 });
 // SIGNAGE (kijelző)
-app.use("/api/signage", signagePublic_1.default);
+app.use(" /signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
 app.use("/api", auth_1.default);
+// 1) Public signage: nincs cookie -> mehet wildcard
+app.use("/api/signage", (0, cors_1.default)({ origin: "*", credentials: false }));
+// 2) Admin + auth: cookie kell -> konkrét origin lista
+const allowed = new Set([
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://kleoszalon-frontend.onrender.com",
+    "https://weblap-o3g6.onrender.com", // <- a te kijelző domained
+]);
+app.use((0, cors_1.default)({
+    origin(origin, cb) {
+        if (!origin)
+            return cb(null, true); // pl. curl/postman
+        if (allowed.has(origin))
+            return cb(null, true);
+        return cb(new Error("CORS blocked: " + origin), false);
+    },
+    credentials: true,
+}));
+// preflight
+app.options("*", (0, cors_1.default)());
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 // PUBLIC WEBSHOP
