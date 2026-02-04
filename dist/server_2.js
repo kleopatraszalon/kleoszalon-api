@@ -90,60 +90,33 @@ console.log("🧩 SMTP_USER:", process.env.SMTP_USER || "NINCS beállítva");
 console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzik");
 app.set("trust proxy", 1);
 /* ===== CORS (Render + local dev) =====
-   FONTOS:
-   - A böngésző Origin fejléc SOHA nem tartalmaz lezáró '/'-t → normalizálunk.
-   - Renderen állítsd be (ajánlott, de nem kötelező):
-     CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
-   - Ha Renderen rosszul van megadva a CORS_ORIGINS, attól még a DEFAULT lista életben marad (union).
+   Render env javaslat (FRONTEND origin-ek!):
+   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173
 */
-const normalizeOrigin = (s) => s
-    .trim()
-    .replace(/^["']|["']$/g, "") // Render env-ben gyakori a véletlen idézőjel
-    .replace(/\/+$/, ""); // lezáró perjelek eldobása
-const DEFAULT_CORS_ORIGINS = "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173";
-const originsRaw = [process.env.CORS_ORIGINS, DEFAULT_CORS_ORIGINS].filter(Boolean).join(",");
-const allowedOrigins = originsRaw
+const normalizeOrigin = (s) => String(s || "").trim().replace(/\/+$/, "");
+const allowedOrigins = (process.env.CORS_ORIGINS ??
+    "https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
     .split(",")
     .map(normalizeOrigin)
     .filter(Boolean);
-const allowedHostnames = new Set();
-for (const o of allowedOrigins) {
-    try {
-        allowedHostnames.add(new URL(o).hostname);
-    }
-    catch {
-        // ha valaki véletlen csak hostot ad meg, ne dobjunk
-        allowedHostnames.add(o.replace(/^https?:\/\//, "").split(":")[0]);
-    }
-}
 const corsOptions = {
     origin: (origin, cb) => {
         // origin nélküli kérések (pl. curl, server-to-server) – engedjük
         if (!origin)
             return cb(null, true);
         const o = normalizeOrigin(origin);
-        // 1) pontos origin match
         if (allowedOrigins.includes(o))
             return cb(null, true);
-        // 2) host match (pl. http vs https, port különbség esetén is)
-        try {
-            const u = new URL(o);
-            if (allowedHostnames.has(u.hostname))
-                return cb(null, true);
-        }
-        catch {
-            // ignore
-        }
-        return cb(new Error(`CORS blocked for origin: ${o}`));
+        // Ne dobjunk hibát (az 500-at eredményezhet CORS header nélkül),
+        // egyszerűen ne engedjük.
+        return cb(null, false);
     },
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: ["Content-Type", "Authorization"],
     optionsSuccessStatus: 204,
 };
-// könnyű verzió-ellenőrzéshez (hogy biztosan a friss build fut-e Renderen)
 app.use((_, res, next) => {
-    res.setHeader("X-Kleo-Build", "corsfix-2026-02-03");
     res.header("Vary", "Origin");
     next();
 });
@@ -169,10 +142,10 @@ app.use("/api", (req, res, next) => {
     }
     return next();
 });
+app.use("/api", auth_1.default);
 // SIGNAGE (kijelző)
 app.use("/api/signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
-app.use("/api", auth_1.default);
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
 // PUBLIC WEBSHOP
@@ -552,7 +525,7 @@ async function verifyCodeHandler(req, res) {
     // 4) Token sütiben is, plusz JSON-ben vissza
     res.cookie("token", token, {
         httpOnly: true,
-        sameSite: "lax",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         secure: process.env.NODE_ENV === "production",
         path: "/",
         maxAge: 8 * 60 * 60 * 1000, // 8 óra

@@ -101,17 +101,36 @@ app.set("trust proxy", 1);
 
 /* ===== CORS (Render + local dev) =====
    FONTOS:
-   - Az Origin fejléc sosem tartalmaz lezáró '/'-t, ezért a whitelist elemekből le kell venni.
-   - Renderen tipikusan ez kell:
+   - A böngésző Origin fejléc SOHA nem tartalmaz lezáró '/'-t → normalizálunk.
+   - Renderen állítsd be (ajánlott, de nem kötelező):
      CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
+   - Ha Renderen rosszul van megadva a CORS_ORIGINS, attól még a DEFAULT lista életben marad (union).
 */
-const normalizeOrigin = (s: string) => s.trim().replace(/\/+$/, "");
+const normalizeOrigin = (s: string) =>
+  s
+    .trim()
+    .replace(/^["']|["']$/g, "") // Render env-ben gyakori a véletlen idézőjel
+    .replace(/\/+$/, "");       // lezáró perjelek eldobása
 
-const allowedOrigins = (process.env.CORS_ORIGINS ??
-  "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
+const DEFAULT_CORS_ORIGINS =
+  "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173";
+
+const originsRaw = [process.env.CORS_ORIGINS, DEFAULT_CORS_ORIGINS].filter(Boolean).join(",");
+
+const allowedOrigins = originsRaw
   .split(",")
   .map(normalizeOrigin)
   .filter(Boolean);
+
+const allowedHostnames = new Set<string>();
+for (const o of allowedOrigins) {
+  try {
+    allowedHostnames.add(new URL(o).hostname);
+  } catch {
+    // ha valaki véletlen csak hostot ad meg, ne dobjunk
+    allowedHostnames.add(o.replace(/^https?:\/\//, "").split(":")[0]);
+  }
+}
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
@@ -119,7 +138,17 @@ const corsOptions: cors.CorsOptions = {
     if (!origin) return cb(null, true);
 
     const o = normalizeOrigin(origin);
+
+    // 1) pontos origin match
     if (allowedOrigins.includes(o)) return cb(null, true);
+
+    // 2) host match (pl. http vs https, port különbség esetén is)
+    try {
+      const u = new URL(o);
+      if (allowedHostnames.has(u.hostname)) return cb(null, true);
+    } catch {
+      // ignore
+    }
 
     return cb(new Error(`CORS blocked for origin: ${o}`));
   },
@@ -129,12 +158,16 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
+// könnyű verzió-ellenőrzéshez (hogy biztosan a friss build fut-e Renderen)
 app.use((_, res, next) => {
+  res.setHeader("X-Kleo-Build", "corsfix-2026-02-03");
   res.header("Vary", "Origin");
   next();
 });
+
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
+
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
