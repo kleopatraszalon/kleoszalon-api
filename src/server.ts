@@ -100,35 +100,54 @@ console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzi
 app.set("trust proxy", 1);
 
 /* ===== CORS (Render + local dev) =====
-   FONTOS:
-   - A böngésző Origin fejléc SOHA nem tartalmaz lezáró '/'-t → normalizálunk.
-   - Renderen állítsd be (ajánlott, de nem kötelező):
-     CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001
-   - Ha Renderen rosszul van megadva a CORS_ORIGINS, attól még a DEFAULT lista életben marad (union).
+   Render env javaslat:
+   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173
 */
-const normalizeOrigin = (s: string) =>
-  s
+function normalizeOrigin(v: string) {
+  return String(v || "")
     .trim()
-    .replace(/^["']|["']$/g, "") // Render env-ben gyakori a véletlen idézőjel
-    .replace(/\/+$/, "");       // lezáró perjelek eldobása
+    .replace(/^["']|["']$/g, "")
+    .replace(/\/$/, ""); // záró perjel le
+}
 
-const DEFAULT_CORS_ORIGINS =
-  "https://kleoszalon-frontend.onrender.com,https://kleoszalon-api-jon.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173";
+const defaultOrigins = [
+  "https://kleoszalon-frontend.onrender.com",
+  "https://kleoszalon-api-jon.onrender.com",
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+  "http://127.0.0.1:5173",
+].map(normalizeOrigin);
 
-const originsRaw = [process.env.CORS_ORIGINS, DEFAULT_CORS_ORIGINS].filter(Boolean).join(",");
-
-const allowedOrigins = originsRaw
+const envOrigins = String(process.env.CORS_ORIGINS ?? "")
   .split(",")
   .map(normalizeOrigin)
   .filter(Boolean);
 
-const allowedHostnames = new Set<string>();
-for (const o of allowedOrigins) {
+// UNION: env + default (nehogy egy rossz env lenullázza a defaultot)
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+
+function originAllowed(origin: string) {
+  const o = normalizeOrigin(origin);
+
+  // 1) teljes egyezés
+  if (allowedOrigins.includes(o)) return true;
+
+  // 2) host egyezés (http/https és port eltérés ellen is)
   try {
-    allowedHostnames.add(new URL(o).hostname);
+    const u = new URL(o);
+    return allowedOrigins.some((x) => {
+      try {
+        const xu = new URL(x);
+        return xu.hostname === u.hostname;
+      } catch {
+        return false;
+      }
+    });
   } catch {
-    // ha valaki véletlen csak hostot ad meg, ne dobjunk
-    allowedHostnames.add(o.replace(/^https?:\/\//, "").split(":")[0]);
+    return false;
   }
 }
 
@@ -137,20 +156,9 @@ const corsOptions: cors.CorsOptions = {
     // origin nélküli kérések (pl. curl, server-to-server) – engedjük
     if (!origin) return cb(null, true);
 
-    const o = normalizeOrigin(origin);
+    if (originAllowed(origin)) return cb(null, true);
 
-    // 1) pontos origin match
-    if (allowedOrigins.includes(o)) return cb(null, true);
-
-    // 2) host match (pl. http vs https, port különbség esetén is)
-    try {
-      const u = new URL(o);
-      if (allowedHostnames.has(u.hostname)) return cb(null, true);
-    } catch {
-      // ignore
-    }
-
-    return cb(new Error(`CORS blocked for origin: ${o}`));
+    return cb(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
@@ -158,16 +166,14 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 204,
 };
 
-// könnyű verzió-ellenőrzéshez (hogy biztosan a friss build fut-e Renderen)
 app.use((_, res, next) => {
-  res.setHeader("X-Kleo-Build", "corsfix-2026-02-03");
   res.header("Vary", "Origin");
+  // DEBUG: ebből látod, hogy a friss build fut-e Renderen
+  res.header("X-Kleo-CORS", "corsfix-2026-02-04");
   next();
 });
-
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
-
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
