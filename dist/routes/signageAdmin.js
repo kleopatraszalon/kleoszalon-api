@@ -119,6 +119,70 @@ async function ensureTables() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- 🔁 MIGRÁCIÓK meglévő táblákhoz (CREATE TABLE IF NOT EXISTS nem ad hozzá új oszlopot!)
+    -- Services
+    ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS category TEXT DEFAULT '';
+    ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS duration_min INT;
+    ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS price_text TEXT DEFAULT '';
+    ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+    ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+
+    -- Deals
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS subtitle TEXT DEFAULT '';
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS price_text TEXT DEFAULT '';
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS valid_from DATE;
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS valid_to DATE;
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+    ALTER TABLE signage_deals ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+
+    -- Videos
+    ALTER TABLE signage_videos ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
+    ALTER TABLE signage_videos ADD COLUMN IF NOT EXISTS duration_sec INT DEFAULT 60;
+    ALTER TABLE signage_videos ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+    ALTER TABLE signage_videos ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+
+    -- Quotes (régi sémában gyakran 'active' volt a kapcsoló – itt 'enabled'-re állunk át)
+    ALTER TABLE signage_quotes ADD COLUMN IF NOT EXISTS author TEXT DEFAULT '';
+    ALTER TABLE signage_quotes ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE;
+    ALTER TABLE signage_quotes ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='signage_quotes' AND column_name='active'
+      ) THEN
+        -- ha van 'active', tükrözzük át az enabled-be (csak ahol még NULL)
+        EXECUTE 'UPDATE signage_quotes SET enabled = active WHERE enabled IS NULL';
+      END IF;
+    END $$;
+
+    -- Professionals (régi sémában 'enabled/available' volt – itt 'show/is_free'-re állunk át)
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS title TEXT DEFAULT '';
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS note TEXT DEFAULT '';
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS photo_url TEXT DEFAULT '';
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS show BOOLEAN DEFAULT TRUE;
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS is_free BOOLEAN DEFAULT TRUE;
+    ALTER TABLE signage_professionals ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0;
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='signage_professionals' AND column_name='enabled'
+      ) THEN
+        EXECUTE 'UPDATE signage_professionals SET show = enabled WHERE show IS NULL';
+      END IF;
+
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='signage_professionals' AND column_name='available'
+      ) THEN
+        EXECUTE 'UPDATE signage_professionals SET is_free = available WHERE is_free IS NULL';
+      END IF;
+    END $$;
+
   `);
     ensured = true;
 }
@@ -183,7 +247,7 @@ router.post("/services", async (req, res) => {
         const durationMin = pickInt(req.body?.durationMin ?? req.body?.duration_min);
         const price_text = String(req.body?.price_text ?? req.body?.priceText ?? "").trim();
         const priority = pickInt(req.body?.priority) ?? 0;
-        const enabled = pickBool(req.body?.enabled) ?? true;
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active) ?? true;
         const { rows } = await pool.query(`INSERT INTO signage_services (id, name, category, duration_min, price_text, priority, enabled)
        VALUES ($1, $2, NULLIF($3,''), $4, NULLIF($5,''), $6, $7)
        RETURNING id, name, category, duration_min, price_text, priority, enabled, created_at, updated_at`, [id, name, category, durationMin ?? null, price_text, priority, enabled]);
@@ -216,7 +280,7 @@ router.put("/services/:id", async (req, res) => {
         const durationMin = pickInt(req.body?.durationMin ?? req.body?.duration_min);
         const price_text = req.body?.price_text !== undefined ? String(req.body.price_text).trim() : undefined;
         const priority = pickInt(req.body?.priority);
-        const enabled = pickBool(req.body?.enabled);
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active);
         const { rows } = await pool.query(`UPDATE signage_services
        SET
          name = COALESCE($2, name),
@@ -379,7 +443,7 @@ router.post("/videos", async (req, res) => {
         const id = idOrNew(req.body?.id);
         const title = String(req.body?.title ?? "").trim();
         const duration_sec = pickInt(req.body?.duration_sec ?? req.body?.durationSec) ?? 60;
-        const enabled = pickBool(req.body?.enabled) ?? true;
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active) ?? true;
         const priority = pickInt(req.body?.priority) ?? 0;
         const { rows } = await pool.query(`INSERT INTO signage_videos (id, youtube_id, title, duration_sec, enabled, priority)
        VALUES ($1, $2, NULLIF($3,''), $4, $5, $6)
@@ -397,7 +461,7 @@ router.put("/videos/:id", async (req, res) => {
         const youtube_id = req.body?.youtube_id !== undefined ? String(req.body.youtube_id).trim() : undefined;
         const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined;
         const duration_sec = pickInt(req.body?.duration_sec ?? req.body?.durationSec);
-        const enabled = pickBool(req.body?.enabled);
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active);
         const priority = pickInt(req.body?.priority);
         const { rows } = await pool.query(`UPDATE signage_videos
        SET
@@ -457,7 +521,7 @@ router.post("/quotes", async (req, res) => {
             return res.status(400).json({ error: "text required" });
         const id = idOrNew(req.body?.id);
         const author = String(req.body?.author ?? "").trim();
-        const enabled = pickBool(req.body?.enabled) ?? true;
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active) ?? true;
         const priority = pickInt(req.body?.priority) ?? 0;
         const { rows } = await pool.query(`INSERT INTO signage_quotes (id, text, author, enabled, priority)
        VALUES ($1, $2, NULLIF($3,''), $4, $5)
@@ -474,7 +538,7 @@ router.put("/quotes/:id", async (req, res) => {
         const id = req.params.id;
         const text = req.body?.text !== undefined ? String(req.body.text).trim() : undefined;
         const author = req.body?.author !== undefined ? String(req.body.author).trim() : undefined;
-        const enabled = pickBool(req.body?.enabled);
+        const enabled = pickBool(req.body?.enabled ?? req.body?.active);
         const priority = pickInt(req.body?.priority);
         const { rows } = await pool.query(`UPDATE signage_quotes
        SET

@@ -16,7 +16,7 @@ function requireAuth(req, res, next) {
         // elvárás: a login-nál így rakjuk össze majd a token payloadot:
         // { id, role, location_id }
         req.user = {
-            id: decoded.id,
+            id: decoded.userId ?? decoded.id,
             role: decoded.role,
             location_id: (_a = decoded.location_id) !== null && _a !== void 0 ? _a : null,
         };
