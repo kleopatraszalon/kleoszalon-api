@@ -32,44 +32,95 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
-const dbMod = __importStar(require("../db"));
-// Pool kompatibilitás: kezeli, ha a db modul default export, vagy { pool } named export.
-const pool = dbMod.default ?? dbMod.pool ?? dbMod;
-/**
- * Signage Admin API
- * - GET /services, PUT /services/:id/override
- * - CRUD: /deals, /videos, /quotes, /custom-services
- * - CRUD: /professionals  (és legacy alias: /)
- *
- * Cél: a frontend által hívott végpontok NE adjanak 404-et.
- * A táblanév/mezőnév eltéréseket óvatosan kezeljük (tableExists + column discovery).
- */
+const crypto_1 = __importDefault(require("crypto"));
+// ⚠️ db export kompatibilitás: egyes projektverziókban default export van, másokban named 'pool'
+const db = __importStar(require("../db"));
+const pool = (db.pool ?? db.default);
 const router = (0, express_1.Router)();
-console.log("✅ signageAdmin routes loaded v3 (2026-02-03)");
-// -----------------------------
-// Helpers
-// -----------------------------
-async function tableExists(table) {
-    // PostgreSQL: to_regclass('public.table_name') -> null, ha nincs
-    const { rows } = await pool.query(`SELECT to_regclass($1) AS reg`, [`public.${table}`]);
-    return !!rows?.[0]?.reg;
-}
-const colCache = {};
-async function getCols(table) {
-    const now = Date.now();
-    const cached = colCache[table];
-    if (cached && now - cached.at < 60000)
-        return cached.cols; // 60s cache
-    const { rows } = await pool.query(`
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_schema = 'public' AND table_name = $1
-    `, [table]);
-    const cols = new Set((rows ?? []).map((r) => String(r.column_name)));
-    colCache[table] = { at: now, cols };
-    return cols;
+/**
+ * Admin API for Signage module.
+ * Mounted at: /api/admin/signage
+ *
+ * Endpoints:
+ *  - GET/POST/PUT/DELETE /services
+ *  - GET/POST/PUT/DELETE /deals
+ *  - GET/POST/PUT/DELETE /videos
+ *  - GET/POST/PUT/DELETE /quotes
+ *  - GET/POST/PUT/DELETE /professionals
+ *
+ * Backward compat (régi front): / (professionals), /:id (professionals)
+ */
+let ensured = false;
+async function ensureTables() {
+    if (ensured)
+        return;
+    // Ha már léteznek a táblák (ensureSignageTables), ez nem csinál semmit.
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS signage_services (
+      id UUID PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT DEFAULT '',
+      duration_min INT,
+      price_text TEXT DEFAULT '',
+      priority INT DEFAULT 0,
+      enabled BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS signage_deals (
+      id UUID PRIMARY KEY,
+      title TEXT NOT NULL,
+      subtitle TEXT DEFAULT '',
+      price_text TEXT DEFAULT '',
+      valid_from DATE,
+      valid_to DATE,
+      active BOOLEAN DEFAULT TRUE,
+      priority INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS signage_videos (
+      id UUID PRIMARY KEY,
+      youtube_id TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      duration_sec INT DEFAULT 60,
+      enabled BOOLEAN DEFAULT TRUE,
+      priority INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS signage_quotes (
+      id UUID PRIMARY KEY,
+      text TEXT NOT NULL,
+      author TEXT DEFAULT '',
+      enabled BOOLEAN DEFAULT TRUE,
+      priority INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS signage_professionals (
+      id UUID PRIMARY KEY,
+      name TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      note TEXT DEFAULT '',
+      photo_url TEXT DEFAULT '',
+      show BOOLEAN DEFAULT TRUE,
+      is_free BOOLEAN DEFAULT TRUE,
+      priority INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+    ensured = true;
 }
 function pickBool(v) {
     if (v === undefined || v === null)
@@ -88,212 +139,146 @@ function pickBool(v) {
     return undefined;
 }
 function pickInt(v) {
-    if (v === undefined || v === null)
+    if (v === undefined || v === null || v === "")
         return undefined;
     const n = Number(v);
-    if (Number.isFinite(n))
-        return Math.trunc(n);
-    return undefined;
+    return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }
-function pickString(v) {
-    if (v === undefined || v === null)
-        return undefined;
-    const s = String(v).trim();
-    return s.length ? s : undefined;
+function idOrNew(id) {
+    const s = String(id ?? "").trim();
+    return s || crypto_1.default.randomUUID();
 }
-async function firstExistingTable(candidates) {
-    for (const t of candidates) {
-        if (await tableExists(t))
-            return t;
-    }
-    return null;
-}
-function chooseFirst(cols, candidates) {
-    for (const c of candidates) {
-        if (cols.has(c))
-            return c;
-    }
-    return null;
-}
-// -----------------------------
-// SERVICES (alap szolgáltatások + override)
-// -----------------------------
-router.get("/services", async (req, res) => {
+// ------------------------- SERVICES -------------------------
+router.get("/services", async (_req, res) => {
     try {
-        // 1) base services: tipikusan "services" tábla (a projektben van servicesRouter)
-        const baseTable = (await tableExists("services")) ? "services" : null;
-        if (!baseTable)
-            return res.json({ services: [] });
-        const baseCols = await getCols(baseTable);
-        const idCol = chooseFirst(baseCols, ["id", "service_id"]);
-        const nameCol = chooseFirst(baseCols, ["name_hu", "name", "title", "service_name"]);
-        const priceCol = chooseFirst(baseCols, ["price_text", "price", "price_huf", "base_price", "price_from"]);
-        const activeCol = chooseFirst(baseCols, ["enabled", "is_active", "active", "visible"]);
-        if (!idCol || !nameCol)
-            return res.json({ services: [] });
-        const where = activeCol ? `WHERE COALESCE(${activeCol}::boolean, true) = true` : "";
-        const baseSql = `
-      SELECT
-        ${idCol}::text AS id,
-        ${nameCol}::text AS name
-        ${priceCol ? `, ${priceCol}::text AS price_text` : `, NULL::text AS price_text`}
-      FROM ${baseTable}
-      ${where}
-      ORDER BY ${nameCol} ASC
-    `;
-        const base = await pool.query(baseSql);
-        // 2) override tábla (ha van)
-        const overrideTable = await firstExistingTable([
-            "signage_service_overrides",
-            "signage_services_overrides",
-            "signage_service_override",
-            "signage_services_override",
-        ]);
-        const services = (base.rows ?? []).map((r) => ({
-            id: String(r.id),
-            name: String(r.name ?? ""),
-            price_text: r.price_text ?? null,
-            enabled: true,
-            priority: 0,
-            // extra mezők (nem árt)
-            price_text_override: null,
+        await ensureTables();
+        const { rows } = await pool.query(`SELECT id, name, category, duration_min, price_text, priority, enabled, created_at, updated_at
+       FROM signage_services
+       ORDER BY priority DESC, updated_at DESC`);
+        const services = rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            category: r.category ?? "",
+            durationMin: r.duration_min ?? null,
+            price_text: r.price_text ?? "",
+            priority: Number(r.priority ?? 0),
+            enabled: r.enabled === null ? true : !!r.enabled,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
         }));
-        if (!overrideTable || services.length === 0) {
-            return res.json({ services });
-        }
-        const oCols = await getCols(overrideTable);
-        const serviceIdCol = chooseFirst(oCols, ["service_id", "services_id", "id"]);
-        const enabledCol = chooseFirst(oCols, ["enabled", "show", "display"]);
-        const priceOverrideCol = chooseFirst(oCols, ["price_text_override", "price_override", "price_text"]);
-        const priorityCol = chooseFirst(oCols, ["priority", "sort_order", "order_index"]);
-        if (!serviceIdCol)
-            return res.json({ services });
-        const ids = services.map((s) => s.id);
-        const { rows: oRows } = await pool.query(`SELECT * FROM ${overrideTable} WHERE ${serviceIdCol}::text = ANY($1::text[])`, [ids]);
-        const byId = new Map();
-        for (const o of oRows ?? []) {
-            byId.set(String(o[serviceIdCol]), o);
-        }
-        const merged = services.map((s) => {
-            const o = byId.get(s.id);
-            if (!o)
-                return s;
-            const enabled = enabledCol ? (o[enabledCol] ?? true) : true;
-            const pr = priorityCol ? (o[priorityCol] ?? 0) : 0;
-            const po = priceOverrideCol ? (o[priceOverrideCol] ?? null) : null;
-            return {
-                ...s,
-                enabled: enabled === null || enabled === undefined ? true : !!enabled,
-                priority: Number.isFinite(Number(pr)) ? Number(pr) : 0,
-                price_text_override: po ? String(po) : null,
-            };
-        });
-        return res.json({ services: merged });
+        res.json({ services });
     }
     catch (e) {
-        return res.status(500).json({ error: e?.message ?? "Failed to list services" });
+        res.status(500).json({ error: e?.message ?? "Failed to list services" });
     }
 });
-router.put("/services/:id/override", async (req, res) => {
+router.post("/services", async (req, res) => {
     try {
-        const id = String(req.params.id);
-        const overrideTable = await firstExistingTable([
-            "signage_service_overrides",
-            "signage_services_overrides",
-            "signage_service_override",
-            "signage_services_override",
-        ]);
-        if (!overrideTable) {
-            return res.status(500).json({ error: "Missing override table (signage_service_overrides)" });
-        }
-        const cols = await getCols(overrideTable);
-        const serviceIdCol = chooseFirst(cols, ["service_id", "services_id"]);
-        if (!serviceIdCol)
-            return res.status(500).json({ error: "Override table has no service_id column" });
-        // támogatjuk a legacy mezőneveket is
-        const enabled = pickBool(req.body?.enabled) ??
-            pickBool(req.body?.show) ??
-            pickBool(req.body?.display);
-        const price_text_override = pickString(req.body?.price_text_override) ?? pickString(req.body?.price_text);
-        const priority = pickInt(req.body?.priority);
-        // mezőnevek az override táblában (ha eltérnek, akkor a ensureSignageTables-t érdemes egységesíteni)
-        const enabledCol = chooseFirst(cols, ["enabled", "show", "display"]) ?? "enabled";
-        const priceCol = chooseFirst(cols, ["price_text_override", "price_override", "price_text"]) ?? "price_text_override";
-        const prCol = chooseFirst(cols, ["priority", "sort_order", "order_index"]) ?? "priority";
-        const sql = `
-      INSERT INTO ${overrideTable} (${serviceIdCol}, ${enabledCol}, ${priceCol}, ${prCol})
-      VALUES ($1, COALESCE($2, true), $3, COALESCE($4, 0))
-      ON CONFLICT (${serviceIdCol})
-      DO UPDATE SET
-        ${enabledCol} = COALESCE(EXCLUDED.${enabledCol}, ${overrideTable}.${enabledCol}),
-        ${priceCol}   = EXCLUDED.${priceCol},
-        ${prCol}      = COALESCE(EXCLUDED.${prCol}, ${overrideTable}.${prCol})
-      RETURNING *
-    `;
-        const r = await pool.query(sql, [id, enabled ?? null, price_text_override ?? null, priority ?? null]);
-        return res.json({ ok: true, override: r.rows?.[0] ?? null });
+        await ensureTables();
+        const name = String(req.body?.name ?? "").trim();
+        if (!name)
+            return res.status(400).json({ error: "name required" });
+        const id = idOrNew(req.body?.id);
+        const category = String(req.body?.category ?? "").trim();
+        const durationMin = pickInt(req.body?.durationMin ?? req.body?.duration_min);
+        const price_text = String(req.body?.price_text ?? req.body?.priceText ?? "").trim();
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const enabled = pickBool(req.body?.enabled) ?? true;
+        const { rows } = await pool.query(`INSERT INTO signage_services (id, name, category, duration_min, price_text, priority, enabled)
+       VALUES ($1, $2, NULLIF($3,''), $4, NULLIF($5,''), $6, $7)
+       RETURNING id, name, category, duration_min, price_text, priority, enabled, created_at, updated_at`, [id, name, category, durationMin ?? null, price_text, priority, enabled]);
+        const r = rows[0];
+        res.json({
+            service: {
+                id: r.id,
+                name: r.name,
+                category: r.category ?? "",
+                durationMin: r.duration_min ?? null,
+                price_text: r.price_text ?? "",
+                priority: Number(r.priority ?? 0),
+                enabled: r.enabled === null ? true : !!r.enabled,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+        });
     }
     catch (e) {
-        return res.status(500).json({ error: e?.message ?? "Failed to upsert service override" });
+        // gyakori: UUID cast hiba, ha a tábla TEXT-es; ilyenkor a DB üzenet egyértelmű lesz
+        res.status(500).json({ error: e?.message ?? "Failed to create service" });
     }
 });
-// -----------------------------
-// GENERIC CRUD builders (deals, videos, quotes, custom-services)
-// -----------------------------
-async function listFrom(table, key, orderFallback = ["priority", "created_at", "id"]) {
-    if (!(await tableExists(table)))
-        return { [key]: [] };
-    const cols = await getCols(table);
-    const orderCol = chooseFirst(cols, orderFallback) ?? "id";
-    const { rows } = await pool.query(`SELECT * FROM ${table} ORDER BY ${orderCol} ASC`);
-    return { [key]: rows ?? [] };
-}
-async function insertInto(table, payload, returningKey) {
-    if (!(await tableExists(table)))
-        throw new Error(`Missing table: ${table}`);
-    const cols = await getCols(table);
-    // csak ismert oszlopokat engedünk be
-    const keys = Object.keys(payload ?? {}).filter((k) => cols.has(k));
-    if (keys.length === 0) {
-        // ha semmi nem passzol, próbálunk minimálisat
-        const { rows } = await pool.query(`INSERT INTO ${table} DEFAULT VALUES RETURNING *`);
-        return { [returningKey]: rows?.[0] ?? null };
+router.put("/services/:id", async (req, res) => {
+    try {
+        await ensureTables();
+        const id = req.params.id;
+        const name = req.body?.name !== undefined ? String(req.body.name).trim() : undefined;
+        const category = req.body?.category !== undefined ? String(req.body.category).trim() : undefined;
+        const durationMin = pickInt(req.body?.durationMin ?? req.body?.duration_min);
+        const price_text = req.body?.price_text !== undefined ? String(req.body.price_text).trim() : undefined;
+        const priority = pickInt(req.body?.priority);
+        const enabled = pickBool(req.body?.enabled);
+        const { rows } = await pool.query(`UPDATE signage_services
+       SET
+         name = COALESCE($2, name),
+         category = COALESCE(NULLIF($3,''), category),
+         duration_min = COALESCE($4, duration_min),
+         price_text = COALESCE(NULLIF($5,''), price_text),
+         priority = COALESCE($6, priority),
+         enabled = COALESCE($7, enabled),
+         updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, category, duration_min, price_text, priority, enabled, created_at, updated_at`, [id, name, category, durationMin ?? null, price_text, priority, enabled]);
+        if (!rows[0])
+            return res.status(404).json({ error: "not found" });
+        const r = rows[0];
+        res.json({
+            service: {
+                id: r.id,
+                name: r.name,
+                category: r.category ?? "",
+                durationMin: r.duration_min ?? null,
+                price_text: r.price_text ?? "",
+                priority: Number(r.priority ?? 0),
+                enabled: r.enabled === null ? true : !!r.enabled,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            },
+        });
     }
-    const vals = keys.map((_, i) => `$${i + 1}`);
-    const sql = `INSERT INTO ${table} (${keys.join(", ")}) VALUES (${vals.join(", ")}) RETURNING *`;
-    const { rows } = await pool.query(sql, keys.map((k) => payload[k]));
-    return { [returningKey]: rows?.[0] ?? null };
-}
-async function updateById(table, id, payload, returningKey) {
-    if (!(await tableExists(table)))
-        throw new Error(`Missing table: ${table}`);
-    const cols = await getCols(table);
-    const idCol = cols.has("id") ? "id" : (cols.has("uuid") ? "uuid" : "id");
-    const keys = Object.keys(payload ?? {}).filter((k) => cols.has(k));
-    if (keys.length === 0) {
-        const { rows } = await pool.query(`SELECT * FROM ${table} WHERE ${idCol}::text = $1`, [id]);
-        return { [returningKey]: rows?.[0] ?? null };
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to update service" });
     }
-    const set = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
-    const sql = `UPDATE ${table} SET ${set} WHERE ${idCol}::text = $1 RETURNING *`;
-    const { rows } = await pool.query(sql, [id, ...keys.map((k) => payload[k])]);
-    return { [returningKey]: rows?.[0] ?? null };
-}
-async function deleteById(table, id) {
-    if (!(await tableExists(table)))
-        throw new Error(`Missing table: ${table}`);
-    const cols = await getCols(table);
-    const idCol = cols.has("id") ? "id" : (cols.has("uuid") ? "uuid" : "id");
-    const { rowCount } = await pool.query(`DELETE FROM ${table} WHERE ${idCol}::text = $1`, [id]);
-    return { ok: (rowCount ?? 0) > 0 };
-}
-// -----------------------------
-// DEALS
-// -----------------------------
+});
+router.delete("/services/:id", async (req, res) => {
+    try {
+        await ensureTables();
+        const { rowCount } = await pool.query("DELETE FROM signage_services WHERE id = $1", [req.params.id]);
+        res.json({ ok: (rowCount ?? 0) > 0 });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to delete service" });
+    }
+});
+// ------------------------- DEALS -------------------------
 router.get("/deals", async (_req, res) => {
     try {
-        const result = await listFrom("signage_deals", "deals");
-        res.json(result);
+        await ensureTables();
+        const { rows } = await pool.query(`SELECT id, title, subtitle, price_text, valid_from, valid_to, active, priority, created_at, updated_at
+       FROM signage_deals
+       ORDER BY priority DESC, updated_at DESC`);
+        const deals = rows.map((r) => ({
+            id: r.id,
+            title: r.title,
+            subtitle: r.subtitle ?? "",
+            price_text: r.price_text ?? "",
+            valid_from: r.valid_from ?? null,
+            valid_to: r.valid_to ?? null,
+            active: r.active === null ? true : !!r.active,
+            priority: Number(r.priority ?? 0),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }));
+        res.json({ deals });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to list deals" });
@@ -301,9 +286,21 @@ router.get("/deals", async (_req, res) => {
 });
 router.post("/deals", async (req, res) => {
     try {
-        const payload = req.body ?? {};
-        const result = await insertInto("signage_deals", payload, "deal");
-        res.json(result);
+        await ensureTables();
+        const title = String(req.body?.title ?? "").trim();
+        if (!title)
+            return res.status(400).json({ error: "title required" });
+        const id = idOrNew(req.body?.id);
+        const subtitle = String(req.body?.subtitle ?? "").trim();
+        const price_text = String(req.body?.price_text ?? req.body?.priceText ?? "").trim();
+        const valid_from = req.body?.valid_from ?? req.body?.validFrom ?? null;
+        const valid_to = req.body?.valid_to ?? req.body?.validTo ?? null;
+        const active = pickBool(req.body?.active) ?? true;
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const { rows } = await pool.query(`INSERT INTO signage_deals (id, title, subtitle, price_text, valid_from, valid_to, active, priority)
+       VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), $5, $6, $7, $8)
+       RETURNING id, title, subtitle, price_text, valid_from, valid_to, active, priority, created_at, updated_at`, [id, title, subtitle, price_text, valid_from, valid_to, active, priority]);
+        res.json({ deal: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to create deal" });
@@ -311,8 +308,30 @@ router.post("/deals", async (req, res) => {
 });
 router.put("/deals/:id", async (req, res) => {
     try {
-        const result = await updateById("signage_deals", String(req.params.id), req.body ?? {}, "deal");
-        res.json(result);
+        await ensureTables();
+        const id = req.params.id;
+        const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined;
+        const subtitle = req.body?.subtitle !== undefined ? String(req.body.subtitle).trim() : undefined;
+        const price_text = req.body?.price_text !== undefined ? String(req.body.price_text).trim() : undefined;
+        const valid_from = req.body?.valid_from ?? req.body?.validFrom ?? undefined;
+        const valid_to = req.body?.valid_to ?? req.body?.validTo ?? undefined;
+        const active = pickBool(req.body?.active);
+        const priority = pickInt(req.body?.priority);
+        const { rows } = await pool.query(`UPDATE signage_deals
+       SET
+         title = COALESCE(NULLIF($2,''), title),
+         subtitle = COALESCE(NULLIF($3,''), subtitle),
+         price_text = COALESCE(NULLIF($4,''), price_text),
+         valid_from = COALESCE($5, valid_from),
+         valid_to = COALESCE($6, valid_to),
+         active = COALESCE($7, active),
+         priority = COALESCE($8, priority),
+         updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, title, subtitle, price_text, valid_from, valid_to, active, priority, created_at, updated_at`, [id, title, subtitle, price_text, valid_from, valid_to, active, priority]);
+        if (!rows[0])
+            return res.status(404).json({ error: "not found" });
+        res.json({ deal: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to update deal" });
@@ -320,20 +339,32 @@ router.put("/deals/:id", async (req, res) => {
 });
 router.delete("/deals/:id", async (req, res) => {
     try {
-        const result = await deleteById("signage_deals", String(req.params.id));
-        res.json(result);
+        await ensureTables();
+        const { rowCount } = await pool.query("DELETE FROM signage_deals WHERE id = $1", [req.params.id]);
+        res.json({ ok: (rowCount ?? 0) > 0 });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to delete deal" });
     }
 });
-// -----------------------------
-// VIDEOS
-// -----------------------------
+// ------------------------- VIDEOS -------------------------
 router.get("/videos", async (_req, res) => {
     try {
-        const result = await listFrom("signage_videos", "videos");
-        res.json(result);
+        await ensureTables();
+        const { rows } = await pool.query(`SELECT id, youtube_id, title, duration_sec, enabled, priority, created_at, updated_at
+       FROM signage_videos
+       ORDER BY priority DESC, updated_at DESC`);
+        const videos = rows.map((r) => ({
+            id: r.id,
+            youtube_id: r.youtube_id,
+            title: r.title ?? "",
+            duration_sec: Number(r.duration_sec ?? 60),
+            enabled: r.enabled === null ? true : !!r.enabled,
+            priority: Number(r.priority ?? 0),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }));
+        res.json({ videos });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to list videos" });
@@ -341,8 +372,19 @@ router.get("/videos", async (_req, res) => {
 });
 router.post("/videos", async (req, res) => {
     try {
-        const result = await insertInto("signage_videos", req.body ?? {}, "video");
-        res.json(result);
+        await ensureTables();
+        const youtube_id = String(req.body?.youtube_id ?? req.body?.youtubeId ?? "").trim();
+        if (!youtube_id)
+            return res.status(400).json({ error: "youtube_id required" });
+        const id = idOrNew(req.body?.id);
+        const title = String(req.body?.title ?? "").trim();
+        const duration_sec = pickInt(req.body?.duration_sec ?? req.body?.durationSec) ?? 60;
+        const enabled = pickBool(req.body?.enabled) ?? true;
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const { rows } = await pool.query(`INSERT INTO signage_videos (id, youtube_id, title, duration_sec, enabled, priority)
+       VALUES ($1, $2, NULLIF($3,''), $4, $5, $6)
+       RETURNING id, youtube_id, title, duration_sec, enabled, priority, created_at, updated_at`, [id, youtube_id, title, duration_sec, enabled, priority]);
+        res.json({ video: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to create video" });
@@ -350,8 +392,26 @@ router.post("/videos", async (req, res) => {
 });
 router.put("/videos/:id", async (req, res) => {
     try {
-        const result = await updateById("signage_videos", String(req.params.id), req.body ?? {}, "video");
-        res.json(result);
+        await ensureTables();
+        const id = req.params.id;
+        const youtube_id = req.body?.youtube_id !== undefined ? String(req.body.youtube_id).trim() : undefined;
+        const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined;
+        const duration_sec = pickInt(req.body?.duration_sec ?? req.body?.durationSec);
+        const enabled = pickBool(req.body?.enabled);
+        const priority = pickInt(req.body?.priority);
+        const { rows } = await pool.query(`UPDATE signage_videos
+       SET
+         youtube_id = COALESCE(NULLIF($2,''), youtube_id),
+         title = COALESCE(NULLIF($3,''), title),
+         duration_sec = COALESCE($4, duration_sec),
+         enabled = COALESCE($5, enabled),
+         priority = COALESCE($6, priority),
+         updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, youtube_id, title, duration_sec, enabled, priority, created_at, updated_at`, [id, youtube_id, title, duration_sec, enabled, priority]);
+        if (!rows[0])
+            return res.status(404).json({ error: "not found" });
+        res.json({ video: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to update video" });
@@ -359,20 +419,31 @@ router.put("/videos/:id", async (req, res) => {
 });
 router.delete("/videos/:id", async (req, res) => {
     try {
-        const result = await deleteById("signage_videos", String(req.params.id));
-        res.json(result);
+        await ensureTables();
+        const { rowCount } = await pool.query("DELETE FROM signage_videos WHERE id = $1", [req.params.id]);
+        res.json({ ok: (rowCount ?? 0) > 0 });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to delete video" });
     }
 });
-// -----------------------------
-// QUOTES
-// -----------------------------
+// ------------------------- QUOTES -------------------------
 router.get("/quotes", async (_req, res) => {
     try {
-        const result = await listFrom("signage_quotes", "quotes");
-        res.json(result);
+        await ensureTables();
+        const { rows } = await pool.query(`SELECT id, text, author, enabled, priority, created_at, updated_at
+       FROM signage_quotes
+       ORDER BY priority DESC, updated_at DESC`);
+        const quotes = rows.map((r) => ({
+            id: r.id,
+            text: r.text,
+            author: r.author ?? "",
+            enabled: r.enabled === null ? true : !!r.enabled,
+            priority: Number(r.priority ?? 0),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }));
+        res.json({ quotes });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to list quotes" });
@@ -380,8 +451,18 @@ router.get("/quotes", async (_req, res) => {
 });
 router.post("/quotes", async (req, res) => {
     try {
-        const result = await insertInto("signage_quotes", req.body ?? {}, "quote");
-        res.json(result);
+        await ensureTables();
+        const text = String(req.body?.text ?? "").trim();
+        if (!text)
+            return res.status(400).json({ error: "text required" });
+        const id = idOrNew(req.body?.id);
+        const author = String(req.body?.author ?? "").trim();
+        const enabled = pickBool(req.body?.enabled) ?? true;
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const { rows } = await pool.query(`INSERT INTO signage_quotes (id, text, author, enabled, priority)
+       VALUES ($1, $2, NULLIF($3,''), $4, $5)
+       RETURNING id, text, author, enabled, priority, created_at, updated_at`, [id, text, author, enabled, priority]);
+        res.json({ quote: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to create quote" });
@@ -389,8 +470,24 @@ router.post("/quotes", async (req, res) => {
 });
 router.put("/quotes/:id", async (req, res) => {
     try {
-        const result = await updateById("signage_quotes", String(req.params.id), req.body ?? {}, "quote");
-        res.json(result);
+        await ensureTables();
+        const id = req.params.id;
+        const text = req.body?.text !== undefined ? String(req.body.text).trim() : undefined;
+        const author = req.body?.author !== undefined ? String(req.body.author).trim() : undefined;
+        const enabled = pickBool(req.body?.enabled);
+        const priority = pickInt(req.body?.priority);
+        const { rows } = await pool.query(`UPDATE signage_quotes
+       SET
+         text = COALESCE(NULLIF($2,''), text),
+         author = COALESCE(NULLIF($3,''), author),
+         enabled = COALESCE($4, enabled),
+         priority = COALESCE($5, priority),
+         updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, text, author, enabled, priority, created_at, updated_at`, [id, text, author, enabled, priority]);
+        if (!rows[0])
+            return res.status(404).json({ error: "not found" });
+        res.json({ quote: rows[0] });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to update quote" });
@@ -398,118 +495,84 @@ router.put("/quotes/:id", async (req, res) => {
 });
 router.delete("/quotes/:id", async (req, res) => {
     try {
-        const result = await deleteById("signage_quotes", String(req.params.id));
-        res.json(result);
+        await ensureTables();
+        const { rowCount } = await pool.query("DELETE FROM signage_quotes WHERE id = $1", [req.params.id]);
+        res.json({ ok: (rowCount ?? 0) > 0 });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to delete quote" });
     }
 });
-// -----------------------------
-// CUSTOM SERVICES
-// -----------------------------
-router.get("/custom-services", async (_req, res) => {
-    try {
-        const result = await listFrom("signage_custom_services", "services");
-        res.json(result);
-    }
-    catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to list custom services" });
-    }
-});
-router.post("/custom-services", async (req, res) => {
-    try {
-        const result = await insertInto("signage_custom_services", req.body ?? {}, "service");
-        res.json(result);
-    }
-    catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to create custom service" });
-    }
-});
-router.put("/custom-services/:id", async (req, res) => {
-    try {
-        const result = await updateById("signage_custom_services", String(req.params.id), req.body ?? {}, "service");
-        res.json(result);
-    }
-    catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to update custom service" });
-    }
-});
-router.delete("/custom-services/:id", async (req, res) => {
-    try {
-        const result = await deleteById("signage_custom_services", String(req.params.id));
-        res.json(result);
-    }
-    catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to delete custom service" });
-    }
-});
-// -----------------------------
-// -----------------------------
-// PROFESSIONALS
-// - új: /professionals
-// - legacy: /  (hogy a régi frontend se törjön)
-// -----------------------------
+// ------------------------- PROFESSIONALS -------------------------
 async function listProfessionals() {
-    if (!(await tableExists("signage_professionals")))
-        return [];
-    const cols = await getCols("signage_professionals");
-    const orderCol = chooseFirst(cols, ["priority", "created_at", "name", "id"]) ?? "id";
-    const { rows } = await pool.query(`SELECT * FROM signage_professionals ORDER BY ${orderCol} ASC`);
-    return rows ?? [];
+    const { rows } = await pool.query(`SELECT id, name, title, note, photo_url, show, is_free, priority, created_at, updated_at
+     FROM signage_professionals
+     ORDER BY priority DESC, updated_at DESC`);
+    return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        title: r.title ?? "",
+        note: r.note ?? "",
+        photo_url: r.photo_url ?? "",
+        show: !!r.show,
+        is_free: !!r.is_free,
+        priority: Number(r.priority ?? 0),
+        // legacy aliasok:
+        enabled: !!r.show,
+        available: !!r.is_free,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+    }));
 }
-async function createProfessional(body) {
-    if (!(await tableExists("signage_professionals"))) {
-        throw new Error("Missing table: signage_professionals");
-    }
-    const cols = await getCols("signage_professionals");
-    const name = pickString(body?.name) ?? "";
-    const title = pickString(body?.title) ?? null;
-    const note = pickString(body?.note) ?? null;
-    const show = pickBool(body?.show) ?? pickBool(body?.enabled) ?? true;
-    const is_free = pickBool(body?.is_free) ?? pickBool(body?.available) ?? false;
-    const priority = pickInt(body?.priority) ?? 0;
-    const payload = { name, title, note, show, is_free, priority };
-    const keys = Object.keys(payload).filter((k) => cols.has(k));
-    const vals = keys.map((_, i) => `$${i + 1}`);
-    const { rows } = await pool.query(`INSERT INTO signage_professionals (${keys.join(", ")}) VALUES (${vals.join(", ")}) RETURNING *`, keys.map((k) => payload[k]));
-    return rows?.[0] ?? null;
+async function createProfessional(req, res) {
+    const name = String(req.body?.name ?? "").trim();
+    if (!name)
+        return res.status(400).json({ error: "name required" });
+    const id = idOrNew(req.body?.id);
+    const title = String(req.body?.title ?? "").trim();
+    const note = String(req.body?.note ?? "").trim();
+    const photo_url = String(req.body?.photo_url ?? "").trim();
+    const show = pickBool(req.body?.show) ?? pickBool(req.body?.enabled) ?? true;
+    const is_free = pickBool(req.body?.is_free) ?? pickBool(req.body?.available) ?? true;
+    const priority = pickInt(req.body?.priority) ?? 0;
+    const { rows } = await pool.query(`INSERT INTO signage_professionals (id, name, title, note, photo_url, show, is_free, priority)
+     VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), $6, $7, $8)
+     RETURNING id, name, title, note, photo_url, show, is_free, priority, created_at, updated_at`, [id, name, title, note, photo_url, show, is_free, priority]);
+    return res.json({ professional: rows[0] });
 }
-async function updateProfessional(id, body) {
-    if (!(await tableExists("signage_professionals"))) {
-        throw new Error("Missing table: signage_professionals");
-    }
-    const cols = await getCols("signage_professionals");
-    const payload = {};
-    if (body?.name !== undefined)
-        payload.name = pickString(body?.name);
-    if (body?.title !== undefined)
-        payload.title = pickString(body?.title);
-    if (body?.note !== undefined)
-        payload.note = pickString(body?.note);
-    const show = pickBool(body?.show) ?? pickBool(body?.enabled) ?? pickBool(body?.display);
-    const is_free = pickBool(body?.is_free) ?? pickBool(body?.available);
-    const priority = pickInt(body?.priority);
-    if (show !== undefined)
-        payload.show = show;
-    if (is_free !== undefined)
-        payload.is_free = is_free;
-    if (priority !== undefined)
-        payload.priority = priority;
-    const keys = Object.keys(payload).filter((k) => cols.has(k));
-    if (keys.length === 0) {
-        const { rows } = await pool.query(`SELECT * FROM signage_professionals WHERE id::text = $1`, [id]);
-        return rows?.[0] ?? null;
-    }
-    const set = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
-    const { rows } = await pool.query(`UPDATE signage_professionals SET ${set} WHERE id::text = $1 RETURNING *`, [id, ...keys.map((k) => payload[k])]);
-    return rows?.[0] ?? null;
+async function updateProfessional(req, res) {
+    const id = req.params.id;
+    const name = req.body?.name !== undefined ? String(req.body.name).trim() : undefined;
+    const title = req.body?.title !== undefined ? String(req.body.title).trim() : undefined;
+    const note = req.body?.note !== undefined ? String(req.body.note).trim() : undefined;
+    const photo_url = req.body?.photo_url !== undefined ? String(req.body.photo_url).trim() : undefined;
+    const show = pickBool(req.body?.show) ?? pickBool(req.body?.enabled);
+    const is_free = pickBool(req.body?.is_free) ?? pickBool(req.body?.available);
+    const priority = pickInt(req.body?.priority);
+    const { rows } = await pool.query(`UPDATE signage_professionals
+     SET
+       name = COALESCE(NULLIF($2,''), name),
+       title = COALESCE(NULLIF($3,''), title),
+       note = COALESCE(NULLIF($4,''), note),
+       photo_url = COALESCE(NULLIF($5,''), photo_url),
+       show = COALESCE($6, show),
+       is_free = COALESCE($7, is_free),
+       priority = COALESCE($8, priority),
+       updated_at = NOW()
+     WHERE id = $1
+     RETURNING id, name, title, note, photo_url, show, is_free, priority, created_at, updated_at`, [id, name, title, note, photo_url, show, is_free, priority]);
+    if (!rows[0])
+        return res.status(404).json({ error: "not found" });
+    return res.json({ professional: rows[0] });
 }
-// /professionals
+async function deleteProfessional(req, res) {
+    const { rowCount } = await pool.query("DELETE FROM signage_professionals WHERE id = $1", [req.params.id]);
+    return res.json({ ok: (rowCount ?? 0) > 0 });
+}
 router.get("/professionals", async (_req, res) => {
     try {
-        const professionals = await listProfessionals();
-        res.json({ professionals });
+        await ensureTables();
+        res.json({ professionals: await listProfessionals() });
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to list professionals" });
@@ -517,8 +580,8 @@ router.get("/professionals", async (_req, res) => {
 });
 router.post("/professionals", async (req, res) => {
     try {
-        const professional = await createProfessional(req.body);
-        res.json({ professional });
+        await ensureTables();
+        await createProfessional(req, res);
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to create professional" });
@@ -526,8 +589,8 @@ router.post("/professionals", async (req, res) => {
 });
 router.put("/professionals/:id", async (req, res) => {
     try {
-        const professional = await updateProfessional(String(req.params.id), req.body);
-        res.json({ professional });
+        await ensureTables();
+        await updateProfessional(req, res);
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to update professional" });
@@ -535,48 +598,48 @@ router.put("/professionals/:id", async (req, res) => {
 });
 router.delete("/professionals/:id", async (req, res) => {
     try {
-        const result = await deleteById("signage_professionals", String(req.params.id));
-        res.json(result);
+        await ensureTables();
+        await deleteProfessional(req, res);
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to delete professional" });
     }
 });
-// legacy aliases: /  és /:id
+// -------- Backward compat (régi front) --------
 router.get("/", async (_req, res) => {
     try {
-        const professionals = await listProfessionals();
-        res.json({ professionals });
+        await ensureTables();
+        res.json({ professionals: await listProfessionals() });
     }
     catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to list professionals" });
+        res.status(500).json({ error: e?.message ?? "Failed" });
     }
 });
 router.post("/", async (req, res) => {
     try {
-        const professional = await createProfessional(req.body);
-        res.json({ professional });
+        await ensureTables();
+        await createProfessional(req, res);
     }
     catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to create professional" });
+        res.status(500).json({ error: e?.message ?? "Failed" });
     }
 });
 router.put("/:id", async (req, res) => {
     try {
-        const professional = await updateProfessional(String(req.params.id), req.body);
-        res.json({ professional });
+        await ensureTables();
+        await updateProfessional(req, res);
     }
     catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to update professional" });
+        res.status(500).json({ error: e?.message ?? "Failed" });
     }
 });
 router.delete("/:id", async (req, res) => {
     try {
-        const result = await deleteById("signage_professionals", String(req.params.id));
-        res.json(result);
+        await ensureTables();
+        await deleteProfessional(req, res);
     }
     catch (e) {
-        res.status(500).json({ error: e?.message ?? "Failed to delete professional" });
+        res.status(500).json({ error: e?.message ?? "Failed" });
     }
 });
 exports.default = router;

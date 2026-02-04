@@ -91,11 +91,11 @@ console.log("🧩 SMTP_PASS:", process.env.SMTP_PASS ? "✅ van" : "❌ hiányzi
 app.set("trust proxy", 1);
 /* ===== CORS (Render + local dev) =====
    Render env javaslat (FRONTEND origin-ek!):
-   CORS_ORIGINS=https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173
+   CORS_ORIGINS=https://kleoszalon-api-1.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173
 */
 const normalizeOrigin = (s) => String(s || "").trim().replace(/\/+$/, "");
 const allowedOrigins = (process.env.CORS_ORIGINS ??
-    "https://kleoszalon-frontend.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
+    "https://kleoszalon-api-1.onrender.com,http://localhost:3000,http://localhost:3001,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:5173")
     .split(",")
     .map(normalizeOrigin)
     .filter(Boolean);
