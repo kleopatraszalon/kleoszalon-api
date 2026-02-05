@@ -45,14 +45,14 @@ router.get("/services", async (_req, res) => {
         s.name,
         COALESCE(s.category, '') AS category,
         s.duration_min,
-        COALESCE(o.price_text_override, s.price_text, '') AS price_text,
-        COALESCE(o.priority_override, s.priority, 0) AS priority
+        COALESCE(s.price_text, '') AS price_text,
+        COALESCE(s.priority, 0) AS priority
       FROM public.signage_services s
       LEFT JOIN public.signage_service_overrides o
         ON o.service_id = s.id
       WHERE COALESCE(s.show, true) = true
         AND COALESCE(o.enabled, true) = true
-      ORDER BY COALESCE(o.priority_override, s.priority, 0) DESC, s.updated_at DESC
+      ORDER BY COALESCE(s.priority, 0) DESC, s.updated_at DESC
       LIMIT 200;
       `
     );

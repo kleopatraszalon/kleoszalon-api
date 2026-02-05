@@ -45,6 +45,28 @@ import { ensureSignageTables } from "./signage/ensureSignageTables";
 
 const app = express();
 
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    try {
+      if (originAllowed(origin)) {
+        return cb(null, true);
+      } else {
+        console.warn(`[CORS] Elutasítva: ${origin}`);
+        return cb(null, false);
+      }
+    } catch (error) {
+      return cb(null, false);
+    }
+  },
+  credentials: true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // ===========================================================
 // 🧠 DB állapot + gyors hibajelzés (ne lógjon 30-60 mp-ig a kérés)
@@ -135,6 +157,12 @@ function originAllowed(origin: string) {
   // 1) teljes egyezés
   if (allowedOrigins.includes(o)) return true;
 
+  // 1/b) Render: bármilyen *.onrender.com origin (különben a véletlen preview domainek elhasalnak)
+  try {
+    const u = new URL(o);
+    if (u.hostname.endsWith(".onrender.com")) return true;
+  } catch {}
+
   // 2) host egyezés (http/https és port eltérés ellen is)
   try {
     const u = new URL(o);
@@ -151,20 +179,7 @@ function originAllowed(origin: string) {
   }
 }
 
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, cb) => {
-    // origin nélküli kérések (pl. curl, server-to-server) – engedjük
-    if (!origin) return cb(null, true);
 
-    if (originAllowed(origin)) return cb(null, true);
-
-    return cb(new Error(`CORS blocked for origin: ${origin}`));
-  },
-  credentials: true,
-  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  optionsSuccessStatus: 204,
-};
 
 app.use((_, res, next) => {
   res.header("Vary", "Origin");
@@ -172,8 +187,7 @@ app.use((_, res, next) => {
   res.header("X-Kleo-CORS", "corsfix-2026-02-04");
   next();
 });
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
@@ -196,35 +210,12 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   return next();
 });
 // SIGNAGE (kijelző)
-app.use(" /signage", signagePublic);
+// SIGNAGE (kijelző) – helyes útvonal
+app.use("/api/signage", signagePublic);
 app.use("/api/admin/signage", signageAdmin);
 
 app.use("/api", authRoutes);
 
-// 1) Public signage: nincs cookie -> mehet wildcard
-app.use("/api/signage", cors({ origin: "*", credentials: false }));
-
-// 2) Admin + auth: cookie kell -> konkrét origin lista
-const allowed = new Set([
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://kleoszalon-frontend.onrender.com",
-  "https://weblap-o3g6.onrender.com", // <- a te kijelző domained
-]);
-
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // pl. curl/postman
-      if (allowed.has(origin)) return cb(null, true);
-      return cb(new Error("CORS blocked: " + origin), false);
-    },
-    credentials: true,
-  })
-);
-
-// preflight
-app.options("*", cors());
 
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use(
@@ -728,9 +719,15 @@ app.use((req: Request, res: Response) => {
 
 /* ===== Globális hiba-kezelő ===== */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("❌ Unhandled error:", err);
-  res.status(500).json({ error: "Szerver hiba" });
+ console.error("🔥 KRITIKUS SZERVER HIBA:", {
+    message: err.message,
+    stack: err.stack,
+    path: _req.path
+  });
+  
+  res.status(500).json({ error: "Szerver hiba", details: err.message });
 });
+
 
 /* ===== Indítás ===== */
 const port = Number(process.env.PORT) || 5000;
