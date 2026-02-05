@@ -38,10 +38,42 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const crypto_1 = __importDefault(require("crypto"));
+const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
+const multer_1 = __importDefault(require("multer"));
 // ⚠️ db export kompatibilitás: egyes projektverziókban default export van, másokban named 'pool'
 const db = __importStar(require("../db"));
 const pool = (db.pool ?? db.default);
 const router = (0, express_1.Router)();
+// =========================
+//  PROFESSIONAL PHOTO UPLOAD
+// =========================
+// Feltöltési hely: backend/uploads/professionals
+// A statikus kiszolgálás már létezik a server.ts-ben: app.use('/uploads', express.static(...))
+const proUploadDir = path_1.default.join(__dirname, "..", "..", "uploads", "professionals");
+if (!fs_1.default.existsSync(proUploadDir)) {
+    fs_1.default.mkdirSync(proUploadDir, { recursive: true });
+}
+const proStorage = multer_1.default.diskStorage({
+    destination: (_req, _file, cb) => cb(null, proUploadDir),
+    filename: (_req, file, cb) => {
+        const safeOriginalName = file.originalname.replace(/\s+/g, "_");
+        const ext = path_1.default.extname(safeOriginalName);
+        const base = path_1.default.basename(safeOriginalName, ext);
+        const unique = Date.now().toString(36);
+        cb(null, `${base}-${unique}${ext}`);
+    },
+});
+const proUpload = (0, multer_1.default)({
+    storage: proStorage,
+    limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
+    fileFilter: (_req, file, cb) => {
+        if (!file.mimetype?.startsWith("image/")) {
+            return cb(new Error("Csak kép fájl tölthető fel (image/*)."));
+        }
+        cb(null, true);
+    },
+});
 /**
  * Admin API for Signage module.
  * Mounted at: /api/admin/signage
@@ -658,6 +690,37 @@ router.put("/professionals/:id", async (req, res) => {
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed to update professional" });
+    }
+});
+// KÉP FELTÖLTÉS (multipart/form-data)
+// field name: file
+// Vissza: { ok: true, photo_url: "/uploads/professionals/<file>", professional: {...} }
+router.post("/professionals/:id/photo", async (req, res, next) => {
+    try {
+        await ensureTables();
+        return next();
+    }
+    catch (e) {
+        return res.status(500).json({ error: e?.message ?? "Failed to init" });
+    }
+}, proUpload.single("file"), async (req, res) => {
+    try {
+        const id = req.params.id;
+        const file = req.file;
+        if (!file)
+            return res.status(400).json({ error: "file required" });
+        // URL amit a kliens használ (a server.ts statikusan kiszolgálja)
+        const photo_url = `/uploads/professionals/${file.filename}`;
+        const { rows } = await pool.query(`UPDATE signage_professionals
+         SET photo_url = $2, updated_at = NOW()
+         WHERE id = $1
+         RETURNING id, name, title, note, photo_url, show, is_free, priority, created_at, updated_at`, [id, photo_url]);
+        if (!rows[0])
+            return res.status(404).json({ error: "not found" });
+        return res.json({ ok: true, photo_url, professional: rows[0] });
+    }
+    catch (e) {
+        return res.status(500).json({ error: e?.message ?? "Failed to upload photo" });
     }
 });
 router.delete("/professionals/:id", async (req, res) => {
