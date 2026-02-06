@@ -158,7 +158,7 @@ router.get("/professionals", async (_req, res) => {
         name,
         COALESCE(title, '') AS title,
         COALESCE(note, '') AS note,
-        COALESCE(photo_url, '') AS photo_url,
+        NULLIF(BTRIM(COALESCE(photo_url, '')), '') AS photo_url,
         COALESCE(priority, 0) AS priority,
         COALESCE(is_free, true) AS is_free
       FROM public.signage_professionals
@@ -171,7 +171,7 @@ router.get("/professionals", async (_req, res) => {
             name: safeText(r.name),
             title: safeText(r.title),
             note: safeText(r.note),
-            photo_url: safeText(r.photo_url),
+            photo_url: r.photo_url ? safeText(r.photo_url) : null,
             priority: safeNum(r.priority, 0),
             is_free: !!r.is_free,
             available: !!r.is_free, // legacy alias for older UIs
