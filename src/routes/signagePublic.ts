@@ -1,5 +1,6 @@
 import { Router } from "express";
 import pool from "../db";
+import * as https from "https";
 
 /**
  * Public Signage API (NO AUTH)
@@ -31,6 +32,91 @@ function safeText(v: any) {
 function safeNum(v: any, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+// -----------------------------
+// Villám akció + névnap helper (public)
+// -----------------------------
+const DEFAULT_NAMEDAY_TEMPLATE =
+  "Ma a {names} nevű vendégeink 20% kedvezményben részesülnek!!!";
+
+function ymdBudapest(d = new Date()) {
+  // YYYY-MM-DD, Budapest időzóna szerint
+  return d.toLocaleDateString("en-CA", { timeZone: "Europe/Budapest" });
+}
+
+function httpsGet(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      https
+        .get(
+          url,
+          { headers: { "User-Agent": "kleoszalon-signage/1.0", Accept: "application/json" } },
+          (r) => {
+            let data = "";
+            r.on("data", (c) => (data += c));
+            r.on("end", () => {
+              const code = Number(r.statusCode || 0);
+              if (code >= 400) return reject(new Error(`HTTP ${code}`));
+              resolve(data);
+            });
+          }
+        )
+        .on("error", reject);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+type NamedayCache = { ymd: string; names: string[]; fetchedAt: number };
+let namedayCache: NamedayCache | null = null;
+
+function splitNames(raw: string): string[] {
+  return String(raw || "")
+    .split(/[,;\/]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function fetchNamedayNamesHu(): Promise<string[]> {
+  const today = ymdBudapest();
+  // 6 órás cache (bőven elég)
+  if (namedayCache && namedayCache.ymd === today && Date.now() - namedayCache.fetchedAt < 6 * 60 * 60 * 1000) {
+    return namedayCache.names;
+  }
+
+  const url = "https://nameday.abalin.net/api/V1/today?country=hu&timezone=Europe/Budapest";
+  const txt = await httpsGet(url);
+  let j: any = null;
+  try {
+    j = JSON.parse(txt);
+  } catch {
+    j = null;
+  }
+
+  // Abalin válaszok többféle formában jöhetnek -> próbáljunk robusztusak lenni
+  const raw =
+    j?.data?.namedays?.hu ??
+    j?.data?.namedays?.HU ??
+    j?.namedays?.hu ??
+    j?.nameday?.hu ??
+    j?.data?.name ??
+    "";
+
+  const names = splitNames(String(raw)).slice(0, 20);
+  namedayCache = { ymd: today, names, fetchedAt: Date.now() };
+  return names;
+}
+
+async function getSettingValue(key: string): Promise<string | null> {
+  try {
+    const r = await pool.query(`SELECT value FROM public.signage_settings WHERE key = $1 LIMIT 1`, [key]);
+    const v = r.rows?.[0]?.value;
+    return v == null ? null : String(v);
+  } catch {
+    return null;
+  }
 }
 
 // -----------------------------
@@ -196,6 +282,90 @@ router.get("/professionals", async (_req, res) => {
     res.json({ professionals });
   } catch (e: any) {
     res.status(500).json({ error: safeText(e?.message || e) });
+  }
+});
+
+
+// -----------------------------
+// Villám akció (public)
+// -----------------------------
+router.get("/flash", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id::text AS id,
+        title,
+        COALESCE(body, '') AS body,
+        start_at,
+        end_at,
+        COALESCE(priority, 0) AS priority
+      FROM public.signage_flash_promos
+      WHERE COALESCE(enabled, true) = true
+        AND (start_at IS NULL OR start_at <= now())
+        AND (end_at IS NULL OR end_at >= now())
+      ORDER BY COALESCE(priority, 0) DESC, updated_at DESC
+      LIMIT 1;
+      `
+    );
+
+    const r = rows?.[0] || null;
+    const flash = r
+      ? {
+          id: safeText(r.id),
+          title: safeText(r.title),
+          body: safeText(r.body),
+          start_at: r.start_at ?? null,
+          end_at: r.end_at ?? null,
+          priority: safeNum(r.priority, 0),
+        }
+      : null;
+
+    res.json({ flash, fetchedAt: nowIso() });
+  } catch (e: any) {
+    // ha DB épp halott, a kijelző akkor is fusson: inkább "nincs villám akció"
+    res.json({ flash: null, error: safeText(e?.message || e), fetchedAt: nowIso() });
+  }
+});
+
+// -----------------------------
+// Névnap (public) – automatikusan internetről
+// -----------------------------
+router.get("/nameday", async (_req, res) => {
+  const date = ymdBudapest();
+  try {
+    const [names, templateDb] = await Promise.all([
+      fetchNamedayNamesHu().catch(() => [] as string[]),
+      getSettingValue("nameday_template"),
+    ]);
+
+    const template = (templateDb && templateDb.trim()) || DEFAULT_NAMEDAY_TEMPLATE;
+    const labelNames = names.length ? names.join(", ") : "—";
+    const message = template
+      .replace(/\{names\}/g, labelNames)
+      .replace(/\{date\}/g, date);
+
+    res.json({
+      ok: true,
+      date,
+      names,
+      template,
+      message,
+      fetchedAt: nowIso(),
+      source: "nameday.abalin.net",
+    });
+  } catch (e: any) {
+    const template = DEFAULT_NAMEDAY_TEMPLATE;
+    res.json({
+      ok: false,
+      date,
+      names: [],
+      template,
+      message: template.replace(/\{names\}/g, "—").replace(/\{date\}/g, date),
+      error: safeText(e?.message || e),
+      fetchedAt: nowIso(),
+      source: "nameday.abalin.net",
+    });
   }
 });
 

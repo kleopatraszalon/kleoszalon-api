@@ -152,6 +152,28 @@ async function ensureTables() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+
+CREATE TABLE IF NOT EXISTS signage_flash_promos (
+  id UUID PRIMARY KEY,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  start_at TIMESTAMPTZ,
+  end_at TIMESTAMPTZ,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  priority INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS signage_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO signage_settings(key, value)
+VALUES ('nameday_template', 'Ma a {names} nevű vendégeink 20% kedvezményben részesülnek!!!')
+ON CONFLICT (key) DO NOTHING;
     -- 🔁 MIGRÁCIÓK meglévő táblákhoz (CREATE TABLE IF NOT EXISTS nem ad hozzá új oszlopot!)
     -- Services
     ALTER TABLE signage_services ADD COLUMN IF NOT EXISTS category TEXT DEFAULT '';
@@ -767,6 +789,113 @@ router.delete("/:id", async (req, res) => {
     }
     catch (e) {
         res.status(500).json({ error: e?.message ?? "Failed" });
+    }
+});
+// ------------------------- FLASH PROMOS -------------------------
+router.get("/flash-promos", async (_req, res) => {
+    try {
+        await ensureTables();
+        const { rows } = await pool.query(`SELECT id::text AS id, title, COALESCE(body,'') AS body, start_at, end_at,
+              COALESCE(enabled,true) AS enabled, COALESCE(priority,0) AS priority,
+              created_at, updated_at
+       FROM signage_flash_promos
+       ORDER BY COALESCE(priority,0) DESC, updated_at DESC`);
+        res.json({ flashPromos: rows });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to list flash promos" });
+    }
+});
+router.post("/flash-promos", async (req, res) => {
+    try {
+        await ensureTables();
+        const title = String(req.body?.title ?? "").trim();
+        if (!title)
+            return res.status(400).json({ error: "title required" });
+        const id = idOrNew(req.body?.id);
+        const promoBody = String(req.body?.body ?? "").trim();
+        const start_at = req.body?.start_at ? new Date(req.body.start_at) : null;
+        const end_at = req.body?.end_at ? new Date(req.body.end_at) : null;
+        const enabled = pickBool(req.body?.enabled) ?? true;
+        const priority = pickInt(req.body?.priority) ?? 0;
+        const { rows } = await pool.query(`INSERT INTO signage_flash_promos (id, title, body, start_at, end_at, enabled, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING id::text AS id, title, body, start_at, end_at, enabled, priority, created_at, updated_at`, [id, title, promoBody, start_at, end_at, enabled, priority]);
+        res.json({ flashPromo: rows[0] });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to create flash promo" });
+    }
+});
+router.put("/flash-promos/:id", async (req, res) => {
+    try {
+        await ensureTables();
+        const id = String(req.params.id || "");
+        const fields = [];
+        const values = [];
+        let i = 1;
+        const setIf = (col, val, enabled) => {
+            if (!enabled)
+                return;
+            fields.push(`${col} = $${i++}`);
+            values.push(val);
+        };
+        if (req.body?.title !== undefined)
+            setIf("title", String(req.body.title).trim(), true);
+        if (req.body?.body !== undefined)
+            setIf("body", String(req.body.body).trim(), true);
+        if (req.body?.start_at !== undefined)
+            setIf("start_at", req.body.start_at ? new Date(req.body.start_at) : null, true);
+        if (req.body?.end_at !== undefined)
+            setIf("end_at", req.body.end_at ? new Date(req.body.end_at) : null, true);
+        if (req.body?.enabled !== undefined)
+            setIf("enabled", pickBool(req.body.enabled) ?? true, true);
+        if (req.body?.priority !== undefined)
+            setIf("priority", pickInt(req.body.priority) ?? 0, true);
+        fields.push(`updated_at = now()`);
+        values.push(id);
+        const { rows } = await pool.query(`UPDATE signage_flash_promos
+       SET ${fields.join(", ")}
+       WHERE id = $${i}
+       RETURNING id::text AS id, title, body, start_at, end_at, enabled, priority, created_at, updated_at`, values);
+        res.json({ flashPromo: rows[0] ?? null });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to update flash promo" });
+    }
+});
+router.delete("/flash-promos/:id", async (req, res) => {
+    try {
+        await ensureTables();
+        const { rowCount } = await pool.query("DELETE FROM signage_flash_promos WHERE id = $1", [req.params.id]);
+        res.json({ ok: (rowCount ?? 0) > 0 });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to delete flash promo" });
+    }
+});
+// ------------------------- NAMEDAY TEMPLATE -------------------------
+router.get("/nameday-template", async (_req, res) => {
+    try {
+        await ensureTables();
+        const r = await pool.query(`SELECT value FROM signage_settings WHERE key = 'nameday_template' LIMIT 1`);
+        res.json({ template: r.rows?.[0]?.value ?? "" });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to get nameday template" });
+    }
+});
+router.put("/nameday-template", async (req, res) => {
+    try {
+        await ensureTables();
+        const template = String(req.body?.template ?? "").trim();
+        await pool.query(`INSERT INTO signage_settings(key, value, updated_at)
+       VALUES ('nameday_template', $1, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [template]);
+        res.json({ ok: true, template });
+    }
+    catch (e) {
+        res.status(500).json({ error: e?.message ?? "Failed to set nameday template" });
     }
 });
 exports.default = router;

@@ -184,6 +184,9 @@ app.use("/api", (req, res, next) => {
     // Health mindig menjen
     if (req.path === "/health" || req.path === "/health/db")
         return next();
+    // Signage public extra: névnap + villám akció menjen akkor is, ha a DB épp nem elérhető
+    if (req.path.startsWith("/signage/nameday") || req.path.startsWith("/signage/flash"))
+        return next();
     if (!dbState.ok) {
         return res.status(503).json({
             ok: false,

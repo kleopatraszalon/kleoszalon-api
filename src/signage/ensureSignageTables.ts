@@ -85,4 +85,36 @@ export async function ensureSignageTables(pool: Pool) {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
+
+  // Villám akciók (felső sávban)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.signage_flash_promos (
+      ${idCol},
+      title text NOT NULL,
+      body text NOT NULL DEFAULT '',
+      start_at timestamptz,
+      end_at timestamptz,
+      enabled boolean NOT NULL DEFAULT true,
+      priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+
+  // Egyszerű kulcs-érték beállítások (pl. névnapos üzenet sablon)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.signage_settings (
+      key text PRIMARY KEY,
+      value text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+
+  // alap névnap-sablon csak első létrehozáskor
+  await pool.query(
+    `INSERT INTO public.signage_settings(key, value)
+     VALUES ('nameday_template', 'Ma a {names} nevű vendégeink 20% kedvezményben részesülnek!!!')
+     ON CONFLICT (key) DO NOTHING;`
+  );
+
 }
