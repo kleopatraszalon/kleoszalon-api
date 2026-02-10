@@ -81,32 +81,94 @@ function splitNames(raw: string): string[] {
 
 async function fetchNamedayNamesHu(): Promise<string[]> {
   const today = ymdBudapest();
+
   // 6 órás cache (bőven elég)
-  if (namedayCache && namedayCache.ymd === today && Date.now() - namedayCache.fetchedAt < 6 * 60 * 60 * 1000) {
+  if (
+    namedayCache &&
+    namedayCache.ymd === today &&
+    Date.now() - namedayCache.fetchedAt < 6 * 60 * 60 * 1000
+  ) {
     return namedayCache.names;
   }
 
-  const url = "https://nameday.abalin.net/api/V1/today?country=hu&timezone=Europe/Budapest";
-  const txt = await httpsGet(url);
-  let j: any = null;
+  // 1) Primary: Abalin (stabil, de néha üres / limit)
   try {
-    j = JSON.parse(txt);
+    const url =
+      "https://nameday.abalin.net/api/V1/today?country=hu&timezone=Europe/Budapest";
+    const txt = await httpsGet(url);
+    let j: any = null;
+    try {
+      j = JSON.parse(txt);
+    } catch {
+      j = null;
+    }
+
+    // Abalin válaszok többféle formában jöhetnek -> próbáljunk robusztusak lenni
+    const raw =
+      j?.data?.namedays?.hu ??
+      j?.data?.namedays?.HU ??
+      j?.namedays?.hu ??
+      j?.nameday?.hu ??
+      j?.data?.name ??
+      "";
+
+    const names = splitNames(String(raw)).slice(0, 40);
+    if (names.length) {
+      namedayCache = { ymd: today, names, fetchedAt: Date.now() };
+      return names;
+    }
   } catch {
-    j = null;
+    // megyünk tovább fallbackra
   }
 
-  // Abalin válaszok többféle formában jöhetnek -> próbáljunk robusztusak lenni
-  const raw =
-    j?.data?.namedays?.hu ??
-    j?.data?.namedays?.HU ??
-    j?.namedays?.hu ??
-    j?.nameday?.hu ??
-    j?.data?.name ??
-    "";
+  // 2) Fallback: xsak.hu (ha az Abalin üres / nem elérhető)
+  try {
+    // xsak-nál tipikusan hónap-nap formátum kell (02-10 vagy 0210)
+    const mmddDash = today.slice(5); // "MM-DD"
+    const mmdd = mmddDash.replace("-", ""); // "MMDD"
 
-  const names = splitNames(String(raw)).slice(0, 20);
-  namedayCache = { ymd: today, names, fetchedAt: Date.now() };
-  return names;
+    const candidates = [
+      `https://nevnap.xsak.hu/json.php?datum=${mmddDash}`,
+      `https://nevnap.xsak.hu/json.php?datum=${mmdd}`,
+    ];
+
+    for (const u of candidates) {
+      try {
+        const txt2 = await httpsGet(u);
+        let j2: any = null;
+        try {
+          j2 = JSON.parse(txt2);
+        } catch {
+          j2 = null;
+        }
+
+        // xsak: gyakran { nev1:"...", nev2:"..." ... } vagy { data:{...} }
+        const obj =
+          j2?.data && typeof j2.data === "object" ? j2.data : j2;
+
+        const names2 = Array.isArray(obj)
+          ? obj.map(String)
+          : Object.keys(obj || {})
+              .filter((k) => /^nev\d+$/i.test(k) || /^name\d+$/i.test(k))
+              .map((k) => String(obj[k]))
+              .filter(Boolean);
+
+        const cleaned = splitNames(names2.join(", ")).slice(0, 40);
+        if (cleaned.length) {
+          namedayCache = { ymd: today, names: cleaned, fetchedAt: Date.now() };
+          return cleaned;
+        }
+      } catch {
+        // próbáljuk a következőt
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // ha minden kötél szakad (elvileg nem kéne), legyen üres, de ne dobjon hibát
+  namedayCache = { ymd: today, names: [], fetchedAt: Date.now() };
+  return [];
 }
 
 async function getSettingValue(key: string): Promise<string | null> {
@@ -339,16 +401,17 @@ router.get("/nameday", async (_req, res) => {
       getSettingValue("nameday_template"),
     ]);
 
+    // Üzleti igény: csak a *fő névnap* kell (a legtöbb adatforrás a fő nevet elsőként adja vissza).
+    const mainName = names?.[0] ? String(names[0]).trim() : "";
     const template = (templateDb && templateDb.trim()) || DEFAULT_NAMEDAY_TEMPLATE;
-    const labelNames = names.length ? names.join(", ") : "—";
     const message = template
-      .replace(/\{names\}/g, labelNames)
+      .replace(/\{names\}/g, mainName)
       .replace(/\{date\}/g, date);
 
     res.json({
-      ok: true,
+      ok: !!mainName,
       date,
-      names,
+      names: mainName ? [mainName] : [],
       template,
       message,
       fetchedAt: nowIso(),
@@ -361,7 +424,7 @@ router.get("/nameday", async (_req, res) => {
       date,
       names: [],
       template,
-      message: template.replace(/\{names\}/g, "—").replace(/\{date\}/g, date),
+      message: template.replace(/\{names\}/g, "").replace(/\{date\}/g, date),
       error: safeText(e?.message || e),
       fetchedAt: nowIso(),
       source: "nameday.abalin.net",
