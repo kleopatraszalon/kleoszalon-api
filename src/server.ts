@@ -41,6 +41,8 @@ import adminWebshopRouter from "./routes/adminWebshop";
 import authRoutes from "./routes/auth";
 import signagePublic from "./routes/signagePublic";
 import signageAdmin from "./routes/signageAdmin";
+import kioskAdmin from "./routes/kioskAdmin";
+import { kioskRouter } from "./routes/kiosk";
 import { ensureSignageTables } from "./signage/ensureSignageTables";
 
 const app = express();
@@ -215,6 +217,11 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
 // SIGNAGE (kijelző) – helyes útvonal
 app.use("/api/signage", signagePublic);
 app.use("/api/admin/signage", signageAdmin);
+
+// KIOSK (érintőkijelzős rendelő)
+app.use("/api/kiosk", kioskRouter);
+app.use("/api/admin/kiosk", kioskAdmin);
+
 
 app.use("/api", authRoutes);
 

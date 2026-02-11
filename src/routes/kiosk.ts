@@ -1,246 +1,244 @@
 import { Router, Request, Response } from "express";
-import { pool } from "../db"; // ha nálad máshol van a pool, igazítsd
+import { pool } from "../db";
 
 export const kioskRouter = Router();
 
 /**
- * GET /api/kiosk/services
- * Egyszerű, kiosk-barát szolgáltatáslista.
- * Opcionális query: locationId (UUID)
+ * Local vs Render adatbázis eltérések miatt NEM hivatkozhatunk olyan oszlopra,
+ * ami egy adott környezetben nem létezik (még COALESCE-ben sem!), mert 42703-al elszáll.
+ * Ezért oszlopfeloldást végzünk "próbálkozással" (SELECT <col> LIMIT 1) és cache-eljük.
+ */
+const _colCache = new Map<string, string | null>();
+
+async function resolveColumn(table: string, candidates: string[]): Promise<string | null> {
+  const key = `${table}:${candidates.join(",")}`;
+  if (_colCache.has(key)) return _colCache.get(key) ?? null;
+
+  for (const col of candidates) {
+    try {
+      // injection védelem: mi adjuk a jelölteket, nem user input.
+      await pool.query(`SELECT ${col} FROM ${table} LIMIT 1`);
+      _colCache.set(key, col);
+      return col;
+    } catch (e: any) {
+      // 42703 = undefined_column
+      if (e?.code === "42703") continue;
+      // más hiba (pl. table missing, permission) -> ne nyeljük le csendben
+      throw e;
+    }
+  }
+
+  _colCache.set(key, null);
+  return null;
+}
+
+async function resolveServicesDurationColumn(): Promise<string | null> {
+  return resolveColumn("services", [
+    "duration_min",
+    "duration_minutes",
+    "base_duration_minutes",
+    "duration",
+    "base_duration",
+  ]);
+}
+
+async function resolveServicesPriceColumn(): Promise<string | null> {
+  return resolveColumn("services", [
+    "base_price",
+    "price",
+    "price_huf",
+    "price_hu",
+  ]);
+}
+
+async function resolveServicesNameColumn(lang: "hu" | "en" | "ru"): Promise<string | null> {
+  if (lang === "en") {
+    return resolveColumn("services", ["name_en", "name"]);
+  }
+  if (lang === "ru") {
+    return resolveColumn("services", ["name_ru", "name"]);
+  }
+  return resolveColumn("services", ["name_hu", "name"]);
+}
+
+async function fetchKioskServices(locationId?: string) {
+  // csak whitelistelt oszlopnév mehet be a SQL-be (injection védelem)
+  const durationCol = await resolveServicesDurationColumn();
+  const durationExpr = durationCol ? `COALESCE(s.${durationCol}, 0)` : `0`;
+
+  // Megjegyzés: a /kiosk/services jelenleg a publikus szolgáltatás-listára támaszkodik.
+  // Később: kiosk_menus + kiosk_menu_sections + kiosk_menu_items.
+  const r = await pool.query(
+    `SELECT
+        s.id,
+        s.name_hu,
+        s.name_en,
+        s.description_hu,
+        s.description_en,
+        COALESCE(s.base_price, 0) AS base_price,
+        ${durationExpr} AS duration_minutes,
+        COALESCE(s.category, '') AS category,
+        COALESCE(s.photo_url, '') AS photo_url
+      FROM services s
+      WHERE ($1::uuid IS NULL OR s.location_id = $1)
+      ORDER BY COALESCE(s.sort_order, 0) ASC, s.name_hu ASC` ,
+    [locationId ?? null]
+  );
+
+  // Csoportosítás kategóriák szerint a kiosk UI-hoz
+  const byCat: Record<string, any[]> = {};
+  for (const row of r.rows ?? []) {
+    const cat = String(row.category || "").trim() || "Egyéb";
+    (byCat[cat] ||= []).push(row);
+  }
+
+  return Object.entries(byCat)
+    .sort(([a], [b]) => a.localeCompare(b, "hu"))
+    .map(([name, items]) => ({ name, items }));
+}
+
+/**
+ * KIOSK – szolgáltatások (kategória = parent szolgáltatás)
+ * GET /api/kiosk/services?lang=hu&locationId=<uuid>
+ *
+ * Visszaad: { ok:true, categories:[{id,name,imageKey,items:[...] }]}
  */
 kioskRouter.get("/services", async (req: Request, res: Response) => {
-  const { locationId, lang } = req.query as {
-    locationId?: string;
-    lang?: "hu" | "en" | "ru";
-  };
+  const { locationId, lang } = req.query as { locationId?: string; lang?: string };
+  const language = (lang === "en" || lang === "ru") ? (lang as any) : "hu";
 
-  // Nyelv választása – ha nincs megadva, HU legyen az alap
-  const language = lang || "hu";
-
-  // Dinamikusan választjuk a név oszlopot (name_hu / name_en / name_ru)
-  const nameColumn =
-    language === "en"
-      ? "s.name_en"
-      : language === "ru"
-      ? "s.name_ru"
-      : "s.name_hu";
+  // Oszlopnevek adatbázisonként eltérhetnek (local vs Render), ezért futásidőben felderítjük.
+  const nameCol = await resolveServicesNameColumn(language);
+  const priceCol = await resolveServicesPriceColumn();
+  const nameExpr = nameCol ? `s.${nameCol}` : "''";
+  const parentNameExpr = nameCol ? `p.${nameCol}` : "''";
+  const priceExpr = priceCol ? `s.${priceCol}` : "NULL";
 
   try {
-    const params: any[] = [];
-    let where = "s.is_active = TRUE";
+    const durationCol = await resolveServicesDurationColumn();
+    const durationExpr = durationCol ? `COALESCE(s.${durationCol}::int, 0)` : "0::int";
 
+    // Egyes adatbázisokban nincs parent_id a services táblán (pl. régi séma).
+    // Ilyenkor nem kategorizálunk parent alapján, hanem a (ha létezik) `category` mező szerint csoportosítunk.
+    const parentIdCol = await resolveColumn("services", ["parent_id"]);
+
+    // Schema kompatibilitás: különböző DB-kben eltérhetnek az aktív / foglalható jelzők.
+    // - active: active | is_active
+    // - is_bookable: is_bookable | bookable | bookable_flag
+    const activeCol = await resolveColumn("services", ["active", "is_active"]);
+    const bookableCol = await resolveColumn("services", ["is_bookable", "bookable", "bookable_flag"]);
+
+    // Ha egyik oszlop sincs, akkor ne szűrjünk rájuk (TRUE).
+    const activeExpr = activeCol ? `COALESCE(s.${activeCol}, TRUE) = TRUE` : "TRUE";
+    const bookableExpr = bookableCol ? `COALESCE(s.${bookableCol}, TRUE) = TRUE` : "TRUE";
+
+    const params: any[] = [];
+    let where = `${activeExpr} AND ${bookableExpr}`;
+
+    // opcionális telephely-szűrés: service_locations táblán (ha van), különben fallback.
+    // Biztonság: ha nincs ilyen tábla a DB-ben, ez a query hibát dobna – ezért TRY-CATCH-ben vagyunk.
     if (locationId) {
       params.push(locationId);
-      where += ` AND (s.location_id = $${params.length} OR s.location_id IS NULL)`;
+      where += ` AND EXISTS (SELECT 1 FROM service_locations sl WHERE sl.service_id = s.id AND sl.location_id = $${params.length})`;
     }
 
-    const query = `
+    // parent = kategória (services.parent_id). Ha nincs ilyen oszlop, akkor `category` alapján groupolunk.
+    const categoryCol = await resolveColumn("services", ["category", "category_name"]);
+    const categoryExpr = categoryCol ? `s.${categoryCol}::text` : `''`;
+
+    const q = parentIdCol
+      ? `
+      WITH base AS (
+        SELECT
+          s.id,
+          ${nameExpr} AS name,
+          ${priceExpr} AS base_price,
+          ${durationExpr} AS duration_min,
+          s.${parentIdCol} AS parent_id
+        FROM services s
+        WHERE ${where}
+      ),
+      cats AS (
+        SELECT
+          COALESCE(p.id, 'other'::text) AS cat_id,
+          COALESCE(${parentNameExpr}, 'Egyéb') AS cat_name
+        FROM base b
+        LEFT JOIN services p ON p.id = b.parent_id
+        GROUP BY COALESCE(p.id, 'other'::text), COALESCE(${parentNameExpr}, 'Egyéb')
+      )
       SELECT
-        s.id,
-        ${nameColumn} AS name,
-        s.base_price AS price,
-        s.duration_minutes,
-        st.id AS service_type_id,
-        COALESCE(st.name_hu, st.name_en, st.name_ru) AS service_type_name
+        c.cat_id,
+        c.cat_name,
+        b.id AS service_id,
+        b.name AS service_name,
+        b.base_price,
+        b.duration_min
+      FROM cats c
+      LEFT JOIN base b
+        ON (b.parent_id = c.cat_id::uuid) OR (c.cat_id = 'other' AND b.parent_id IS NULL)
+      ORDER BY c.cat_name, b.name;
+    `
+      : `
+      SELECT
+        COALESCE(NULLIF(TRIM(${categoryExpr}), ''), 'Egyéb') AS cat_name,
+        s.id AS service_id,
+        ${nameExpr} AS service_name,
+        ${priceExpr} AS base_price,
+        ${durationExpr} AS duration_min
       FROM services s
-      LEFT JOIN service_types st ON st.id = s.service_type_id
       WHERE ${where}
-      ORDER BY st.display_order NULLS LAST, s.display_order NULLS LAST, name;
+      ORDER BY cat_name, service_name;
     `;
 
-    const { rows } = await pool.query(query, params);
+    const { rows } = await pool.query(q, params);
 
-    // Csoportosítás típus szerint – a frontendnek kényelmesebb
-    const grouped: Record<
-      string,
-      {
-        serviceTypeId: string | null;
-        serviceTypeName: string | null;
-        services: any[];
+    // group to categories
+    const by: Record<string, any> = {};
+    for (const r of rows) {
+      const cid = r.cat_id ?? String(r.cat_name || "Egyéb");
+      if (!by[cid]) {
+        // imageKey: ugyanaz, mint a category slug (rövid név). Adminban később felülírható.
+        const slug = String(r.cat_name || "egyeb")
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}]+/gu, "-")
+          .replace(/^-+|-+$/g, "");
+        by[cid] = { id: cid, name: r.cat_name, imageKey: `cat_${slug}`, items: [] as any[] };
       }
-    > = {};
-
-    for (const row of rows) {
-      const key = row.service_type_id || "other";
-      if (!grouped[key]) {
-        grouped[key] = {
-          serviceTypeId: row.service_type_id,
-          serviceTypeName: row.service_type_name,
-          services: [],
-        };
+      if (r.service_id) {
+        const sslug = String(r.service_name || "")
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}]+/gu, "-")
+          .replace(/^-+|-+$/g, "");
+        by[cid].items.push({
+          id: r.service_id,
+          name: r.service_name,
+          price: r.base_price ?? null,
+          durationMin: r.duration_min ?? null,
+          imageKey: `svc_${sslug}`,
+        });
       }
-      grouped[key].services.push({
-        id: row.id,
-        name: row.name,
-        price: row.price,
-        durationMinutes: row.duration_minutes,
-      });
     }
 
-    const result = Object.values(grouped);
-
-    res.json({
-      ok: true,
-      language,
-      items: result,
-    });
+    res.json({ ok: true, language, categories: Object.values(by) });
   } catch (err) {
     console.error("Kiosk services hiba:", err);
-    res.status(500).json({
-      ok: false,
-      error: "Kiosk services lekérés sikertelen",
-    });
+    res.status(500).json({ ok: false, error: "kiosk_services_failed" });
   }
 });
 
 /**
- * POST /api/kiosk/orders
- * Új kiosk-rendelést/work_order-t hoz létre.
- *
- * Request body példa:
- * {
- *   "locationId": "uuid",
- *   "client": { "name": "Kiss Anna", "phone": "+36..." },
- *   "items": [
- *     { "serviceId": "uuid", "quantity": 1 }
- *   ],
- *   "notes": "Balayage + szárítás",
- *   "source": "kiosk"
- * }
+ * KIOSK – menü config (később adminból jön; most fallback a /services-ből)
+ * GET /api/kiosk/menu?lang=hu&locationId=<uuid>
  */
-kioskRouter.post("/orders", async (req: Request, res: Response) => {
-  const clientIp =
-    (req.headers["x-forwarded-for"] as string) ||
-    req.socket.remoteAddress ||
-    null;
+kioskRouter.get("/menu", async (req: Request, res: Response, next) => {
+  // Jelenleg ugyanazt adja vissza, mint /services – a UI erre épül.
+  // Később: kiosk_menus + kiosk_menu_sections + kiosk_menu_items.
 
-  const {
-    locationId,
-    client,
-    items,
-    notes,
-    source,
-  }: {
-    locationId: string;
-    client?: { name?: string; phone?: string };
-    items: { serviceId: string; quantity?: number }[];
-    notes?: string;
-    source?: string;
-  } = req.body || {};
-
-  if (!locationId || !items || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({
-      ok: false,
-      error: "locationId és legalább egy tétel kötelező",
-    });
-  }
-
-  const clientName = client?.name || "Kiosk vendég";
-  const clientPhone = client?.phone || null;
-  const orderSource = source || "kiosk";
-
-  const clientText = clientPhone
-    ? `${clientName} (${clientPhone})`
-    : clientName;
-
-  const clientNotes =
-    (notes ? notes + " " : "") +
-    (clientPhone ? `| Tel: ${clientPhone}` : "") +
-    (clientIp ? ` | IP: ${clientIp}` : "");
-
-  const clientRef = clientText;
-
-  const clientInfo = { clientName, clientPhone, clientText };
-
-  try {
-    // 1) Szolgáltatások árainak lekérése
-    const serviceIds = items.map((i) => i.serviceId);
-    const { rows: serviceRows } = await pool.query(
-      `
-      SELECT id, base_price
-      FROM services
-      WHERE id = ANY($1::uuid[])
-    `,
-      [serviceIds]
-    );
-
-    // Map árakhoz
-    const priceById = new Map<string, number>();
-    for (const row of serviceRows) {
-      priceById.set(row.id, Number(row.base_price) || 0);
-    }
-
-    // 2) Összegzés
-    let total = 0;
-    const normalizedItems = items.map((i) => {
-      const quantity = i.quantity && i.quantity > 0 ? i.quantity : 1;
-      const unitPrice = priceById.get(i.serviceId) ?? 0;
-      const lineTotal = unitPrice * quantity;
-      total += lineTotal;
-      return {
-        ...i,
-        quantity,
-        unitPrice,
-        lineTotal,
-      };
-    });
-
-    // 3) tranzakció – work_order + work_order_items
-    await pool.query("BEGIN");
-
-    // FIGYELEM: a work_orders/work_order_items sémát igazítsd a sajátodhoz!
-
-    const insertWorkOrderSql = `
-      INSERT INTO work_orders
-        (location_id, client_name, client_phone, status, source, total_amount, notes, created_at, updated_at)
-      VALUES
-        ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-      RETURNING id;
-    `;
-
-    const { rows: woRows } = await pool.query(insertWorkOrderSql, [
-      locationId,
-      clientName,
-      clientPhone,
-      "NEW", // állapot – ha nálad máshogy hívják, módosítsd
-      orderSource,
-      total,
-      clientNotes,
-    ]);
-
-    const workOrderId = woRows[0].id as string;
-
-    const insertItemSql = `
-      INSERT INTO work_order_items
-        (work_order_id, service_id, quantity, unit_price, total_price, created_at, updated_at)
-      VALUES
-        ($1, $2, $3, $4, $5, NOW(), NOW());
-    `;
-
-    for (const item of normalizedItems) {
-      await pool.query(insertItemSql, [
-        workOrderId,
-        item.serviceId,
-        item.quantity,
-        item.unitPrice,
-        item.lineTotal,
-      ]);
-    }
-
-    await pool.query("COMMIT");
-
-    res.status(201).json({
-      ok: true,
-      workOrderId,
-      total,
-      client: clientInfo,
-    });
-  } catch (err) {
-    await pool.query("ROLLBACK");
-    console.error("Kiosk order hiba:", err);
-    res.status(500).json({
-      ok: false,
-      error: "Kiosk rendelés létrehozása sikertelen",
-    });
-  }
+  // Express Router-nek van .handle(req,res,next) metódusa, de a TS típusdef sokszor nem exportálja.
+  // Emiatt castoljuk any-re, hogy ne dobjon TS2339-et.
+  return (kioskRouter as any).handle(
+    { ...req, url: "/services" } as any,
+    res as any,
+    next
+  );
 });

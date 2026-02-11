@@ -40,6 +40,8 @@ const adminWebshop_1 = __importDefault(require("./routes/adminWebshop"));
 const auth_1 = __importDefault(require("./routes/auth"));
 const signagePublic_1 = __importDefault(require("./routes/signagePublic"));
 const signageAdmin_1 = __importDefault(require("./routes/signageAdmin"));
+const kioskAdmin_1 = __importDefault(require("./routes/kioskAdmin"));
+const kiosk_1 = require("./routes/kiosk");
 const ensureSignageTables_1 = require("./signage/ensureSignageTables");
 const app = (0, express_1.default)();
 const corsOptions = {
@@ -201,6 +203,9 @@ app.use("/api", (req, res, next) => {
 // SIGNAGE (kijelző) – helyes útvonal
 app.use("/api/signage", signagePublic_1.default);
 app.use("/api/admin/signage", signageAdmin_1.default);
+// KIOSK (érintőkijelzős rendelő)
+app.use("/api/kiosk", kiosk_1.kioskRouter);
+app.use("/api/admin/kiosk", kioskAdmin_1.default);
 app.use("/api", auth_1.default);
 // statikus feltöltések, hogy a weblap is elérje a képeket
 app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "..", "uploads")));
