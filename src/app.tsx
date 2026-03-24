@@ -1,26 +1,27 @@
 // src/App.tsx
 import React, { Suspense, lazy, type ReactElement } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-import EmployeeDetailsPage from "./pages/EmployeeDetails";
 import KioskPage from "./pages/KioskPage";
 
-const AppointmentsCalendar = lazy(() => import("./pages/AppointmentsCalendar"));
-
-// ⚠️ A lapoknak DEFAULT exporttal kell rendelkezniük (export default ...)
 const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
 const Home = lazy(() => import("./pages/Home"));
+
 const Bejelentkezesek = lazy(() => import("./pages/Bejelentkezesek"));
 const Munkalapok = lazy(() => import("./pages/Munkalapok"));
 const Penzugy = lazy(() => import("./pages/Penzugy"));
 const Logisztika = lazy(() => import("./pages/Logisztika"));
-const Register = lazy(() => import("./pages/Register"));
+
 const WorkOrdersList = lazy(() => import("./pages/WorkOrdersList"));
 const WorkOrderNew = lazy(() => import("./pages/WorkOrderNew"));
+
 const EmployeesList = lazy(() => import("./pages/EmployeesList"));
 const EmployeeDetails = lazy(() => import("./pages/EmployeeDetails"));
+
 const ServicesList = lazy(() => import("./pages/ServicesList"));
-// 🔹 ÚJ: Szolgáltatások admin oldal
-const ServicesList = lazy(() => import("./pages/ServicesList"));
+
+const AppointmentsCalendar = lazy(() => import("./pages/AppointmentsCalendar"));
+const TimetableUpdatePage = lazy(() => import("./pages/TimetableUpdatePage"));
 
 const HOME_PATH = "/";
 
@@ -118,7 +119,7 @@ export default function App() {
             }
           />
 
-          {/* Munkalap / Work orders (védettek) */}
+          {/* Work orders (védettek) */}
           <Route
             path="/workorders"
             element={
@@ -136,23 +137,7 @@ export default function App() {
             }
           />
 
-          {/* Munkatársak (védettek) */}
-          <Route
-            path="/employees/:id"
-            element={
-              <RequireAuth>
-                <EmployeeDetailsPage />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/employees/:id"
-            element={
-              <RequireAuth>
-                <EmployeeDetails />
-              </RequireAuth>
-            }
-          />
+          {/* Employees (védettek) */}
           <Route
             path="/employees"
             element={
@@ -169,8 +154,16 @@ export default function App() {
               </RequireAuth>
             }
           />
+          <Route
+            path="/employees/:id"
+            element={
+              <RequireAuth>
+                <EmployeeDetails />
+              </RequireAuth>
+            }
+          />
 
-          {/* 🔹 ÚJ: Szolgáltatások admin (védett) */}
+          {/* Services admin (védett) */}
           <Route
             path="/masterdata/services"
             element={
@@ -231,32 +224,19 @@ export default function App() {
             }
           />
 
-          {/* 🔹 Szolgáltatások admin – menü: /masterdata/services és /masters/services */}
+          {/* ✅ ÚJ: Timetable / Időpont frissítés */}
           <Route
-            path="/masterdata/services"
+            path="/appointments/timetable-update"
             element={
               <RequireAuth>
-                <ServicesList />
+                <TimetableUpdatePage />
               </RequireAuth>
             }
           />
-          <Route
-            path="/masters/services"
-            element={
-              <RequireAuth>
-                <ServicesList />
-              </RequireAuth>
-            }
-          />
-             {/* 🔹 Kiosk */}
-           <Route path="/kiosk" element={<KioskPage />} />
-            element={
-              <RequireAuth>
-                <ServicesList />
-              </RequireAuth>
-            }
-          />
-          
+
+          {/* Kiosk (külön üzemmód, általában nem igényel belépést) */}
+          <Route path="/kiosk" element={<KioskPage />} />
+
           {/* Fallback */}
           <Route path="*" element={<FallbackRedirect />} />
         </Routes>

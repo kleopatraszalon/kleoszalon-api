@@ -3,52 +3,148 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// src/routes/appointments.ts
-const express_1 = require("express");
+// backend/src/routes/appointments.ts
+const express_1 = __importDefault(require("express"));
 const db_1 = __importDefault(require("../db"));
-const router = (0, express_1.Router)();
+const auth_1 = require("../middleware/auth");
+const router = express_1.default.Router();
+async function tableHasColumn(table, column) {
+    const r = await db_1.default.query(`SELECT 1
+     FROM information_schema.columns
+     WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+     LIMIT 1`, [table, column]);
+    return (r.rowCount ?? 0) > 0;
+}
 /**
- * GET /api/appointments
- * Query paraméterek:
- *   from: "YYYY-MM-DD HH:MM" (opcionális)
- *   to:   "YYYY-MM-DD HH:MM" (opcionális)
- *
- * A frontend most így hívja:
- *   /api/appointments?from=2025-11-14 00:00&to=2025-11-14 23:59
+ * POST /api/appointments
+ * Minimál létrehozás üres rács kattintásból.
+ * Elvárt mezők: employee_id, start_time, end_time
+ * Opcionális: title, client_id, client_name, location_id
  */
-router.get("/", async (req, res) => {
+router.post("/", auth_1.requireAuth, async (req, res) => {
+    const { employee_id, start_time, end_time, title, client_id, client_name, location_id } = req.body || {};
+    if (!employee_id || !start_time || !end_time) {
+        return res.status(400).json({ error: "employee_id, start_time, end_time kötelező" });
+    }
     try {
-        const { from, to } = req.query;
-        const fromStr = typeof from === "string" ? from : undefined;
-        const toStr = typeof to === "string" ? to : undefined;
-        const params = [];
-        let where = "WHERE 1=1";
-        if (fromStr) {
-            params.push(fromStr);
-            where += ` AND a.start_time >= $${params.length}::timestamp`;
-        }
-        if (toStr) {
-            params.push(toStr);
-            where += ` AND a.start_time <= $${params.length}::timestamp`;
-        }
-        const sql = `
-      SELECT
-        a.id,
-        a.start_time,
-        a.end_time,
-        a.status
-      FROM public.appointments a
-      ${where}
-      ORDER BY a.start_time ASC
-    `;
-        const { rows } = await db_1.default.query(sql, params);
-        res.json(rows);
+        // ha van clients tábla és client_id nincs, akkor client_name alapján nem hozunk létre automatán (később lehet).
+        const r = await db_1.default.query(`INSERT INTO appointments (employee_id, client_id, location_id, title, start_time, end_time, status, notes)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::timestamptz, $6::timestamptz, COALESCE($7::text,'confirmed'), COALESCE($8::text,''))
+       RETURNING id`, [employee_id, client_id || null, location_id || null, title || (client_name ? `Foglalás - ${client_name}` : "Foglalás"), start_time, end_time, "confirmed", ""]);
+        return res.status(201).json({ id: r.rows[0].id });
     }
     catch (err) {
-        console.error("GET /api/appointments error:", err);
-        res
-            .status(500)
-            .json({ error: "Hiba a bejelentkezések lekérdezésekor" });
+        console.error("[POST /api/appointments] error:", err);
+        return res.status(500).json({ error: "Nem sikerült létrehozni", detail: err?.message || String(err), code: err?.code || null });
+    }
+});
+/**
+ * GET /api/appointments/:id/detail
+ * Drawer adatok. (ha már nálatok létezik más endpoint, ezt a front felől át lehet állítani)
+ */
+router.get("/:id/detail", auth_1.requireAuth, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const ap = await db_1.default.query(`SELECT a.*, 
+              COALESCE(c.full_name, c.name, '') AS client_name
+       FROM appointments a
+       LEFT JOIN clients c ON c.id = a.client_id
+       WHERE a.id = $1`, [id]);
+        if (ap.rowCount === 0)
+            return res.status(404).json({ error: "Nincs ilyen időpont" });
+        // services/product list safe (ha nincs tábla, üres)
+        const hasServices = (await db_1.default.query(`SELECT to_regclass('public.appointment_services') IS NOT NULL AS ok`)).rows[0].ok;
+        const services = hasServices
+            ? (await db_1.default.query(`SELECT aps.id, aps.service_id, COALESCE(s.name,'') AS name, COALESCE(aps.duration_minutes, aps.duration) AS duration_minutes, aps.price, aps.sort_order
+           FROM appointment_services aps
+           LEFT JOIN services s ON s.id = aps.service_id
+           WHERE aps.appointment_id = $1
+           ORDER BY aps.sort_order, aps.created_at`, [id])).rows
+            : [];
+        // employee/client info (safe)
+        const appointment = ap.rows[0];
+        const employee = appointment.employee_id
+            ? (async () => {
+                const hasFull = await tableHasColumn("employees", "full_name");
+                const hasName = await tableHasColumn("employees", "name");
+                const hasRole = await tableHasColumn("employees", "role");
+                const hasPhoto = await tableHasColumn("employees", "photo_url");
+                const sel = [
+                    "id",
+                    hasFull ? "full_name" : (hasName ? "name AS full_name" : "NULL AS full_name"),
+                    hasRole ? "role" : "NULL AS role",
+                    hasPhoto ? "photo_url" : "NULL AS photo_url",
+                ].join(", ");
+                return (await db_1.default.query(`SELECT ${sel} FROM employees WHERE id = $1 LIMIT 1`, [appointment.employee_id])).rows[0] || null;
+            })()
+            : null;
+        const client = appointment.client_id
+            ? (await db_1.default.query(`SELECT id, full_name, name, phone, email
+           FROM clients
+           WHERE id = $1`, [appointment.client_id])).rows[0] || null
+            : null;
+        // notes (safe)
+        const hasNotes = (await db_1.default.query(`SELECT to_regclass('public.appointment_notes') IS NOT NULL AS ok`)).rows[0].ok;
+        const notes = hasNotes
+            ? (await db_1.default.query(`SELECT id, note_type, note_text, created_at
+           FROM appointment_notes
+           WHERE appointment_id = $1
+           ORDER BY created_at DESC
+           LIMIT 20`, [id])).rows
+            : [];
+        return res.json({ appointment, employee: await employee, client, services, products: [], client_summary: null, notes });
+    }
+    catch (err) {
+        console.error("[GET /api/appointments/:id/detail] error:", err);
+        return res.status(500).json({ error: "Nem sikerült betölteni", detail: err?.message || String(err), code: err?.code || null });
+    }
+});
+/**
+ * PATCH /api/appointments/:id
+ * Move/resize + drawer mezők mentése (status/notes/payment + start/end).
+ */
+router.patch("/:id", auth_1.requireAuth, async (req, res) => {
+    const { id } = req.params;
+    const { start_time, end_time, employee_id, location_id, title, status, notes, payment_status, paid_total, discount_percent, } = req.body || {};
+    try {
+        const fields = [];
+        const params = [];
+        let i = 1;
+        const add = (field, value, cast) => {
+            if (value === undefined)
+                return;
+            params.push(value);
+            fields.push(`${field} = $${i}${cast ? `::${cast}` : ""}`);
+            i += 1;
+        };
+        add("start_time", start_time, "timestamptz");
+        add("end_time", end_time, "timestamptz");
+        add("employee_id", employee_id, "uuid");
+        add("location_id", location_id, "uuid");
+        add("title", title, "text");
+        add("status", status, "text");
+        add("notes", notes, "text");
+        // opcionális mezők (ha léteznek a táblában)
+        const cols = await db_1.default.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='appointments'`);
+        const colset = new Set(cols.rows.map((x) => x.column_name));
+        if (colset.has("payment_status"))
+            add("payment_status", payment_status, "text");
+        if (colset.has("paid_total"))
+            add("paid_total", paid_total, "numeric");
+        if (colset.has("discount_percent"))
+            add("discount_percent", discount_percent, "numeric");
+        if (colset.has("updated_at"))
+            add("updated_at", new Date().toISOString(), "timestamptz");
+        if (!fields.length)
+            return res.json({ ok: true });
+        params.push(id);
+        const q = `UPDATE appointments SET ${fields.join(", ")} WHERE id = $${i}::uuid RETURNING id`;
+        const r = await db_1.default.query(q, params);
+        return res.json({ ok: true, id: r.rows[0]?.id });
+    }
+    catch (err) {
+        console.error("[PATCH /api/appointments/:id] error:", err);
+        return res.status(500).json({ error: "Nem sikerült menteni", detail: err?.message || String(err), code: err?.code || null });
     }
 });
 exports.default = router;

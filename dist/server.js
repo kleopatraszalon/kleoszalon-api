@@ -27,6 +27,8 @@ const services_available_1 = __importDefault(require("./routes/services_availabl
 const employee_calendar_1 = __importDefault(require("./routes/employee_calendar"));
 const schedule_day_1 = __importDefault(require("./routes/schedule_day"));
 const appointments_1 = __importDefault(require("./routes/appointments"));
+const appointments_detail_1 = __importDefault(require("./routes/appointments_detail"));
+const timetable_1 = __importDefault(require("./routes/timetable"));
 const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
 const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
@@ -355,7 +357,9 @@ app.use("/api/workorders", workorders_1.default);
 app.use("/api/bookings", bookings_1.default);
 app.use("/api/transactions", transactions_1.default);
 app.use("/api/schedule/day", schedule_day_1.default);
+app.use("/api", appointments_detail_1.default);
 app.use("/api/appointments", appointments_1.default);
+app.use("/api/timetable", timetable_1.default);
 app.use("/api/public", publicMarketing_1.default);
 app.use("/api/services", services_1.default);
 app.use("/api/service-types", serviceTypes_1.default);
