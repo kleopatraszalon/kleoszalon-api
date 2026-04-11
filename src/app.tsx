@@ -1,4 +1,3 @@
-// src/App.tsx
 import React, { Suspense, lazy, type ReactElement } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import KioskPage from "./pages/KioskPage";
@@ -22,6 +21,11 @@ const ServicesList = lazy(() => import("./pages/ServicesList"));
 
 const AppointmentsCalendar = lazy(() => import("./pages/AppointmentsCalendar"));
 const TimetableUpdatePage = lazy(() => import("./pages/TimetableUpdatePage"));
+
+const VirDashboardPage = lazy(() => import("./pages/VirDashboardPage"));
+const VirStaffDetailPage = lazy(() => import("./pages/VirStaffDetailPage"));
+const VirServiceDetailPage = lazy(() => import("./pages/VirServiceDetailPage"));
+const VirReportsAdminPage = lazy(() => import("./pages/VirReportsAdminPage"));
 
 const HOME_PATH = "/";
 
@@ -172,7 +176,6 @@ export default function App() {
               </RequireAuth>
             }
           />
-          {/* Opcionálisan: ha a régi /masters/services path is létezik a menüben */}
           <Route
             path="/masters/services"
             element={
@@ -224,12 +227,46 @@ export default function App() {
             }
           />
 
-          {/* ✅ ÚJ: Timetable / Időpont frissítés */}
+          {/* Timetable / Időpont frissítés */}
           <Route
             path="/appointments/timetable-update"
             element={
               <RequireAuth>
                 <TimetableUpdatePage />
+              </RequireAuth>
+            }
+          />
+
+          {/* VIR */}
+          <Route
+            path="/admin/vir"
+            element={
+              <RequireAuth>
+                <VirDashboardPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/vir/staff/:staffId"
+            element={
+              <RequireAuth>
+                <VirStaffDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/vir/service/:serviceId"
+            element={
+              <RequireAuth>
+                <VirServiceDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/vir-reports"
+            element={
+              <RequireAuth>
+                <VirReportsAdminPage />
               </RequireAuth>
             }
           />

@@ -8,7 +8,7 @@ import bcrypt from "bcryptjs";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import crypto from "crypto";
 import cors from "cors";
-
+import virReportsRouter from "./routes/virReports";
 
 
 /* ===== ROUTES (nem auth) ===== */
@@ -134,6 +134,7 @@ app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
+app.use("/api/vir-reports", virReportsRouter);
 
 // 🔒 DB guard: ha a DB nem elérhető, azonnal 503-at adunk (nem 500 + hosszú timeout)
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {

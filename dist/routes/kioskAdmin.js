@@ -37,9 +37,6 @@ const express_1 = require("express");
 const db = __importStar(require("../db"));
 const pool = (db.pool ?? db.default);
 const router = (0, express_1.Router)();
-function isUuid(v) {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(v || ""));
-}
 async function ensureKioskTables() {
     await pool.query(`
     CREATE TABLE IF NOT EXISTS kiosk_menus (
@@ -89,10 +86,6 @@ router.get("/menu", async (req, res) => {
     const { locationId } = req.query;
     if (!locationId)
         return res.status(400).json({ ok: false, error: "locationId kötelező" });
-    if (!isUuid(locationId))
-        return res.status(400).json({ ok: false, error: "locationId nem érvényes UUID" });
-    if (!isUuid(locationId))
-        return res.status(400).json({ ok: false, error: "locationId nem érvényes UUID" });
     const { rows: menuRows } = await pool.query(`
     SELECT id, name, theme, is_active
     FROM kiosk_menus
@@ -141,10 +134,6 @@ router.post("/menu/init", async (req, res) => {
     const { locationId, name } = req.body;
     if (!locationId)
         return res.status(400).json({ ok: false, error: "locationId kötelező" });
-    if (!isUuid(locationId))
-        return res.status(400).json({ ok: false, error: "locationId nem érvényes UUID" });
-    if (!isUuid(locationId))
-        return res.status(400).json({ ok: false, error: "locationId nem érvényes UUID" });
     await pool.query("BEGIN");
     try {
         const { rows: mRows } = await pool.query(`

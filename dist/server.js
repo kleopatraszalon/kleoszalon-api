@@ -15,6 +15,7 @@ const crypto_1 = __importDefault(require("crypto"));
 const cors_1 = __importDefault(require("cors"));
 /* ===== ROUTES (nem auth) ===== */
 const menu_1 = __importDefault(require("./routes/menu"));
+const me_1 = __importDefault(require("./routes/me"));
 /*  import meRoutes from "./routes/me"; */
 const workorders_1 = __importDefault(require("./routes/workorders"));
 const bookings_1 = __importDefault(require("./routes/bookings"));
@@ -27,8 +28,6 @@ const services_available_1 = __importDefault(require("./routes/services_availabl
 const employee_calendar_1 = __importDefault(require("./routes/employee_calendar"));
 const schedule_day_1 = __importDefault(require("./routes/schedule_day"));
 const appointments_1 = __importDefault(require("./routes/appointments"));
-const appointments_detail_1 = __importDefault(require("./routes/appointments_detail"));
-const timetable_1 = __importDefault(require("./routes/timetable"));
 const mailer_1 = __importDefault(require("./mailer"));
 const tempCodeStore_1 = require("./tempCodeStore");
 const publicMarketing_1 = __importDefault(require("./routes/publicMarketing"));
@@ -45,6 +44,8 @@ const signageAdmin_1 = __importDefault(require("./routes/signageAdmin"));
 const kioskAdmin_1 = __importDefault(require("./routes/kioskAdmin"));
 const kiosk_1 = require("./routes/kiosk");
 const ensureSignageTables_1 = require("./signage/ensureSignageTables");
+const vir_1 = __importDefault(require("./routes/vir"));
+const virDrilldown_1 = __importDefault(require("./routes/virDrilldown"));
 const app = (0, express_1.default)();
 const corsOptions = {
     origin: (origin, cb) => {
@@ -180,6 +181,7 @@ app.use((_, res, next) => {
 });
 app.use(express_1.default.json({ limit: "1mb" }));
 app.use((0, cookie_parser_1.default)());
+app.use("/api/vir-drilldown", virDrilldown_1.default);
 // 🔒 DB guard: ha a DB nem elérhető, azonnal 503-at adunk (nem 500 + hosszú timeout)
 app.use("/api", (req, res, next) => {
     // CORS preflight
@@ -346,6 +348,7 @@ app.get("/api/me", (req, res) => {
 /* ===== Nem-auth route-ok ===== */
 app.use("/api/menu", menu_1.default);
 app.use("/api/menus", menu_1.default);
+app.use("/api/me", me_1.default);
 /*  app.use("/api/me", meRoutes); */
 app.use("/api/employees", employees_1.default);
 app.use("/api/services/available", services_available_1.default);
@@ -357,12 +360,11 @@ app.use("/api/workorders", workorders_1.default);
 app.use("/api/bookings", bookings_1.default);
 app.use("/api/transactions", transactions_1.default);
 app.use("/api/schedule/day", schedule_day_1.default);
-app.use("/api", appointments_detail_1.default);
 app.use("/api/appointments", appointments_1.default);
-app.use("/api/timetable", timetable_1.default);
 app.use("/api/public", publicMarketing_1.default);
 app.use("/api/services", services_1.default);
 app.use("/api/service-types", serviceTypes_1.default);
+app.use("/api/vir", vir_1.default);
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req, res) => {
     try {

@@ -9,10 +9,9 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 import crypto from "crypto";
 import cors from "cors";
 
-
-
 /* ===== ROUTES (nem auth) ===== */
 import menuRoutes from "./routes/menu";
+import meRouter from "./routes/me";
 /*  import meRoutes from "./routes/me"; */
 import workorderRoutes from "./routes/workorders";
 import bookingsRoutes from "./routes/bookings";
@@ -44,6 +43,8 @@ import signageAdmin from "./routes/signageAdmin";
 import kioskAdmin from "./routes/kioskAdmin";
 import { kioskRouter } from "./routes/kiosk";
 import { ensureSignageTables } from "./signage/ensureSignageTables";
+import virRouter from "./routes/vir";
+import virDrilldownRouter from "./routes/virDrilldown";
 
 const app = express();
 
@@ -193,7 +194,7 @@ app.use((_, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
-
+app.use("/api/vir-drilldown", virDrilldownRouter);
 
 // 🔒 DB guard: ha a DB nem elérhető, azonnal 503-at adunk (nem 500 + hosszú timeout)
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
@@ -412,6 +413,7 @@ app.get("/api/me", (req: Request, res: Response) => {
 /* ===== Nem-auth route-ok ===== */
 app.use("/api/menu", menuRoutes);
 app.use("/api/menus", menuRoutes);
+app.use("/api/me", meRouter);
 /*  app.use("/api/me", meRoutes); */
 app.use("/api/employees", employeesRouter);
 app.use("/api/services/available", servicesAvailableRoutes);
@@ -428,6 +430,7 @@ app.use("/api/appointments", appointmentsRouter);
  app.use("/api/services", servicesRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
+app.use("/api/vir", virRouter);
 /* ===== Ügyfelek lista – /api/clients ===== */
 app.get("/api/clients", async (req: Request, res: Response) => {
   try {
