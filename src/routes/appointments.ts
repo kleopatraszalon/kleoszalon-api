@@ -24,23 +24,74 @@ async function tableHasColumn(table: string, column: string): Promise<boolean> {
  * Opcionális: title, client_id, client_name, location_id
  */
 router.post("/", requireAuth, async (req: AuthRequest, res) => {
-  const { employee_id, start_time, end_time, title, client_id, client_name, location_id } = req.body || {};
+  const { employee_id, start_time, end_time, title, client_id, client_name, location_id, notes, note, services = [] } = req.body || {};
   if (!employee_id || !start_time || !end_time) {
     return res.status(400).json({ error: "employee_id, start_time, end_time kötelező" });
   }
 
+  const db = await pool.connect();
   try {
-    // ha van clients tábla és client_id nincs, akkor client_name alapján nem hozunk létre automatán (később lehet).
-    const r = await pool.query(
+    await db.query("BEGIN");
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS appointment_services (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        appointment_id uuid NOT NULL REFERENCES appointments(id) ON DELETE CASCADE,
+        service_id uuid NOT NULL REFERENCES services(id),
+        duration_minutes integer NOT NULL DEFAULT 30,
+        price numeric(12,2) NOT NULL DEFAULT 0,
+        discount_percent numeric(5,2) NOT NULL DEFAULT 0,
+        sort_order integer NOT NULL DEFAULT 0,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.query(`CREATE INDEX IF NOT EXISTS appointment_services_appointment_idx ON appointment_services(appointment_id)`);
+
+    const requestedIds = Array.isArray(services)
+      ? services.map((item: any) => String(item?.service_id || item?.id || "")).filter(Boolean)
+      : [];
+    const serviceRows = requestedIds.length
+      ? (await db.query(
+          `SELECT id::text, name, COALESCE(duration_minutes, 30)::int AS duration_minutes,
+                  COALESCE(promo_price, list_price, base_price, 0)::numeric AS price
+           FROM services WHERE id = ANY($1::uuid[]) AND is_active = true`,
+          [requestedIds]
+        )).rows
+      : [];
+    if (requestedIds.length && serviceRows.length !== new Set(requestedIds).size) {
+      await db.query("ROLLBACK");
+      return res.status(400).json({ error: "Egy vagy több kiválasztott szolgáltatás nem található vagy inaktív." });
+    }
+
+    const generatedTitle = serviceRows.length
+      ? serviceRows.map((service: any) => service.name).join(", ")
+      : (client_name ? `Foglalás - ${client_name}` : "Foglalás");
+    const r = await db.query(
       `INSERT INTO appointments (employee_id, client_id, location_id, title, start_time, end_time, status, notes)
-       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::timestamptz, $6::timestamptz, COALESCE($7::text,'confirmed'), COALESCE($8::text,''))
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::timestamptz, $6::timestamptz, 'confirmed', COALESCE($7::text,''))
        RETURNING id`,
-      [employee_id, client_id || null, location_id || null, title || (client_name ? `Foglalás - ${client_name}` : "Foglalás"), start_time, end_time, "confirmed", ""]
+      [employee_id, client_id || null, location_id || null, title || generatedTitle, start_time, end_time, notes ?? note ?? ""]
     );
-    return res.status(201).json({ id: r.rows[0].id });
+    const appointmentId = r.rows[0].id;
+
+    for (let index = 0; index < serviceRows.length; index += 1) {
+      const service = serviceRows[index];
+      await db.query(
+        `INSERT INTO appointment_services
+           (appointment_id, service_id, duration_minutes, price, discount_percent, sort_order)
+         VALUES ($1::uuid, $2::uuid, $3::int, $4::numeric, 0, $5::int)`,
+        [appointmentId, service.id, service.duration_minutes, service.price, index]
+      );
+    }
+
+    await db.query("COMMIT");
+    return res.status(201).json({ id: appointmentId, services_count: serviceRows.length });
   } catch (err: any) {
+    await db.query("ROLLBACK").catch(() => undefined);
     console.error("[POST /api/appointments] error:", err);
     return res.status(500).json({ error: "Nem sikerült létrehozni", detail: err?.message || String(err), code: err?.code || null });
+  } finally {
+    db.release();
   }
 });
 

@@ -1,40 +1,24 @@
 // src/routes/menu.ts
 import * as express from "express";
 import pool from "../db";
-import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
-// --- Felhasználói szerepkör kinyerése a Bearer tokenből ---
-function getUserRole(req: express.Request): string {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  const secret = process.env.JWT_SECRET;
-  if (!token || !secret) return "all";
-  try {
-    const payload: any = jwt.verify(token, secret);
-    return (payload?.role || "all").toString().toLowerCase();
-  } catch {
-    return "all";
-  }
-}
-
-router.get("/", async (req, res) => {
-  const userRole = getUserRole(req); // 'all' | 'employee' | 'admin' ...
-
+router.get("/", async (_req, res) => {
   const baseSelect = `
-    id, name, icon, route, order_index, parent_id
+    id, code, name, icon, route, order_index, parent_id, feature_key
   `;
 
-  const sqlWithRole = `
-    SELECT ${baseSelect}, LOWER(role) AS role
+  const sqlCurrent = `
+    SELECT ${baseSelect}, 'all'::text AS role
     FROM menus
-    WHERE LOWER(role) = 'all' OR LOWER(role) = $1
+    WHERE COALESCE(is_active, true) = true
     ORDER BY COALESCE(parent_id, 0) ASC, order_index ASC, id ASC
   `;
 
   const sqlNoRole = `
-    SELECT ${baseSelect}, 'all'::text AS role
+    SELECT id, NULL::text AS code, name, icon, route, order_index, parent_id,
+           NULL::text AS feature_key, 'all'::text AS role
     FROM menus
     ORDER BY COALESCE(parent_id, 0) ASC, order_index ASC, id ASC
   `;
@@ -42,7 +26,7 @@ router.get("/", async (req, res) => {
   try {
     let rows: any[] = [];
     try {
-      const r1 = await pool.query(sqlWithRole, [userRole]);
+      const r1 = await pool.query(sqlCurrent);
       rows = r1.rows;
     } catch (err: any) {
       if (err?.code === "42703") {
@@ -58,12 +42,15 @@ router.get("/", async (req, res) => {
     rows.forEach((r) => {
       byId.set(r.id, {
         id: r.id,
+        code: r.code ?? null,
         name: r.name,
         icon: r.icon ?? null,
         route: r.route,
         order_index: r.order_index ?? 0,
         parent_id: r.parent_id ?? null,
         role: r.role ?? "all",
+        required_role: r.role ?? "all",
+        feature_key: r.feature_key ?? null,
         submenus: [] as any[],
       });
     });

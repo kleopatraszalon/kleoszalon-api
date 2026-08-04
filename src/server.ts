@@ -137,6 +137,7 @@ function normalizeOrigin(v: string) {
 
 const defaultOrigins = [
   "https://kleoszalon-frontend.onrender.com",
+  "https://weblap-o3g6.onrender.com",
   "https://kleoszalon-api-1.onrender.com",
   "http://localhost:3000",
   "http://localhost:3001",
@@ -156,30 +157,9 @@ const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
 
 function originAllowed(origin: string) {
   const o = normalizeOrigin(origin);
-
-  // 1) teljes egyezés
-  if (allowedOrigins.includes(o)) return true;
-
-  // 1/b) Render: bármilyen *.onrender.com origin (különben a véletlen preview domainek elhasalnak)
-  try {
-    const u = new URL(o);
-    if (u.hostname.endsWith(".onrender.com")) return true;
-  } catch {}
-
-  // 2) host egyezés (http/https és port eltérés ellen is)
-  try {
-    const u = new URL(o);
-    return allowedOrigins.some((x) => {
-      try {
-        const xu = new URL(x);
-        return xu.hostname === u.hostname;
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return false;
-  }
+  // Hitelesített kéréseknél csak a kifejezetten engedélyezett origin fogadható el.
+  // A korábbi *.onrender.com joker más Render-felhasználók oldalait is beengedte.
+  return allowedOrigins.includes(o);
 }
 
 
@@ -426,8 +406,7 @@ app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
- app.use("/api/public", publicMarketingRouter); 
- app.use("/api/services", servicesRouter);
+app.use("/api/public", publicMarketingRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
 app.use("/api/vir", virRouter);
