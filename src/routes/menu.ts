@@ -1,84 +1,8 @@
-// src/routes/menu.ts
 import * as express from "express";
 import pool from "../db";
-
-const router = express.Router();
-
-router.get("/", async (_req, res) => {
-  const baseSelect = `
-    id, code, name, icon, route, order_index, parent_id, feature_key
-  `;
-
-  const sqlCurrent = `
-    SELECT ${baseSelect}, 'all'::text AS role
-    FROM menus
-    WHERE COALESCE(is_active, true) = true
-    ORDER BY COALESCE(parent_id, 0) ASC, order_index ASC, id ASC
-  `;
-
-  const sqlNoRole = `
-    SELECT id, NULL::text AS code, name, icon, route, order_index, parent_id,
-           NULL::text AS feature_key, 'all'::text AS role
-    FROM menus
-    ORDER BY COALESCE(parent_id, 0) ASC, order_index ASC, id ASC
-  `;
-
-  try {
-    let rows: any[] = [];
-    try {
-      const r1 = await pool.query(sqlCurrent);
-      rows = r1.rows;
-    } catch (err: any) {
-      if (err?.code === "42703") {
-        const r2 = await pool.query(sqlNoRole);
-        rows = r2.rows;
-      } else {
-        throw err;
-      }
-    }
-
-    // --- Hierarchia építés ---
-    const byId = new Map<number, any>();
-    rows.forEach((r) => {
-      byId.set(r.id, {
-        id: r.id,
-        code: r.code ?? null,
-        name: r.name,
-        icon: r.icon ?? null,
-        route: r.route,
-        order_index: r.order_index ?? 0,
-        parent_id: r.parent_id ?? null,
-        role: r.role ?? "all",
-        required_role: r.role ?? "all",
-        feature_key: r.feature_key ?? null,
-        submenus: [] as any[],
-      });
-    });
-
-    const roots: any[] = [];
-    rows.forEach((r) => {
-      const item = byId.get(r.id);
-      if (r.parent_id && byId.has(r.parent_id)) {
-        byId.get(r.parent_id).submenus.push(item);
-      } else {
-        roots.push(item);
-      }
-    });
-
-    const sortTree = (arr: any[]) => {
-      arr.sort(
-        (a, b) =>
-          (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id
-      );
-      arr.forEach((n) => sortTree(n.submenus));
-    };
-    sortTree(roots);
-
-    return res.status(200).json(roots);
-  } catch (err: any) {
-    console.error("❌ Menü betöltési hiba:", err?.message || err);
-    return res.status(500).json({ error: "Adatbázis hiba a menü lekérésekor" });
-  }
-});
-
+import {requireAuth,AuthRequest} from "../middleware/auth";
+import {ensureHrV2} from "../hr/ensureHrV2";
+const router=express.Router();
+function roleKeys(raw:any):string[]{if(Array.isArray(raw))return raw.map(String);try{const p=JSON.parse(String(raw||""));return Array.isArray(p)?p.map(String):[String(p)]}catch{return String(raw||"").split(",").map(x=>x.replace(/[\[\]"]/g,"").trim()).filter(Boolean)}}
+router.get("/",requireAuth,async(req:AuthRequest,res)=>{try{await ensureHrV2();const roles=roleKeys(req.user?.role).map(x=>x.toLowerCase());const isAdmin=roles.includes("admin");const{rows}=await pool.query(`SELECT DISTINCT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,COALESCE(p.can_view,$2::boolean) can_view,COALESCE(p.can_create,$2::boolean) can_create,COALESCE(p.can_edit,$2::boolean) can_edit,COALESCE(p.can_delete,$2::boolean) can_delete,COALESCE(p.can_approve,$2::boolean) can_approve,COALESCE(p.can_export,$2::boolean) can_export,COALESCE(p.can_view_financial,$2::boolean) can_view_financial,COALESCE(p.can_manage_permissions,$2::boolean) can_manage_permissions,COALESCE(p.scope_type,CASE WHEN $2 THEN 'all_locations' ELSE 'own_location' END) scope_type FROM menus m LEFT JOIN role_menu_permissions p ON p.menu_id=m.id AND lower(p.role_key)=ANY($1::text[]) WHERE COALESCE(m.is_active,true) AND ($2 OR COALESCE(p.can_view,false)) ORDER BY m.order_index,m.id`,[roles,isAdmin]);const byId=new Map<number,any>();rows.forEach(r=>byId.set(Number(r.id),{...r,id:Number(r.id),required_role:"all",role:"all",permissions:{can_view:r.can_view,can_create:r.can_create,can_edit:r.can_edit,can_delete:r.can_delete,can_approve:r.can_approve,can_export:r.can_export,can_view_financial:r.can_view_financial,can_manage_permissions:r.can_manage_permissions,scope_type:r.scope_type},submenus:[]}));const roots:any[]=[];rows.forEach(r=>{const item=byId.get(Number(r.id));if(r.parent_id&&byId.has(Number(r.parent_id)))byId.get(Number(r.parent_id)).submenus.push(item);else roots.push(item)});const sort=(a:any[])=>{a.sort((x,y)=>(x.order_index||0)-(y.order_index||0)||x.id-y.id);a.forEach(x=>sort(x.submenus))};sort(roots);res.json(roots)}catch(err:any){console.error("❌ Jogosultságalapú menühiba:",err?.message||err);res.status(500).json({error:"A menü betöltése nem sikerült."})}});
 export default router;
