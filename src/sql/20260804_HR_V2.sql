@@ -67,6 +67,27 @@ ALTER TABLE employees ADD COLUMN IF NOT EXISTS hourly_wage numeric(14,2);
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS commission_percent numeric(7,4);
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
+-- Regi telepiteseken az employees.position_id a korabbi position tablare
+-- hivatkozott. Az azonosito es az alkalmazotti kapcsolat megorzese mellett
+-- atemeljuk a hianyzo munkakoroket az uj HR torzsbe, majd atkotjuk az FK-t.
+INSERT INTO hr_positions(id,code,name,description,is_active)
+SELECT DISTINCT
+  e.position_id,
+  'LEGACY-' || left(replace(e.position_id::text,'-',''),12),
+  'Korabbi munkakor - ' || left(e.position_id::text,8),
+  'A regi munkakorrendszerbol automatikusan atemelt rekord.',
+  true
+FROM employees e
+WHERE e.position_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM hr_positions p WHERE p.id=e.position_id)
+ON CONFLICT (id) DO NOTHING;
+
+ALTER TABLE employees DROP CONSTRAINT IF EXISTS employees_position_id_fkey;
+ALTER TABLE employees
+  ADD CONSTRAINT employees_position_id_fkey
+  FOREIGN KEY(position_id) REFERENCES hr_positions(id)
+  ON UPDATE CASCADE ON DELETE SET NULL;
+
 CREATE TABLE IF NOT EXISTS employee_position_assignments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,

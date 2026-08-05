@@ -105,7 +105,9 @@ WHERE e.email LIKE 'demo.%@kleoszalon.hu' AND NOT EXISTS(SELECT 1 FROM employmen
 INSERT INTO employee_compensation_assignments(employee_id,compensation_plan_id,monthly_base,hourly_rate,daily_rate,service_commission_percent,product_commission_percent,revenue_commission_percent,valid_from,reason,is_active)
 SELECT e.id,p.id,NULL,NULL,NULL,NULL,NULL,NULL,DATE '2026-01-01','DEMO bércsomag hozzárendelés',true
 FROM employees e JOIN compensation_plans p ON p.code=CASE
- WHEN e.role @> '["manager"]'::jsonb THEN 'DEMO-MANAGER'
+ -- A role oszlop a regi adatbazisokban text, az uj telepiteseken jsonb lehet.
+ -- A szoveges osszehasonlitas mindket semaval kompatibilis.
+ WHEN lower(COALESCE(e.role::text,'')) LIKE '%manager%' THEN 'DEMO-MANAGER'
  WHEN e.position_id=(SELECT id FROM hr_positions WHERE code='DEMO-RECEPCIO') THEN 'DEMO-RECEPTION'
  WHEN e.position_id IN(SELECT id FROM hr_positions WHERE code IN('DEMO-KOZMET','DEMO-KORMOS','DEMO-MASSZOR')) THEN 'DEMO-BEAUTY'
  WHEN e.position_id=(SELECT id FROM hr_positions WHERE code='DEMO-OKTATO') THEN 'DEMO-TRAINER'
