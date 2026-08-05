@@ -28,6 +28,7 @@ import employeeCalendarRoutes from "./routes/employee_calendar";
 import scheduleDayRoutes from "./routes/schedule_day";
 import appointmentsRouter from "./routes/appointments";
 import timetableRouter from "./routes/timetable";
+import clientsRouter from "./routes/clients";
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
@@ -419,6 +420,7 @@ app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
 app.use("/api/timetable", timetableRouter);
+app.use("/api/clients", clientsRouter);
 app.use("/api/public", publicMarketingRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
