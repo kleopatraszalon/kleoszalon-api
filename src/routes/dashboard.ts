@@ -48,9 +48,9 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
           COALESCE(SUM(new_client_count),0)::int new_clients,
           COALESCE(ROUND(SUM(service_revenue+product_revenue)/NULLIF(SUM(invoice_count),0),0),0)::numeric average_invoice,
           COALESCE(ROUND(SUM(service_revenue)/NULLIF(SUM(invoice_count),0),0),0)::numeric average_service_invoice,
-          COALESCE(ROUND(100*SUM(productive_minutes)/NULLIF(SUM(available_minutes),0),1),0)::numeric average_capacity,
-          COALESCE(ROUND(100*SUM(completed_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric completion_rate,
-          COALESCE(ROUND(100*SUM(no_show_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric no_show_rate,
+          COALESCE(ROUND(100.0*SUM(productive_minutes)/NULLIF(SUM(available_minutes),0),1),0)::numeric average_capacity,
+          COALESCE(ROUND(100.0*SUM(completed_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric completion_rate,
+          COALESCE(ROUND(100.0*SUM(no_show_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric no_show_rate,
           COALESCE(SUM(sick_minutes)/480.0,0)::numeric sick_days,
           COALESCE(SUM(paid_leave_minutes+unpaid_leave_minutes)/480.0,0)::numeric leave_days,
           COALESCE(SUM(unexcused_minutes)/480.0,0)::numeric unexcused_days
@@ -70,8 +70,8 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
           SUM(f.service_revenue)::numeric service_revenue,
           SUM(f.product_revenue)::numeric product_revenue,
           SUM(f.completed_count)::int completed,
-          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity,
-          ROUND(100*SUM(f.no_show_count)/NULLIF(SUM(f.appointment_count),0),1)::numeric no_show_rate
+          ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity,
+          ROUND(100.0*SUM(f.no_show_count)/NULLIF(SUM(f.appointment_count),0),1)::numeric no_show_rate
         FROM management_daily_facts f JOIN locations l ON l.id=f.location_id
         WHERE ${filter} GROUP BY l.id,l.name ORDER BY revenue DESC`, params),
       pool.query(`
@@ -81,14 +81,14 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
           SUM(f.product_revenue)::numeric product_revenue,
           SUM(f.completed_count)::int completed,
           ROUND(SUM(f.service_revenue+f.product_revenue)/NULLIF(SUM(f.productive_minutes)/60.0,0),0)::numeric revenue_per_hour,
-          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
+          ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
         FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
         WHERE ${filter} GROUP BY p.id,p.name ORDER BY revenue DESC`, params),
       pool.query(`
         SELECT e.id,e.full_name,COALESCE(p.name,'Nincs munkakör') position_name,l.name location_name,
           SUM(f.service_revenue+f.product_revenue)::numeric revenue,
           SUM(f.completed_count)::int completed,
-          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
+          ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
         FROM management_daily_facts f JOIN employees e ON e.id=f.employee_id
         JOIN locations l ON l.id=f.location_id LEFT JOIN hr_positions p ON p.id=f.position_id
         WHERE ${filter} GROUP BY e.id,e.full_name,p.name,l.name ORDER BY revenue DESC LIMIT 10`, params),
@@ -98,7 +98,7 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
           ROUND(SUM(f.paid_leave_minutes)/480.0,1)::numeric paid_leave_days,
           ROUND(SUM(f.unpaid_leave_minutes)/480.0,1)::numeric unpaid_leave_days,
           ROUND(SUM(f.unexcused_minutes)/480.0,1)::numeric unexcused_days,
-          ROUND(100*SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric absence_rate
+          ROUND(100.0*SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric absence_rate
         FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
         WHERE ${filter} GROUP BY p.id,p.name
         HAVING SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)>0
