@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -87,7 +87,7 @@ router.get("/positions", auth_1.requireAuth, asyncRoute(async (_req, res) => {
       FROM positions p
       LEFT JOIN employees e ON e.position_id = p.id AND e.active = true
       GROUP BY p.id
-      ORDER BY p.name
+      ORDER BY p.is_active DESC, p.name
     `);
     res.json(rows);
 }));
@@ -95,7 +95,7 @@ router.post("/positions", auth_1.requireAuth, asyncRoute(async (req, res) => {
     await ensureHrSchema();
     const { name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active } = req.body || {};
     if (!String(name || "").trim())
-        return res.status(400).json({ error: "A munkakĂ¶r neve kĂ¶telezĹ‘." });
+        return res.status(400).json({ error: "A munkakör neve kötelező." });
     const { rows } = await db_1.default.query(`INSERT INTO positions
         (name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active)
        VALUES ($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,0),COALESCE($7,true))
@@ -106,13 +106,13 @@ router.patch("/positions/:id", auth_1.requireAuth, asyncRoute(async (req, res) =
     await ensureHrSchema();
     const { name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active } = req.body || {};
     if (!String(name || "").trim())
-        return res.status(400).json({ error: "A munkakĂ¶r neve kĂ¶telezĹ‘." });
+        return res.status(400).json({ error: "A munkakör neve kötelező." });
     const { rows } = await db_1.default.query(`UPDATE positions SET name=$2, code=$3, description=$4,
         base_monthly_wage=COALESCE($5,0), base_hourly_wage=COALESCE($6,0),
         commission_percent=COALESCE($7,0), is_active=COALESCE($8,true), updated_at=now()
        WHERE id=$1 RETURNING *`, [req.params.id, String(name).trim(), code || null, description || null, numberOrNull(base_monthly_wage), numberOrNull(base_hourly_wage), numberOrNull(commission_percent), is_active]);
     if (!rows[0])
-        return res.status(404).json({ error: "A munkakĂ¶r nem talĂˇlhatĂł." });
+        return res.status(404).json({ error: "A munkakör nem található." });
     res.json(rows[0]);
 }));
 router.get("/", auth_1.requireAuth, asyncRoute(async (req, res) => {
@@ -138,9 +138,9 @@ router.post("/", auth_1.requireAuth, asyncRoute(async (req, res) => {
     const body = req.body || {};
     const fullName = String(body.full_name || `${body.last_name || ""} ${body.first_name || ""}`).trim();
     if (!fullName)
-        return res.status(400).json({ error: "A munkatĂˇrs neve kĂ¶telezĹ‘." });
+        return res.status(400).json({ error: "A munkatárs neve kötelező." });
     if (body.login_name && !body.plain_password)
-        return res.status(400).json({ error: "BelĂ©pĂ©si nĂ©vhez jelszĂł is szĂĽksĂ©ges." });
+        return res.status(400).json({ error: "Belépési névhez jelszó is szükséges." });
     const client = await db_1.default.connect();
     try {
         await client.query("BEGIN");
@@ -159,7 +159,7 @@ router.post("/", auth_1.requireAuth, asyncRoute(async (req, res) => {
         if (body.monthly_wage || body.hourly_wage || body.commission_percent) {
             await client.query(`INSERT INTO employee_wage_history
              (employee_id, monthly_wage, hourly_wage, commission_percent, valid_from, note)
-           VALUES ($1,$2,$3,$4,COALESCE($5,CURRENT_DATE),$6)`, [employeeId, numberOrNull(body.monthly_wage), numberOrNull(body.hourly_wage), numberOrNull(body.commission_percent), body.wage_valid_from || null, "KezdĹ‘ bĂ©rezĂ©s"]);
+           VALUES ($1,$2,$3,$4,COALESCE($5,CURRENT_DATE),$6)`, [employeeId, numberOrNull(body.monthly_wage), numberOrNull(body.hourly_wage), numberOrNull(body.commission_percent), body.wage_valid_from || null, "Kezdő bérezés"]);
         }
         for (const service of Array.isArray(body.services) ? body.services : []) {
             await client.query(`INSERT INTO employee_service_overrides
@@ -170,12 +170,12 @@ router.post("/", auth_1.requireAuth, asyncRoute(async (req, res) => {
              custom_duration_minutes=EXCLUDED.custom_duration_minutes`, [employeeId, service.service_id, numberOrNull(service.custom_price), numberOrNull(service.custom_duration_min ?? service.custom_duration_minutes)]);
         }
         await client.query("COMMIT");
-        res.status(201).json({ id: employeeId, message: "A munkatĂˇrs lĂ©trejĂ¶tt." });
+        res.status(201).json({ id: employeeId, message: "A munkatárs létrejött." });
     }
     catch (error) {
         await client.query("ROLLBACK");
         if (error?.code === "23505")
-            return res.status(409).json({ error: "Ez a belĂ©pĂ©si nĂ©v vagy munkatĂˇrs mĂˇr lĂ©tezik." });
+            return res.status(409).json({ error: "Ez a belépési név vagy munkatárs már létezik." });
         throw error;
     }
     finally {
@@ -187,7 +187,7 @@ router.patch("/:id", auth_1.requireAuth, asyncRoute(async (req, res) => {
     const body = req.body || {};
     const fullName = String(body.full_name || `${body.last_name || ""} ${body.first_name || ""}`).trim();
     if (!fullName)
-        return res.status(400).json({ error: "A munkatĂˇrs neve kĂ¶telezĹ‘." });
+        return res.status(400).json({ error: "A munkatárs neve kötelező." });
     const { rows } = await db_1.default.query(`UPDATE employees SET full_name=$2, first_name=$3, last_name=$4, email=$5,
         phone=$6, birth_date=$7, qualification=$8, employment_type=$9,
         location_id=$10, position_id=$11, monthly_wage=$12, hourly_wage=$13,
@@ -198,14 +198,14 @@ router.patch("/:id", auth_1.requireAuth, asyncRoute(async (req, res) => {
         numberOrNull(body.monthly_wage), numberOrNull(body.hourly_wage), numberOrNull(body.commission_percent),
         body.active, body.photo_url || null]);
     if (!rows[0])
-        return res.status(404).json({ error: "A munkatĂˇrs nem talĂˇlhatĂł." });
-    res.json({ id: rows[0].id, message: "A munkatĂˇrs adatai frissĂĽltek." });
+        return res.status(404).json({ error: "A munkatárs nem található." });
+    res.json({ id: rows[0].id, message: "A munkatárs adatai frissültek." });
 }));
 router.patch("/:id/active", auth_1.requireAuth, asyncRoute(async (req, res) => {
     await ensureHrSchema();
     const { rows } = await db_1.default.query("UPDATE employees SET active=$2, updated_at=now() WHERE id=$1 RETURNING id, active", [req.params.id, Boolean(req.body?.active)]);
     if (!rows[0])
-        return res.status(404).json({ error: "A munkatĂˇrs nem talĂˇlhatĂł." });
+        return res.status(404).json({ error: "A munkatárs nem található." });
     res.json(rows[0]);
 }));
 router.get("/:id/wages", auth_1.requireAuth, asyncRoute(async (req, res) => {
@@ -223,7 +223,7 @@ router.post("/:id/wages", auth_1.requireAuth, asyncRoute(async (req, res) => {
          WHERE id=$1 RETURNING id`, [req.params.id, numberOrNull(body.monthly_wage), numberOrNull(body.hourly_wage), numberOrNull(body.commission_percent)]);
         if (!updated.rows[0]) {
             await client.query("ROLLBACK");
-            return res.status(404).json({ error: "A munkatĂˇrs nem talĂˇlhatĂł." });
+            return res.status(404).json({ error: "A munkatárs nem található." });
         }
         const { rows } = await client.query(`INSERT INTO employee_wage_history
           (employee_id, monthly_wage, hourly_wage, commission_percent, valid_from, note)
@@ -240,4 +240,3 @@ router.post("/:id/wages", auth_1.requireAuth, asyncRoute(async (req, res) => {
     }
 }));
 exports.default = router;
-
