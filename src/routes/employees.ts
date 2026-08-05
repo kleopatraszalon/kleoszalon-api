@@ -357,4 +357,91 @@ router.put(
   })
 );
 
+router.get(
+  "/duplicates",
+  requireAuth,
+  asyncRoute(async (_req: AuthRequest, res) => {
+    await ensureHrSchema();
+    const { rows } = await pool.query(`
+      SELECT
+        lower(trim(COALESCE(email,''))) AS email_key,
+        regexp_replace(COALESCE(phone,''),'[^0-9]','','g') AS phone_key,
+        json_agg(json_build_object(
+          'id',id,'full_name',full_name,'email',email,'phone',phone,
+          'active',active,'location_id',location_id,'position_id',position_id
+        ) ORDER BY created_at) AS employees
+      FROM employees
+      GROUP BY 1,2
+      HAVING COUNT(*) > 1
+        AND (lower(trim(COALESCE(email,''))) <> '' OR regexp_replace(COALESCE(phone,''),'[^0-9]','','g') <> '')
+      ORDER BY COUNT(*) DESC
+    `);
+    res.json(rows);
+  })
+);
+
+router.post(
+  "/import",
+  requireAuth,
+  asyncRoute(async (req: AuthRequest, res) => {
+    await ensureHrSchema();
+    const records = Array.isArray(req.body?.records) ? req.body.records.slice(0, 500) : [];
+    if (!records.length) return res.status(400).json({ error: "Nincs importálható munkatársi adat." });
+
+    const positions = (await pool.query(`SELECT id,name FROM hr_positions WHERE is_active=true`)).rows;
+    const locations = (await pool.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true`)).rows;
+    const positionByName = new Map(positions.map((item:any)=>[String(item.name).trim().toLowerCase(),item.id]));
+    const locationByName = new Map(locations.map((item:any)=>[String(item.name).trim().toLowerCase(),item.id]));
+    const results: any[] = [];
+    let imported = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (let index = 0; index < records.length; index += 1) {
+      const row = records[index] || {};
+      const fullName = String(row.full_name || row.name || "").trim();
+      const email = String(row.email || "").trim() || null;
+      const phone = String(row.phone || "").trim() || null;
+      if (!fullName) { failed += 1; results.push({ row:index+2,status:"error",message:"A név hiányzik." }); continue; }
+
+      const requestedPosition = String(row.position_name || "").trim().toLowerCase();
+      const requestedLocation = String(row.location_name || "").trim().toLowerCase();
+      const positionId = row.position_id || (requestedPosition ? positionByName.get(requestedPosition) : null) || null;
+      const locationId = row.location_id || (requestedLocation ? locationByName.get(requestedLocation) : null) || req.user?.location_id || null;
+      if (requestedPosition && !positionId) { failed += 1; results.push({ row:index+2,status:"error",message:`Ismeretlen munkakör: ${row.position_name}` }); continue; }
+      if (requestedLocation && !locationId) { failed += 1; results.push({ row:index+2,status:"error",message:`Ismeretlen telephely: ${row.location_name}` }); continue; }
+
+      const duplicate = await pool.query(`
+        SELECT id,full_name FROM employees
+        WHERE ($1::text IS NOT NULL AND lower(trim(email))=lower(trim($1)))
+           OR ($2::text IS NOT NULL AND regexp_replace(COALESCE(phone,''),'[^0-9]','','g')=regexp_replace($2,'[^0-9]','','g'))
+        LIMIT 1`, [email,phone]);
+      if (duplicate.rows[0]) { skipped += 1; results.push({ row:index+2,status:"skipped",message:`Duplikáció: ${duplicate.rows[0].full_name}` }); continue; }
+
+      try {
+        const inserted = await pool.query(`INSERT INTO employees
+          (full_name,email,phone,birth_date,qualification,employment_type,location_id,position_id,
+           monthly_wage,hourly_wage,commission_percent,active,role,updated_at)
+          VALUES($1,$2,$3,$4::date,$5,$6,$7,$8,$9,$10,$11,COALESCE($12,true),'["employee"]'::jsonb,now())
+          RETURNING id`,[
+          fullName,email,phone,row.birth_date||null,row.qualification||null,row.employment_type||null,
+          locationId,positionId,numberOrNull(row.monthly_wage),numberOrNull(row.hourly_wage),
+          numberOrNull(row.commission_percent),row.active === undefined ? true : ![false,"false","0","nem","inaktív"].includes(row.active)
+        ]);
+        if (row.monthly_wage || row.hourly_wage || row.commission_percent) {
+          await pool.query(`INSERT INTO employee_wage_history
+            (employee_id,monthly_wage,hourly_wage,commission_percent,valid_from,note)
+            VALUES($1,$2,$3,$4,CURRENT_DATE,'CSV import')`,[
+            inserted.rows[0].id,numberOrNull(row.monthly_wage),numberOrNull(row.hourly_wage),numberOrNull(row.commission_percent)
+          ]);
+        }
+        imported += 1; results.push({ row:index+2,status:"imported",message:fullName,id:inserted.rows[0].id });
+      } catch (error:any) {
+        failed += 1; results.push({ row:index+2,status:"error",message:error?.message||"Adatbázishiba" });
+      }
+    }
+    res.json({ total:records.length,imported,skipped,failed,results });
+  })
+);
+
 export default router;
