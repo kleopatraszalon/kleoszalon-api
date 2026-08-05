@@ -1,17 +1,234 @@
-import express from "express";
+import { Router, Response } from "express";
 import pool from "../db";
+import { AuthRequest, requireAuth } from "../middleware/auth";
 
-const router = express.Router();
+const router = Router();
+let schemaPromise: Promise<void> | null = null;
 
-// Minden ügyfél lekérése
-router.get("/", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT id, name FROM clients ORDER BY name ASC");
-    res.json(result.rows);
-  } catch (err) {
-    console.error("❌ Error fetching clients:", err);
-    res.status(500).json({ error: "Error fetching clients" });
+function ensureClientSchema() {
+  if (!schemaPromise) {
+    schemaPromise = (async () => {
+      await pool.query(`
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS full_name text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS name text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS email text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS location_id uuid;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS birth_date date;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS gender text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS address text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS notes text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferred_contact text DEFAULT 'phone';
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS marketing_consent boolean NOT NULL DEFAULT false;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        UPDATE clients SET full_name=COALESCE(NULLIF(full_name,''),name,'Névtelen ügyfél'), name=COALESCE(NULLIF(name,''),full_name,'Névtelen ügyfél');
+
+        CREATE TABLE IF NOT EXISTS crm_tags (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, color text NOT NULL DEFAULT '#7c5ce5',
+          is_active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_name_uq ON crm_tags ((lower(name)));
+        CREATE TABLE IF NOT EXISTS crm_client_tags (
+          client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+          tag_id uuid NOT NULL REFERENCES crm_tags(id) ON DELETE CASCADE,
+          created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(client_id,tag_id)
+        );
+        CREATE TABLE IF NOT EXISTS crm_client_notes (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(), client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+          note_text text NOT NULL, created_by text, created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS crm_forms (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(), title text NOT NULL, description text,
+          form_type text NOT NULL DEFAULT 'questionnaire', is_active boolean NOT NULL DEFAULT true,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS crm_forms_title_uq ON crm_forms ((lower(title)));
+        CREATE TABLE IF NOT EXISTS crm_form_responses (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(), form_id uuid NOT NULL REFERENCES crm_forms(id) ON DELETE CASCADE,
+          client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE, status text NOT NULL DEFAULT 'completed',
+          response_data jsonb NOT NULL DEFAULT '{}'::jsonb, completed_at timestamptz NOT NULL DEFAULT now()
+        );
+        INSERT INTO crm_tags(name,color) VALUES
+          ('VIP','#7c5ce5'),('Új vendég','#3b82f6'),('Törzsvendég','#16a085'),('Érzékeny bőr','#ec6597'),('Visszahívandó','#e6a746')
+        ON CONFLICT DO NOTHING;
+        INSERT INTO crm_forms(title,description,form_type) VALUES
+          ('Általános állapotfelmérő','Első kezelés előtti egészségügyi és bőrállapot-felmérés','questionnaire'),
+          ('Adatkezelési nyilatkozat','Személyes és egészségügyi adatok kezelésének jóváhagyása','consent'),
+          ('Fotódokumentációs hozzájárulás','Kezelés előtti és utáni képek készítésének engedélye','consent')
+        ON CONFLICT DO NOTHING;
+      `);
+    })().catch((error) => { schemaPromise = null; throw error; });
   }
+  return schemaPromise;
+}
+
+const roles = (value: unknown) => String(value || "").toLowerCase();
+const effectiveLocation = (req: AuthRequest) => {
+  const requested = String(req.query.location_id || req.body?.location_id || "").trim();
+  return roles(req.user?.role).includes("admin") ? (requested || null) : (req.user?.location_id || null);
+};
+const fail = (res: Response, error: any) => {
+  console.error("❌ CRM ügyfélhiba:", error);
+  return res.status(500).json({ error: "Az ügyféladatok kezelése nem sikerült.", detail: error?.message || String(error) });
+};
+
+router.use(requireAuth);
+router.use(async (_req, res, next) => {
+  try { await ensureClientSchema(); next(); } catch (error) { fail(res, error); }
+});
+
+router.get("/stats", async (req: AuthRequest, res) => {
+  try {
+    const locationId = effectiveLocation(req);
+    const { rows } = await pool.query(`
+      SELECT COUNT(*)::int total,
+        COUNT(*) FILTER (WHERE c.is_active)::int active,
+        COUNT(*) FILTER (WHERE c.created_at >= date_trunc('month',CURRENT_DATE))::int new_this_month,
+        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM appointments a WHERE a.client_id=c.id AND a.status='no_show'))::int with_no_show
+      FROM clients c WHERE ($1::uuid IS NULL OR c.location_id=$1::uuid)`, [locationId]);
+    res.json(rows[0]);
+  } catch (error) { fail(res, error); }
+});
+
+router.get("/segments", async (req: AuthRequest, res) => {
+  try {
+    const locationId = effectiveLocation(req);
+    const { rows } = await pool.query(`
+      SELECT t.id,t.name,t.color,t.is_active,COUNT(ct.client_id)::int client_count
+      FROM crm_tags t LEFT JOIN crm_client_tags ct ON ct.tag_id=t.id
+      LEFT JOIN clients c ON c.id=ct.client_id AND ($1::uuid IS NULL OR c.location_id=$1::uuid)
+      GROUP BY t.id ORDER BY t.name`, [locationId]);
+    res.json(rows);
+  } catch (error) { fail(res, error); }
+});
+
+router.post("/segments", async (req: AuthRequest, res) => {
+  const name = String(req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ error: "A címke neve kötelező." });
+  try {
+    const { rows } = await pool.query(`INSERT INTO crm_tags(name,color) VALUES($1,$2) RETURNING *`, [name, req.body?.color || "#7c5ce5"]);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    if (error?.code === "23505") return res.status(409).json({ error: "Ez a címke már létezik." });
+    fail(res, error);
+  }
+});
+
+router.get("/forms", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT f.*,COUNT(r.id)::int response_count FROM crm_forms f LEFT JOIN crm_form_responses r ON r.form_id=f.id GROUP BY f.id ORDER BY f.title`);
+    res.json(rows);
+  } catch (error) { fail(res, error); }
+});
+
+router.post("/forms", async (req, res) => {
+  const title = String(req.body?.title || "").trim();
+  if (!title) return res.status(400).json({ error: "A dokumentum neve kötelező." });
+  try {
+    const { rows } = await pool.query(`INSERT INTO crm_forms(title,description,form_type) VALUES($1,$2,$3) RETURNING *`, [title, req.body?.description || null, req.body?.form_type || "questionnaire"]);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    if (error?.code === "23505") return res.status(409).json({ error: "Ez a dokumentum már létezik." });
+    fail(res, error);
+  }
+});
+
+router.get("/duplicates", async (req: AuthRequest, res) => {
+  try {
+    const locationId = effectiveLocation(req);
+    const { rows } = await pool.query(`
+      SELECT lower(trim(COALESCE(email,''))) email_key,regexp_replace(COALESCE(phone,''),'[^0-9]','','g') phone_key,
+        json_agg(json_build_object('id',id,'name',COALESCE(full_name,name),'email',email,'phone',phone) ORDER BY created_at) clients
+      FROM clients WHERE ($1::uuid IS NULL OR location_id=$1::uuid)
+      GROUP BY 1,2 HAVING COUNT(*)>1 AND (lower(trim(COALESCE(email,'')))<>'' OR regexp_replace(COALESCE(phone,''),'[^0-9]','','g')<>'')`, [locationId]);
+    res.json(rows);
+  } catch (error) { fail(res, error); }
+});
+
+router.get("/", async (req: AuthRequest, res) => {
+  try {
+    const locationId = effectiveLocation(req);
+    const q = `%${String(req.query.q || "").trim()}%`;
+    const status = String(req.query.status || "all");
+    const tagId = String(req.query.tag_id || "").trim() || null;
+    const { rows } = await pool.query(`
+      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.address,c.notes,
+        c.preferred_contact,c.marketing_consent,c.is_active,c.source,c.created_at,c.updated_at,l.name location_name,
+        COALESCE(a.visits,0)::int visits,COALESCE(a.no_shows,0)::int no_shows,a.last_visit,a.next_visit,
+        COALESCE(t.tags,'[]'::json) tags
+      FROM clients c LEFT JOIN locations l ON l.id=c.location_id
+      LEFT JOIN LATERAL (SELECT COUNT(*) FILTER(WHERE status IN ('completed','paid','confirmed')) visits,
+        COUNT(*) FILTER(WHERE status='no_show') no_shows,MAX(start_time) FILTER(WHERE start_time<=now()) last_visit,
+        MIN(start_time) FILTER(WHERE start_time>now() AND status NOT IN ('cancelled','no_show')) next_visit FROM appointments WHERE client_id=c.id) a ON true
+      LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',x.id,'name',x.name,'color',x.color) ORDER BY x.name) tags
+        FROM crm_client_tags ct JOIN crm_tags x ON x.id=ct.tag_id WHERE ct.client_id=c.id) t ON true
+      WHERE ($1::uuid IS NULL OR c.location_id=$1::uuid)
+        AND ($2='%%' OR COALESCE(c.full_name,c.name,'') ILIKE $2 OR COALESCE(c.email,'') ILIKE $2 OR COALESCE(c.phone,'') ILIKE $2)
+        AND ($3='all' OR ($3='active' AND c.is_active) OR ($3='inactive' AND NOT c.is_active))
+        AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM crm_client_tags z WHERE z.client_id=c.id AND z.tag_id=$4::uuid))
+      ORDER BY c.updated_at DESC,c.full_name LIMIT 500`, [locationId, q, status, tagId]);
+    res.json(rows);
+  } catch (error) { fail(res, error); }
+});
+
+router.post("/", async (req: AuthRequest, res) => {
+  const name = String(req.body?.name || req.body?.full_name || "").trim();
+  if (!name) return res.status(400).json({ error: "Az ügyfél neve kötelező." });
+  if (!String(req.body?.phone || "").trim() && !String(req.body?.email || "").trim()) return res.status(400).json({ error: "Telefonszám vagy e-mail-cím szükséges." });
+  try {
+    const locationId = effectiveLocation(req);
+    const { rows } = await pool.query(`INSERT INTO clients
+      (full_name,name,phone,email,location_id,birth_date,gender,address,notes,preferred_contact,marketing_consent,is_active,source,updated_at)
+      VALUES($1,$1,$2,$3,$4::uuid,$5::date,$6,$7,$8,$9,$10,COALESCE($11,true),COALESCE($12,'manual'),now()) RETURNING id`,
+      [name,req.body.phone||null,req.body.email||null,locationId,req.body.birth_date||null,req.body.gender||null,req.body.address||null,req.body.notes||null,req.body.preferred_contact||"phone",Boolean(req.body.marketing_consent),req.body.is_active,req.body.source]);
+    res.status(201).json({ id: rows[0].id });
+  } catch (error) { fail(res, error); }
+});
+
+router.get("/:id", async (req: AuthRequest, res) => {
+  try {
+    const locationId = effectiveLocation(req);
+    const client = await pool.query(`SELECT c.*,COALESCE(NULLIF(c.full_name,''),c.name) display_name,l.name location_name FROM clients c LEFT JOIN locations l ON l.id=c.location_id WHERE c.id=$1::uuid AND ($2::uuid IS NULL OR c.location_id=$2::uuid)`, [req.params.id, locationId]);
+    if (!client.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
+    const [appointments, notes, tags, forms] = await Promise.all([
+      pool.query(`SELECT a.id,a.start_time,a.end_time,a.status,a.title,l.name location_name,COALESCE(e.full_name,e.name) employee_name FROM appointments a LEFT JOIN locations l ON l.id=a.location_id LEFT JOIN employees e ON e.id=a.employee_id WHERE a.client_id=$1::uuid ORDER BY a.start_time DESC LIMIT 100`, [req.params.id]),
+      pool.query(`SELECT * FROM crm_client_notes WHERE client_id=$1::uuid ORDER BY created_at DESC`, [req.params.id]),
+      pool.query(`SELECT t.* FROM crm_client_tags ct JOIN crm_tags t ON t.id=ct.tag_id WHERE ct.client_id=$1::uuid ORDER BY t.name`, [req.params.id]),
+      pool.query(`SELECT r.*,f.title,f.form_type FROM crm_form_responses r JOIN crm_forms f ON f.id=r.form_id WHERE r.client_id=$1::uuid ORDER BY r.completed_at DESC`, [req.params.id])
+    ]);
+    res.json({ client:client.rows[0],appointments:appointments.rows,notes:notes.rows,tags:tags.rows,forms:forms.rows });
+  } catch (error) { fail(res, error); }
+});
+
+router.patch("/:id", async (req: AuthRequest, res) => {
+  const allowed: Record<string,string> = { name:"full_name",phone:"phone",email:"email",location_id:"location_id",birth_date:"birth_date",gender:"gender",address:"address",notes:"notes",preferred_contact:"preferred_contact",marketing_consent:"marketing_consent",is_active:"is_active" };
+  const fields:string[]=[]; const values:any[]=[];
+  for (const [key,column] of Object.entries(allowed)) if (Object.prototype.hasOwnProperty.call(req.body||{},key)) { values.push(req.body[key] === "" ? null : req.body[key]); fields.push(`${column}=$${values.length}${column==="location_id"?"::uuid":column==="birth_date"?"::date":""}`); }
+  if (!fields.length) return res.status(400).json({ error: "Nincs módosítandó adat." });
+  if (Object.prototype.hasOwnProperty.call(req.body||{},"name")) { values.push(req.body.name); fields.push(`name=$${values.length}`); }
+  values.push(req.params.id);
+  try {
+    const result = await pool.query(`UPDATE clients SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length}::uuid RETURNING id`, values);
+    if (!result.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
+    res.json({ ok:true,id:result.rows[0].id });
+  } catch (error) { fail(res, error); }
+});
+
+router.post("/:id/notes", async (req: AuthRequest, res) => {
+  const text = String(req.body?.note_text || "").trim();
+  if (!text) return res.status(400).json({ error: "A megjegyzés nem lehet üres." });
+  try { const { rows } = await pool.query(`INSERT INTO crm_client_notes(client_id,note_text,created_by) VALUES($1::uuid,$2,$3) RETURNING *`,[req.params.id,text,req.user?.email||String(req.user?.id||"")]); res.status(201).json(rows[0]); }
+  catch (error) { fail(res,error); }
+});
+
+router.put("/:id/tags", async (req, res) => {
+  const tagIds = Array.isArray(req.body?.tag_ids) ? req.body.tag_ids.map(String) : [];
+  const db = await pool.connect();
+  try { await db.query("BEGIN"); await db.query(`DELETE FROM crm_client_tags WHERE client_id=$1::uuid`,[req.params.id]); for (const tagId of tagIds) await db.query(`INSERT INTO crm_client_tags(client_id,tag_id) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING`,[req.params.id,tagId]); await db.query("COMMIT"); res.json({ok:true}); }
+  catch (error) { await db.query("ROLLBACK").catch(()=>undefined); fail(res,error); } finally { db.release(); }
 });
 
 export default router;
