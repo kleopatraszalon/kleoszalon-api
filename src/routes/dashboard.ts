@@ -56,14 +56,14 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
           COALESCE(SUM(unexcused_minutes)/480.0,0)::numeric unexcused_days
         FROM management_daily_facts f WHERE ${filter}`, params),
       pool.query(`
-        WITH days AS (SELECT generate_series($1::date,$2::date,'1 day')::date day)
-        SELECT d.day::text date,
+        WITH days AS (SELECT generate_series($1::date,$2::date,'1 day')::date AS fact_day)
+        SELECT d.fact_day::text date,
           COALESCE(SUM(f.service_revenue+f.product_revenue),0)::numeric revenue,
           COALESCE(SUM(f.service_revenue),0)::numeric service_revenue,
           COALESCE(SUM(f.product_revenue),0)::numeric product_revenue,
           COALESCE(SUM(f.completed_count),0)::int completed
-        FROM days d LEFT JOIN management_daily_facts f ON f.fact_date=d.day AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
-        GROUP BY d.day ORDER BY d.day`, params),
+        FROM days d LEFT JOIN management_daily_facts f ON f.fact_date=d.fact_day AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
+        GROUP BY d.fact_day ORDER BY d.fact_day`, params),
       pool.query(`
         SELECT l.id,l.name,
           SUM(f.service_revenue+f.product_revenue)::numeric revenue,
