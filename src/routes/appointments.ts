@@ -28,6 +28,11 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
   if (!employee_id || !start_time || !end_time) {
     return res.status(400).json({ error: "employee_id, start_time, end_time kötelező" });
   }
+  const start = new Date(start_time);
+  const end = new Date(end_time);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+    return res.status(400).json({ error: "Érvénytelen kezdési vagy befejezési idő." });
+  }
 
   const db = await pool.connect();
   try {
@@ -46,6 +51,15 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
       )
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS appointment_services_appointment_idx ON appointment_services(appointment_id)`);
+    // Régi telepítéseknél az appointment_services már létezhet eltérő oszlopokkal.
+    // A CREATE TABLE IF NOT EXISTS ezeket nem pótolja, ezért idempotensen normalizáljuk.
+    await db.query(`
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS duration_minutes integer NOT NULL DEFAULT 30;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS price numeric(12,2) NOT NULL DEFAULT 0;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS discount_percent numeric(5,2) NOT NULL DEFAULT 0;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    `);
 
     const requestedIds = Array.isArray(services)
       ? services.map((item: any) => String(item?.service_id || item?.id || "")).filter(Boolean)
@@ -61,6 +75,19 @@ router.post("/", requireAuth, async (req: AuthRequest, res) => {
     if (requestedIds.length && serviceRows.length !== new Set(requestedIds).size) {
       await db.query("ROLLBACK");
       return res.status(400).json({ error: "Egy vagy több kiválasztott szolgáltatás nem található vagy inaktív." });
+    }
+
+    const conflict = await db.query(
+      `SELECT id,start_time,end_time FROM appointments
+       WHERE employee_id=$1::uuid
+         AND status NOT IN ('cancelled','no_show')
+         AND start_time < $3::timestamptz AND end_time > $2::timestamptz
+       LIMIT 1`,
+      [employee_id,start_time,end_time]
+    );
+    if (conflict.rows[0]) {
+      await db.query("ROLLBACK");
+      return res.status(409).json({ error: "A munkatársnak ebben az időszakban már van foglalása.", conflict: conflict.rows[0] });
     }
 
     const generatedTitle = serviceRows.length
