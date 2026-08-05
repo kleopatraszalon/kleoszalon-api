@@ -1,125 +1,143 @@
-// src/routes/dashboard.ts
 import express from "express";
 import pool from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { ensureDashboardAnalytics } from "../dashboard/ensureDashboardAnalytics";
 
 const router = express.Router();
 
-/**
- * GET /api/dashboard?location_id=<uuid>
- * Visszaadja: { stats: {...}, chartData: [{date, revenue}, ...] }
- */
-router.get("/", requireAuth, async (req: AuthRequest, res) => {
-  // 1) Lokáció meghatározása
-  const qLoc = (req.query.location_id as string | undefined)?.trim();
-  const isAdmin = (req.user?.role === "admin");
-  const effectiveLocationId =
-    isAdmin ? (qLoc && qLoc.length ? qLoc : null)
-            : (req.user?.location_id ?? null);
+const isoDate = (value: unknown, fallback: Date) => {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : fallback.toISOString().slice(0, 10);
+};
 
-  // 2) WHERE feltétel lokációra (ha kell)
-  const whereLoc = effectiveLocationId ? "AND t.location_id = $1" : "";
-  const args: any[] = [];
-  if (effectiveLocationId) args.push(effectiveLocationId);
+const roleKeys = (role: unknown): string[] => {
+  if (Array.isArray(role)) return role.map(String).map(x => x.toLowerCase());
+  try {
+    const parsed = JSON.parse(String(role || ""));
+    if (Array.isArray(parsed)) return parsed.map(String).map(x => x.toLowerCase());
+  } catch { /* legacy text role */ }
+  return String(role || "").split(",").map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase()).filter(Boolean);
+};
+
+router.get("/", requireAuth, async (req: AuthRequest, res) => {
+  const now = new Date();
+  const start = new Date(now);
+  start.setDate(start.getDate() - 29);
+  const from = isoDate(req.query.from, start);
+  const to = isoDate(req.query.to, now);
+  const isAdmin = roleKeys(req.user?.role).includes("admin");
+  const requestedLocation = String(req.query.location_id || "").trim() || null;
+  const locationId = isAdmin ? requestedLocation : (req.user?.location_id || null);
+  const params = [from, to, locationId];
+  const filter = `f.fact_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR f.location_id=$3::uuid)`;
 
   try {
-    // 3) Napi és havi bevétel + 7 napos chart (status='paid' tranzakciókból)
-    const revSql = `
-      WITH days AS (
-        SELECT generate_series((CURRENT_DATE - INTERVAL '6 day')::date,
-                               CURRENT_DATE::date,
-                               INTERVAL '1 day')::date AS d
-      ),
-      day_rev AS (
+    await ensureDashboardAnalytics();
+
+    const [summaryRes, trendRes, locationRes, positionRes, staffRes, absenceRes, clientsRes, availableLocationsRes] = await Promise.all([
+      pool.query(`
         SELECT
-          DATE(t.paid_at) AS dt,
-          COALESCE(SUM(t.amount), 0)::numeric AS amount
-        FROM transactions t
-        WHERE t.status = 'paid'
-          ${whereLoc}
-        GROUP BY DATE(t.paid_at)
-      )
-      SELECT
-        -- napi bevétel
-        COALESCE((
-          SELECT SUM(t.amount)::numeric
-          FROM transactions t
-          WHERE t.status='paid'
-            AND DATE(t.paid_at)=CURRENT_DATE
-            ${whereLoc}
-        ), 0) AS daily_revenue,
-        -- havi bevétel
-        COALESCE((
-          SELECT SUM(t.amount)::numeric
-          FROM transactions t
-          WHERE t.status='paid'
-            AND date_trunc('month', t.paid_at)=date_trunc('month', now())
-            ${whereLoc}
-        ), 0) AS monthly_revenue,
-        -- chartData az elmúlt 7 napra (mindig legyen 7 sor, null napokon 0)
-        (
-          SELECT json_agg(json_build_object('date', d.d::text, 'revenue', COALESCE(dr.amount,0)) ORDER BY d.d)
-          FROM days d
-          LEFT JOIN day_rev dr ON dr.dt = d.d
-        ) AS chart_data
-    `;
+          COALESCE(SUM(service_revenue+product_revenue),0)::numeric total_revenue,
+          COALESCE(SUM(service_revenue),0)::numeric service_revenue,
+          COALESCE(SUM(product_revenue),0)::numeric product_revenue,
+          COALESCE(SUM(invoice_count),0)::int invoice_count,
+          COALESCE(SUM(appointment_count),0)::int appointment_count,
+          COALESCE(SUM(completed_count),0)::int completed_count,
+          COALESCE(SUM(cancelled_count),0)::int cancelled_count,
+          COALESCE(SUM(no_show_count),0)::int no_show_count,
+          COALESCE(SUM(new_client_count),0)::int new_clients,
+          COALESCE(ROUND(SUM(service_revenue+product_revenue)/NULLIF(SUM(invoice_count),0),0),0)::numeric average_invoice,
+          COALESCE(ROUND(SUM(service_revenue)/NULLIF(SUM(invoice_count),0),0),0)::numeric average_service_invoice,
+          COALESCE(ROUND(100*SUM(productive_minutes)/NULLIF(SUM(available_minutes),0),1),0)::numeric average_capacity,
+          COALESCE(ROUND(100*SUM(completed_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric completion_rate,
+          COALESCE(ROUND(100*SUM(no_show_count)/NULLIF(SUM(appointment_count),0),1),0)::numeric no_show_rate,
+          COALESCE(SUM(sick_minutes)/480.0,0)::numeric sick_days,
+          COALESCE(SUM(paid_leave_minutes+unpaid_leave_minutes)/480.0,0)::numeric leave_days,
+          COALESCE(SUM(unexcused_minutes)/480.0,0)::numeric unexcused_days
+        FROM management_daily_facts f WHERE ${filter}`, params),
+      pool.query(`
+        WITH days AS (SELECT generate_series($1::date,$2::date,'1 day')::date day)
+        SELECT d.day::text date,
+          COALESCE(SUM(f.service_revenue+f.product_revenue),0)::numeric revenue,
+          COALESCE(SUM(f.service_revenue),0)::numeric service_revenue,
+          COALESCE(SUM(f.product_revenue),0)::numeric product_revenue,
+          COALESCE(SUM(f.completed_count),0)::int completed
+        FROM days d LEFT JOIN management_daily_facts f ON f.fact_date=d.day AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
+        GROUP BY d.day ORDER BY d.day`, params),
+      pool.query(`
+        SELECT l.id,l.name,
+          SUM(f.service_revenue+f.product_revenue)::numeric revenue,
+          SUM(f.service_revenue)::numeric service_revenue,
+          SUM(f.product_revenue)::numeric product_revenue,
+          SUM(f.completed_count)::int completed,
+          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity,
+          ROUND(100*SUM(f.no_show_count)/NULLIF(SUM(f.appointment_count),0),1)::numeric no_show_rate
+        FROM management_daily_facts f JOIN locations l ON l.id=f.location_id
+        WHERE ${filter} GROUP BY l.id,l.name ORDER BY revenue DESC`, params),
+      pool.query(`
+        SELECT COALESCE(p.name,'Nincs munkakör') position_name,
+          SUM(f.service_revenue+f.product_revenue)::numeric revenue,
+          SUM(f.service_revenue)::numeric service_revenue,
+          SUM(f.product_revenue)::numeric product_revenue,
+          SUM(f.completed_count)::int completed,
+          ROUND(SUM(f.service_revenue+f.product_revenue)/NULLIF(SUM(f.productive_minutes)/60.0,0),0)::numeric revenue_per_hour,
+          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
+        FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
+        WHERE ${filter} GROUP BY p.id,p.name ORDER BY revenue DESC`, params),
+      pool.query(`
+        SELECT e.id,e.full_name,COALESCE(p.name,'Nincs munkakör') position_name,l.name location_name,
+          SUM(f.service_revenue+f.product_revenue)::numeric revenue,
+          SUM(f.completed_count)::int completed,
+          ROUND(100*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
+        FROM management_daily_facts f JOIN employees e ON e.id=f.employee_id
+        JOIN locations l ON l.id=f.location_id LEFT JOIN hr_positions p ON p.id=f.position_id
+        WHERE ${filter} GROUP BY e.id,e.full_name,p.name,l.name ORDER BY revenue DESC LIMIT 10`, params),
+      pool.query(`
+        SELECT COALESCE(p.name,'Nincs munkakör') position_name,
+          ROUND(SUM(f.sick_minutes)/480.0,1)::numeric sick_days,
+          ROUND(SUM(f.paid_leave_minutes)/480.0,1)::numeric paid_leave_days,
+          ROUND(SUM(f.unpaid_leave_minutes)/480.0,1)::numeric unpaid_leave_days,
+          ROUND(SUM(f.unexcused_minutes)/480.0,1)::numeric unexcused_days,
+          ROUND(100*SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric absence_rate
+        FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
+        WHERE ${filter} GROUP BY p.id,p.name
+        HAVING SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)>0
+        ORDER BY absence_rate DESC`, params),
+      pool.query(`SELECT COUNT(*)::int total_clients FROM clients`),
+      pool.query(`SELECT id,name FROM locations WHERE ($1::boolean OR id=$2::uuid) ORDER BY name`, [isAdmin, locationId])
+    ]);
 
-    const revRes = await pool.query(revSql, args);
-    const row = revRes.rows[0] || {};
-    const dailyRevenue   = Number(row.daily_revenue || 0);
-    const monthlyRevenue = Number(row.monthly_revenue || 0);
-    const chartData      = Array.isArray(row.chart_data) ? row.chart_data : [];
+    const summary = summaryRes.rows[0] || {};
+    const todayRevenue = trendRes.rows.find((row: any) => row.date === now.toISOString().slice(0,10))?.revenue || 0;
+    const alerts: Array<{level:string;title:string;detail:string}> = [];
+    if (Number(summary.no_show_rate) >= 5) alerts.push({level:"warning",title:"Magas meg nem jelenési arány",detail:`${summary.no_show_rate}% az időszakban`});
+    if (Number(summary.average_capacity) < 60) alerts.push({level:"info",title:"Kihasználatlan kapacitás",detail:`Átlagosan ${summary.average_capacity}% a foglaltság`});
+    if (Number(summary.unexcused_days) > 0) alerts.push({level:"critical",title:"Igazolatlan hiányzás",detail:`${Number(summary.unexcused_days).toFixed(1)} munkanap`});
 
-    // 4) Összes ügyfél (ha van location_id a clients táblában, akkor arra szűrjünk; ha nincs, számoljuk globálisan)
-    // Itt globális számolást adok (stabil), ha van clients.location_id oszlopod, cseréld erre:
-    //   const clientsSql = `SELECT COUNT(*)::int AS c FROM clients WHERE location_id = $1`;
-    let totalClients = 0;
-    {
-      const clientsSql =
-        `SELECT COUNT(*)::int AS c FROM clients`;
-      const cRes = await pool.query(clientsSql);
-      totalClients = Number(cRes.rows?.[0]?.c || 0);
-    }
-
-    // 5) Aktív mai időpontok (status in (...) és TODAY). Feltételezzük: appointments.status, start_time, location_id létezik.
-    const apptArgs = [...args];
-    const apptSql = `
-      SELECT COUNT(*)::int AS c
-      FROM appointments a
-      WHERE DATE(a.start_time)=CURRENT_DATE
-        AND a.status IN ('scheduled','confirmed','in_progress')
-        ${effectiveLocationId ? "AND a.location_id = $1" : ""}
-    `;
-    const apptRes = await pool.query(apptSql, apptArgs);
-    const activeAppointments = Number(apptRes.rows?.[0]?.c || 0);
-
-    // 6) Low stock – ha nincs készlet tábla, legyen 0 (ne essen szét a Home)
-    const lowStockCount = 0;
-
-    // 7) Válasz összeállítása a Home.tsx által elvárt formában
     return res.json({
-      stats: {
-        dailyRevenue,
-        monthlyRevenue,
-        totalClients,
-        activeAppointments,
-        lowStockCount
+      period:{from,to},
+      stats:{
+        dailyRevenue:Number(todayRevenue), monthlyRevenue:Number(summary.total_revenue||0), totalRevenue:Number(summary.total_revenue||0),
+        serviceRevenue:Number(summary.service_revenue||0), productRevenue:Number(summary.product_revenue||0),
+        averageInvoice:Number(summary.average_invoice||0), averageServiceInvoice:Number(summary.average_service_invoice||0),
+        averageCapacity:Number(summary.average_capacity||0), totalClients:Number(clientsRes.rows[0]?.total_clients||0),
+        newClients:Number(summary.new_clients||0), activeAppointments:Number(summary.appointment_count||0),
+        completedAppointments:Number(summary.completed_count||0), cancelledAppointments:Number(summary.cancelled_count||0),
+        noShowCount:Number(summary.no_show_count||0), completionRate:Number(summary.completion_rate||0),
+        noShowRate:Number(summary.no_show_rate||0), sickDays:Number(summary.sick_days||0),
+        leaveDays:Number(summary.leave_days||0), unexcusedDays:Number(summary.unexcused_days||0), lowStockCount:0
       },
-      chartData
+      chartData:trendRes.rows,
+      revenueByLocation:locationRes.rows,
+      revenueByPosition:positionRes.rows,
+      topEmployees:staffRes.rows,
+      absenceByPosition:absenceRes.rows,
+      locations:availableLocationsRes.rows,
+      alerts
     });
-  } catch (err) {
-    console.error("❌ /api/dashboard hiba:", err);
-    // Adjunk “üres, de szerkezetileg helyes” választ, hogy a Home ne omoljon össze.
-    return res.json({
-      stats: {
-        dailyRevenue: 0,
-        monthlyRevenue: 0,
-        totalClients: 0,
-        activeAppointments: 0,
-        lowStockCount: 0
-      },
-      chartData: []
-    });
+  } catch (err:any) {
+    console.error("❌ /api/dashboard vezetői lekérdezési hiba:", err);
+    return res.status(500).json({error:"A vezetői kimutatások betöltése nem sikerült.",detail:err?.message||String(err)});
   }
 });
 
