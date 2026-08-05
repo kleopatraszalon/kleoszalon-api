@@ -224,6 +224,44 @@ router.patch("/:id", requireAuth, async (req: AuthRequest, res) => {
   } = req.body || {};
 
   try {
+    const currentResult = await pool.query(
+      `SELECT id, employee_id, start_time, end_time, status
+       FROM appointments WHERE id = $1::uuid LIMIT 1`,
+      [id]
+    );
+    if (!currentResult.rows[0]) return res.status(404).json({ error: "Nincs ilyen időpont." });
+
+    const current = currentResult.rows[0];
+    const nextEmployeeId = employee_id === undefined ? current.employee_id : employee_id;
+    const nextStartTime = start_time === undefined ? current.start_time : start_time;
+    const nextEndTime = end_time === undefined ? current.end_time : end_time;
+    const nextStart = new Date(nextStartTime);
+    const nextEnd = new Date(nextEndTime);
+
+    if (!Number.isFinite(nextStart.getTime()) || !Number.isFinite(nextEnd.getTime()) || nextEnd <= nextStart) {
+      return res.status(400).json({ error: "Érvénytelen kezdési vagy befejezési idő." });
+    }
+
+    if (nextEmployeeId && (employee_id !== undefined || start_time !== undefined || end_time !== undefined)) {
+      const conflict = await pool.query(
+        `SELECT id, start_time, end_time
+         FROM appointments
+         WHERE id <> $1::uuid
+           AND employee_id = $2::uuid
+           AND status NOT IN ('cancelled', 'canceled', 'no_show')
+           AND start_time < $4::timestamptz
+           AND end_time > $3::timestamptz
+         LIMIT 1`,
+        [id, nextEmployeeId, nextStart.toISOString(), nextEnd.toISOString()]
+      );
+      if (conflict.rows[0]) {
+        return res.status(409).json({
+          error: "A munkatársnak ebben az időszakban már van foglalása.",
+          conflict: conflict.rows[0],
+        });
+      }
+    }
+
     const fields: string[] = [];
     const params: any[] = [];
     let i = 1;
