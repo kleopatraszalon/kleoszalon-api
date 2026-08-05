@@ -117,11 +117,11 @@ WHERE e.email LIKE 'demo.%@kleoszalon.hu'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO employee_wage_history(employee_id,monthly_wage,hourly_wage,commission_percent,valid_from,note)
-SELECT e.id::text,e.monthly_wage,e.hourly_wage,e.commission_percent,DATE '2026-01-01','DEMO kezdő bérezés'
-FROM employees e WHERE e.email LIKE 'demo.%@kleoszalon.hu' AND NOT EXISTS(SELECT 1 FROM employee_wage_history w WHERE w.employee_id=e.id::text AND w.note='DEMO kezdő bérezés');
+SELECT e.id,e.monthly_wage,e.hourly_wage,e.commission_percent,DATE '2026-01-01','DEMO kezdő bérezés'
+FROM employees e WHERE e.email LIKE 'demo.%@kleoszalon.hu' AND NOT EXISTS(SELECT 1 FROM employee_wage_history w WHERE w.employee_id::text=e.id::text AND w.note='DEMO kezdő bérezés');
 
 INSERT INTO employee_service_overrides(employee_id,service_id,custom_price,custom_duration_minutes)
-SELECT e.id::text,s.id,NULL,NULL FROM employees e CROSS JOIN LATERAL(SELECT id FROM services ORDER BY name LIMIT 3)s
+SELECT e.id,s.id,NULL,NULL FROM employees e CROSS JOIN LATERAL(SELECT id FROM services ORDER BY name LIMIT 3)s
 WHERE e.email LIKE 'demo.%@kleoszalon.hu' AND e.position_id IN(SELECT id FROM hr_positions WHERE code IN('DEMO-FODRASZ','DEMO-TOPFOD','DEMO-BORBELY','DEMO-KOZMET','DEMO-KORMOS','DEMO-MASSZOR'))
 ON CONFLICT(employee_id,service_id) DO NOTHING;
 
