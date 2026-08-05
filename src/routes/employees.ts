@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import pool from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { ensureHrV2 } from "../hr/ensureHrV2";
 
 const router = Router();
 
@@ -10,10 +11,12 @@ let schemaReady: Promise<void> | null = null;
 function ensureHrSchema() {
   if (!schemaReady) {
     schemaReady = (async () => {
+      // A lista és a munkakör-végpont is várja meg a teljes HR migrációt és
+      // az idempotens demo feltöltést. Korábban a párhuzamos frontend hívások
+      // miatt a munkakörlista még a seed befejezése előtt üresen térhetett vissza.
+      await ensureHrV2();
       await pool.query(`
-        CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
-        CREATE TABLE IF NOT EXISTS positions (
+        CREATE TABLE IF NOT EXISTS hr_positions (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
           name text NOT NULL,
           code text,
@@ -25,9 +28,15 @@ function ensureHrSchema() {
           created_at timestamptz NOT NULL DEFAULT now(),
           updated_at timestamptz NOT NULL DEFAULT now()
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS positions_name_unique
-          ON positions (lower(name));
-
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS name text;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS code text;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS description text;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS base_monthly_wage numeric(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS base_hourly_wage numeric(12,2) NOT NULL DEFAULT 0;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS commission_percent numeric(5,2) NOT NULL DEFAULT 0;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+        ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS first_name text;
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_name text;
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS birth_date date;
@@ -43,12 +52,9 @@ function ensureHrSchema() {
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid;
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS photo_url text;
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
-        CREATE UNIQUE INDEX IF NOT EXISTS employees_login_name_unique
-          ON employees (lower(login_name)) WHERE login_name IS NOT NULL;
-
         CREATE TABLE IF NOT EXISTS employee_wage_history (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-          employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+          employee_id text NOT NULL,
           monthly_wage numeric(12,2),
           hourly_wage numeric(12,2),
           commission_percent numeric(5,2),
@@ -57,16 +63,6 @@ function ensureHrSchema() {
           created_at timestamptz NOT NULL DEFAULT now()
         );
 
-        CREATE TABLE IF NOT EXISTS employee_service_overrides (
-          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-          employee_id uuid NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-          service_id uuid NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-          custom_price numeric(12,2),
-          custom_duration_minutes integer,
-          created_at timestamptz NOT NULL DEFAULT now()
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS employee_service_override_unique
-          ON employee_service_overrides(employee_id, service_id);
       `);
     })().catch((error) => {
       schemaReady = null;
@@ -92,10 +88,10 @@ router.get(
     const { rows } = await pool.query(`
       SELECT p.*,
              COUNT(e.id)::int AS employee_count
-      FROM positions p
-      LEFT JOIN employees e ON e.position_id = p.id AND e.active = true
+      FROM hr_positions p
+      LEFT JOIN employees e ON e.position_id::text = p.id::text AND COALESCE(e.active, true) = true
       GROUP BY p.id
-      ORDER BY p.is_active DESC, p.name
+      ORDER BY p.name
     `);
     res.json(rows);
   })
@@ -109,7 +105,7 @@ router.post(
     const { name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active } = req.body || {};
     if (!String(name || "").trim()) return res.status(400).json({ error: "A munkakör neve kötelező." });
     const { rows } = await pool.query(
-      `INSERT INTO positions
+      `INSERT INTO hr_positions
         (name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active)
        VALUES ($1,$2,$3,COALESCE($4,0),COALESCE($5,0),COALESCE($6,0),COALESCE($7,true))
        RETURNING *`,
@@ -127,7 +123,7 @@ router.patch(
     const { name, code, description, base_monthly_wage, base_hourly_wage, commission_percent, is_active } = req.body || {};
     if (!String(name || "").trim()) return res.status(400).json({ error: "A munkakör neve kötelező." });
     const { rows } = await pool.query(
-      `UPDATE positions SET name=$2, code=$3, description=$4,
+      `UPDATE hr_positions SET name=$2, code=$3, description=$4,
         base_monthly_wage=COALESCE($5,0), base_hourly_wage=COALESCE($6,0),
         commission_percent=COALESCE($7,0), is_active=COALESCE($8,true), updated_at=now()
        WHERE id=$1 RETURNING *`,
@@ -148,13 +144,24 @@ router.get(
       SELECT e.id, e.location_id, l.name AS location_name, e.full_name,
              e.first_name, e.last_name, e.email, e.phone, e.birth_date,
              e.qualification, e.employment_type, e.position_id,
-             p.name AS position_name, e.monthly_wage, e.hourly_wage,
+             COALESCE(
+               p.name,
+               NULLIF(
+                 CASE
+                   WHEN jsonb_typeof(to_jsonb(e.role)) = 'array'
+                     THEN trim(both '"' from (to_jsonb(e.role)->>0))
+                   ELSE trim(both '"' from to_jsonb(e.role)::text)
+                 END,
+                 ''
+               )
+             ) AS position_name,
+             e.monthly_wage, e.hourly_wage,
              e.commission_percent, e.photo_url, e.active, e.login_name, e.role,
              e.created_at, e.updated_at
       FROM employees e
       LEFT JOIN locations l ON l.id = e.location_id
-      LEFT JOIN positions p ON p.id = e.position_id
-      ${includeInactive ? "" : "WHERE e.active = true"}
+      LEFT JOIN hr_positions p ON p.id::text = e.position_id::text
+      ${includeInactive ? "" : "WHERE COALESCE(e.active, true) = true"}
       ORDER BY e.active DESC, e.full_name NULLS LAST, e.last_name, e.first_name
     `);
     res.json(rows);
@@ -296,6 +303,53 @@ router.post(
       );
       await client.query("COMMIT");
       res.status(201).json(rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  })
+);
+
+router.get(
+  "/:id/services",
+  requireAuth,
+  asyncRoute(async (req: AuthRequest, res) => {
+    await ensureHrSchema();
+    const { rows } = await pool.query(
+      `SELECT s.id AS service_id, s.name, s.base_price, s.base_duration_minutes,
+              o.custom_price, o.custom_duration_minutes
+       FROM employee_service_overrides o
+       JOIN services s ON s.id=o.service_id
+       WHERE o.employee_id=$1
+       ORDER BY s.name`,
+      [req.params.id]
+    );
+    res.json(rows);
+  })
+);
+
+router.put(
+  "/:id/services",
+  requireAuth,
+  asyncRoute(async (req: AuthRequest, res) => {
+    await ensureHrSchema();
+    const services = Array.isArray(req.body?.services) ? req.body.services : [];
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const employee = await client.query("SELECT id FROM employees WHERE id=$1", [req.params.id]);
+      if (!employee.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({ error: "A munkatárs nem található." }); }
+      await client.query("DELETE FROM employee_service_overrides WHERE employee_id=$1", [req.params.id]);
+      for (const service of services) {
+        if (!service?.service_id) continue;
+        await client.query(
+          `INSERT INTO employee_service_overrides(employee_id,service_id,custom_price,custom_duration_minutes)
+           VALUES($1,$2,$3,$4)`,
+          [req.params.id, service.service_id, numberOrNull(service.custom_price), numberOrNull(service.custom_duration_minutes)]
+        );
+      }
+      await client.query("COMMIT");
+      res.json({ employee_id: req.params.id, service_count: services.filter((item: any) => item?.service_id).length });
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
