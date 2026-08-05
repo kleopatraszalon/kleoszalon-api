@@ -19,11 +19,15 @@ import transactionsRoutes from "./routes/transactions";
 import locationsRoutes from "./routes/locations";
 import dashboardRoutes from "./routes/dashboard";
 import employeesRouter from "./routes/employees";
+import hrRouter from "./routes/hr";
+import payrollRouter from "./routes/payroll";
+import accessControlRouter from "./routes/accessControl";
 import servicesRouter from "./routes/services";
 import servicesAvailableRoutes from "./routes/services_available";
 import employeeCalendarRoutes from "./routes/employee_calendar";
 import scheduleDayRoutes from "./routes/schedule_day";
 import appointmentsRouter from "./routes/appointments";
+import timetableRouter from "./routes/timetable";
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
@@ -43,6 +47,7 @@ import signageAdmin from "./routes/signageAdmin";
 import kioskAdmin from "./routes/kioskAdmin";
 import { kioskRouter } from "./routes/kiosk";
 import { ensureSignageTables } from "./signage/ensureSignageTables";
+import { ensureHrV2 } from "./hr/ensureHrV2";
 import virRouter from "./routes/vir";
 import virDrilldownRouter from "./routes/virDrilldown";
 
@@ -106,6 +111,9 @@ async function initDbDependentThings() {
     ensureSignageTables(pool)
       .then(() => console.log("✅ Signage táblák OK"))
       .catch((e) => console.error("❌ Signage táblák hiba:", e));
+    ensureHrV2()
+      .then(() => console.log("✅ HR V2 adatmodell OK"))
+      .catch((e) => console.error("❌ HR V2 migrációs hiba:", e));
   } else {
     // újrapróbálkozás (pl. DB még ébred / env javítás után deploy)
     setTimeout(() => initDbDependentThings().catch(() => {}), 15000);
@@ -168,6 +176,7 @@ app.use((_, res, next) => {
   res.header("Vary", "Origin");
   // DEBUG: ebből látod, hogy a friss build fut-e Renderen
   res.header("X-Kleo-CORS", "corsfix-2026-02-04");
+  res.header("X-Kleo-HR", "modern-hr-v4");
   next();
 });
 
@@ -348,7 +357,7 @@ async function verifyPassword(stored: string | null | undefined, plain: string):
 // Telephelyek listázása
 /* ===== Health + root ===== */
 app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, time: new Date().toISOString(), db: dbState })
+  res.json({ ok: true, version: "modern-hr-v4", time: new Date().toISOString(), db: dbState })
 );
 
 // DB ping endpoint (kézi ellenőrzéshez)
@@ -396,6 +405,9 @@ app.use("/api/menus", menuRoutes);
 app.use("/api/me", meRouter);
 /*  app.use("/api/me", meRoutes); */
 app.use("/api/employees", employeesRouter);
+app.use("/api/hr", hrRouter);
+app.use("/api/payroll", payrollRouter);
+app.use("/api/access-control", accessControlRouter);
 app.use("/api/services/available", servicesAvailableRoutes);
 app.use("/api/services", servicesRouter);
 app.use("/api/employee-calendar", employeeCalendarRoutes);
@@ -406,6 +418,7 @@ app.use("/api/bookings", bookingsRoutes);
 app.use("/api/transactions", transactionsRoutes);
 app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
+app.use("/api/timetable", timetableRouter);
 app.use("/api/public", publicMarketingRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
