@@ -17,11 +17,74 @@ function normalizeStatus(value: unknown, fallback = "arrived") {
   return WORK_ORDER_STATUSES.has(status) ? status : null;
 }
 
+async function consumeWorkOrderStock(client: any, workOrderId: string | number) {
+  const workOrderResult = await client.query(
+    `SELECT id, location_id, stock_consumed_at FROM work_orders WHERE id = $1 FOR UPDATE`,
+    [workOrderId]
+  );
+  const workOrder = workOrderResult.rows[0];
+  if (!workOrder) throw new Error("A munkalap nem található");
+  if (workOrder.stock_consumed_at) return;
+
+  const items = await client.query(
+    `SELECT product_id, SUM(quantity)::numeric AS quantity
+     FROM work_order_items
+     WHERE work_order_id = $1 AND item_type = 'product' AND product_id IS NOT NULL
+     GROUP BY product_id`,
+    [workOrderId]
+  );
+
+  for (const item of items.rows) {
+    const quantity = Number(item.quantity ?? 0);
+    if (!(quantity > 0)) continue;
+
+    await client.query(
+      `INSERT INTO product_stock_balances (product_id, location_id, quantity)
+       VALUES ($1, $2, 0)
+       ON CONFLICT (product_id, location_id) DO NOTHING`,
+      [item.product_id, workOrder.location_id ?? null]
+    );
+
+    const balance = await client.query(
+      `UPDATE product_stock_balances
+       SET quantity = quantity - $3, updated_at = now()
+       WHERE product_id = $1
+         AND location_id IS NOT DISTINCT FROM $2
+         AND quantity >= $3
+       RETURNING quantity`,
+      [item.product_id, workOrder.location_id ?? null, quantity]
+    );
+
+    if (!balance.rows[0]) {
+      const product = await client.query(`SELECT name FROM products WHERE id = $1`, [item.product_id]);
+      throw new Error(`Nincs elegendő készlet: ${product.rows[0]?.name ?? `#${item.product_id}`}`);
+    }
+
+    await client.query(
+      `INSERT INTO inventory_movements
+        (product_id, location_id, work_order_id, movement_type, quantity, balance_after, note)
+       VALUES ($1, $2, $3, 'work_order_consumption', $4, $5, $6)
+       ON CONFLICT DO NOTHING`,
+      [
+        item.product_id,
+        workOrder.location_id ?? null,
+        workOrderId,
+        -quantity,
+        balance.rows[0].quantity,
+        "Automatikus anyagfelhasználás munkalap lezárásakor",
+      ]
+    );
+  }
+
+  await client.query(
+    `UPDATE work_orders SET stock_consumed_at = now(), updated_at = now() WHERE id = $1`,
+    [workOrderId]
+  );
+}
+
 router.get("/workorders", async (_req, res, next) => {
   try {
-    const result = await db.query(
-      `SELECT * FROM v_work_orders_list ORDER BY created_at DESC`
-    );
+    const result = await db.query(`SELECT * FROM v_work_orders_list ORDER BY created_at DESC`);
     res.json(result.rows);
   } catch (err) {
     next(err);
@@ -52,16 +115,18 @@ router.get("/workorders/:id", async (req, res, next) => {
 });
 
 router.patch("/workorders/:id/lifecycle", async (req, res, next) => {
+  const client = await db.connect();
   try {
     const status = normalizeStatus(req.body?.status, "");
     if (!status) return res.status(400).json({ message: "Érvénytelen munkalap státusz" });
 
+    await client.query("BEGIN");
     const now = new Date().toISOString();
     const startedAt = status === "in_progress" ? (req.body?.started_at ?? now) : req.body?.started_at;
     const completedAt = status === "completed" ? (req.body?.completed_at ?? now) : req.body?.completed_at;
     const cancelledAt = status === "cancelled" ? now : null;
 
-    const result = await db.query(
+    const result = await client.query(
       `UPDATE work_orders
        SET status = $2,
            started_at = COALESCE($3::timestamptz, started_at),
@@ -74,10 +139,22 @@ router.patch("/workorders/:id/lifecycle", async (req, res, next) => {
       [req.params.id, status, startedAt ?? null, completedAt ?? null, cancelledAt]
     );
 
-    if (!result.rows[0]) return res.status(404).json({ message: "A munkalap nem található" });
+    if (!result.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "A munkalap nem található" });
+    }
+
+    if (status === "completed") await consumeWorkOrderStock(client, req.params.id);
+    await client.query("COMMIT");
     res.json(result.rows[0]);
-  } catch (err) {
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    if (String(err?.message || "").startsWith("Nincs elegendő készlet")) {
+      return res.status(409).json({ message: err.message });
+    }
     next(err);
+  } finally {
+    client.release();
   }
 });
 
@@ -162,10 +239,14 @@ router.post("/workorders", async (req, res, next) => {
     }
 
     await client.query(`SELECT recalc_work_order_totals($1)`, [workOrderId]);
+    if (status === "completed") await consumeWorkOrderStock(client, workOrderId);
     await client.query("COMMIT");
     res.status(201).json({ id: workOrderId });
-  } catch (err) {
+  } catch (err: any) {
     await client.query("ROLLBACK");
+    if (String(err?.message || "").startsWith("Nincs elegendő készlet")) {
+      return res.status(409).json({ message: err.message });
+    }
     next(err);
   } finally {
     client.release();
