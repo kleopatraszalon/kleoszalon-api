@@ -29,6 +29,7 @@ import scheduleDayRoutes from "./routes/schedule_day";
 import appointmentsRouter from "./routes/appointments";
 import timetableRouter from "./routes/timetable";
 import clientsRouter from "./routes/clients";
+import specModulesRouter from "./routes/specModules";
 
 import sendLoginCodeEmail from "./mailer";
 import { saveCodeForEmail, consumeCode } from "./tempCodeStore";
@@ -49,6 +50,7 @@ import kioskAdmin from "./routes/kioskAdmin";
 import { kioskRouter } from "./routes/kiosk";
 import { ensureSignageTables } from "./signage/ensureSignageTables";
 import { ensureHrV2 } from "./hr/ensureHrV2";
+import { ensureVirSpecModules } from "./virSpec/ensureVirSpecModules";
 import virRouter from "./routes/vir";
 import virDrilldownRouter from "./routes/virDrilldown";
 
@@ -115,6 +117,9 @@ async function initDbDependentThings() {
     ensureHrV2()
       .then(() => console.log("✅ HR V2 adatmodell OK"))
       .catch((e) => console.error("❌ HR V2 migrációs hiba:", e));
+    ensureVirSpecModules()
+      .then(() => console.log("✅ VIR specifikációs modulok OK"))
+      .catch((e) => console.error("❌ VIR specifikációs modulhiba:", e));
   } else {
     // újrapróbálkozás (pl. DB még ébred / env javítás után deploy)
     setTimeout(() => initDbDependentThings().catch(() => {}), 15000);
@@ -421,6 +426,7 @@ app.use("/api/schedule/day", scheduleDayRoutes);
 app.use("/api/appointments", appointmentsRouter);
 app.use("/api/timetable", timetableRouter);
 app.use("/api/clients", clientsRouter);
+app.use("/api/spec-modules", specModulesRouter);
 app.use("/api/public", publicMarketingRouter);
 app.use("/api/service-types", serviceTypesRouter);
 
@@ -725,13 +731,26 @@ app.use((req: Request, res: Response) => {
 
 /* ===== Globális hiba-kezelő ===== */
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+ const status = Number(err?.status);
+ const postgresStatus = err?.code === "23505" || err?.code === "23503"
+   ? 409
+   : err?.code === "22P02" || err?.code === "22007"
+     ? 400
+     : 500;
+ const httpStatus = Number.isInteger(status) && status >= 400 && status < 600 ? status : postgresStatus;
  console.error("🔥 KRITIKUS SZERVER HIBA:", {
     message: err.message,
     stack: err.stack,
-    path: _req.path
+    path: _req.path,
+    status: httpStatus
   });
   
-  res.status(500).json({ error: "Szerver hiba", details: err.message });
+  res.status(httpStatus).json({
+    error: httpStatus === 409
+      ? "Az adat ütközik egy már létező vagy hivatkozott rekorddal."
+      : httpStatus >= 500 ? "Szerver hiba" : err.message,
+    ...(httpStatus >= 500 ? { details: err.message } : {}),
+  });
 });
 
 
