@@ -7,10 +7,12 @@ import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
 import auditLogRouter from "./auditLog";
+import purchaseOrdersRouter from "./purchaseOrders";
 
 const router = express.Router();
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
 router.use("/inventory", inventoryRouter);
+router.use("/procurement", purchaseOrdersRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
 router.use("/cashier", cashierRouter);
