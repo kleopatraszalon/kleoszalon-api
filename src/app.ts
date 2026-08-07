@@ -1,3 +1,5 @@
 // src/app.ts
-// Kompatibilitás: ha valahol a build/start az app.ts-t importálja, ugyanazt a teljesen konfigurált Express appot kapja, mint a server.ts-ből.
-export { default } from "./server";
+// A szerver indulását kizárólag a src/server.ts végzi.
+// Ez a fájl történeti kompatibilitási helyőrző; ne importálja a servert,
+// mert az app.listen() mellékhatást okozna és build-time default exportot várt.
+export {};
