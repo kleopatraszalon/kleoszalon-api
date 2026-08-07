@@ -55,6 +55,25 @@ async function ensureSchema() {
       ADD COLUMN IF NOT EXISTS import_note text,
       ADD COLUMN IF NOT EXISTS source_system text,
       ADD COLUMN IF NOT EXISTS imported_at timestamptz;
+
+    -- Régi adatbázisokban a products.unit_id kötelező mezőként maradhatott meg,
+    -- miközben a jelenlegi termékmodell már base_unit_id + importált szöveges
+    -- mértékegységeket használ. Az Altegio export nem tartalmaz belső VIR unit UUID-t,
+    -- ezért ezt a legacy NOT NULL korlátozást kompatibilitási okból feloldjuk.
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'products'
+          AND column_name = 'unit_id'
+          AND is_nullable = 'NO'
+      ) THEN
+        ALTER TABLE public.products ALTER COLUMN unit_id DROP NOT NULL;
+      END IF;
+    END $$;
+
     CREATE UNIQUE INDEX IF NOT EXISTS products_altegio_product_key_uq
       ON public.products(altegio_product_key) WHERE altegio_product_key IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS product_categories_altegio_id_uq
