@@ -6,6 +6,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
 /**
  * POST /api/login
@@ -56,7 +57,6 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const user: any = result.rows[0];
 
-    // Elfogadjuk, ha a DB-ben password_hash VAGY password van
     const hash: string | undefined = user.password_hash || user.password;
 
     if (!hash) {
@@ -72,17 +72,25 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
     }
 
+    const effectiveLocationId = location_id ?? user.location_id ?? null;
     const token = jwt.sign(
-      { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "dev-secret",
-      { expiresIn: "7d" }
+      {
+        id: user.id,
+        userId: user.id, // régi kliensek kompatibilitásához
+        email: user.email,
+        role: user.role,
+        location_id: effectiveLocationId,
+      },
+      JWT_SECRET,
+      { expiresIn: "8h" }
     );
 
-    // Token süti
     res.cookie("token", token, {
       httpOnly: true,
       sameSite: "lax",
-      secure: false, // Renderen https alatt majd lehet true
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 8 * 60 * 60 * 1000,
     });
 
     console.log("[/api/login] Sikeres belépés:", loginIdentifier);
@@ -93,7 +101,10 @@ router.post("/login", async (req: Request, res: Response) => {
         id: user.id,
         email: user.email,
         role: user.role,
+        location_id: effectiveLocationId,
       },
+      role: user.role,
+      location_id: effectiveLocationId,
       token,
     });
   } catch (err) {
