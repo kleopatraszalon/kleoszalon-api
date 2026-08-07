@@ -29,8 +29,8 @@ async function createOrder(req: any, res: any, next: any) {
 
     const createdBy = req.user?.email || String(req.user?.id || "");
     const order = await client.query(
-      `INSERT INTO purchase_orders (location_id,supplier_id,supplier_name,status,expected_at,note,created_by)
-       VALUES ($1,$2,$3,'draft',$4,$5,$6) RETURNING *`,
+      `INSERT INTO purchase_orders (location_id,supplier_id,supplier_name,status,expected_at,note,created_by,approval_status)
+       VALUES ($1,$2,$3,'draft',$4,$5,$6,'not_requested') RETURNING *`,
       [locationId, supplierId, supplierName, expectedAt, note, createdBy]
     );
 
@@ -115,20 +115,33 @@ router.get("/orders/:id", async (req, res, next) => {
 router.post("/orders", createOrder);
 
 router.patch("/orders/:id/status", async (req: any, res, next) => {
+  const client = await db.connect();
   try {
     const status = String(req.body?.status || "").trim();
     const allowed = ["draft","ordered","partially_received","received","cancelled"];
     if (!allowed.includes(status)) return res.status(400).json({ message: "Érvénytelen rendelési státusz." });
-    const actor = req.user?.email || String(req.user?.id || "");
-    const { rows } = await db.query(
+    await client.query("BEGIN");
+    const current = await client.query(`SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE`, [req.params.id]);
+    if (!current.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({ message: "A rendelés nem található." }); }
+    if (status === "ordered" && !["approved","auto_approved"].includes(String(current.rows[0].approval_status || ""))) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "A rendelés csak jóváhagyás után küldhető rendelésre.", approval_status: current.rows[0].approval_status });
+    }
+    const who = req.user?.email || String(req.user?.id || "");
+    const { rows } = await client.query(
       `UPDATE purchase_orders SET status=$2,
        ordered_at=CASE WHEN $2='ordered' THEN COALESCE(ordered_at,now()) ELSE ordered_at END,
        cancelled_at=CASE WHEN $2='cancelled' THEN COALESCE(cancelled_at,now()) ELSE cancelled_at END,
-       updated_by=$3,updated_at=now() WHERE id=$1 RETURNING *`, [req.params.id,status,actor]
+       updated_by=$3,updated_at=now() WHERE id=$1 RETURNING *`, [req.params.id,status,who]
     );
-    if (!rows[0]) return res.status(404).json({ message: "A rendelés nem található." });
+    if (status === "ordered") {
+      const total = await client.query(`SELECT COALESCE(SUM(ordered_quantity*unit_cost),0)::numeric total FROM purchase_order_items WHERE purchase_order_id=$1`, [req.params.id]);
+      await client.query(`INSERT INTO procurement_approval_events(purchase_order_id,event_type,actor_key,note,order_total) VALUES($1,'ordered',$2,'Rendelésre küldve',$3)`, [req.params.id,who,num(total.rows[0]?.total)]);
+    }
+    await client.query("COMMIT");
     res.json(rows[0]);
-  } catch (err) { next(err); }
+  } catch (err) { await client.query("ROLLBACK"); next(err); }
+  finally { client.release(); }
 });
 
 router.post("/orders/:id/receive", async (req: any, res, next) => {
@@ -140,8 +153,8 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     const orderRes = await client.query(`SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE`, [req.params.id]);
     const order = orderRes.rows[0];
     if (!order) { await client.query("ROLLBACK"); return res.status(404).json({ message: "A rendelés nem található." }); }
-    if (["received","cancelled"].includes(order.status)) { await client.query("ROLLBACK"); return res.status(409).json({ message: "Ez a rendelés már nem bevételezhető." }); }
-    const actor = req.user?.email || String(req.user?.id || "");
+    if (!["ordered","partially_received"].includes(order.status)) { await client.query("ROLLBACK"); return res.status(409).json({ message: "Bevételezés csak megrendelt vagy részben beérkezett rendelésre végezhető." }); }
+    const who = req.user?.email || String(req.user?.id || "");
 
     for (const x of incoming) {
       const itemId = String(x?.item_id || "");
@@ -161,12 +174,12 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
       else await client.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity,unit_cost,min_quantity,updated_at) VALUES($1,$2,$3,$4,0,now())`, [item.product_id,order.location_id,newQty,newCost]);
       await client.query(`UPDATE purchase_order_items SET received_quantity=received_quantity+$2,actual_unit_cost=$3,updated_at=now() WHERE id=$1`, [itemId,receiveQty,cost]);
       if (order.supplier_id) await client.query(`UPDATE product_supplier_terms SET unit_price=$3,updated_at=now() WHERE product_id=$1 AND supplier_id=$2`, [item.product_id,order.supplier_id,cost]);
-      await client.query(`INSERT INTO inventory_movements(product_id,location_id,movement_type,quantity,balance_after,unit_cost,stock_value_after,note,created_by) VALUES($1,$2,'receipt',$3,$4,$5,$6,$7,$8)`, [item.product_id,order.location_id,receiveQty,newQty,newCost,money(newQty*newCost),`Beszerzési rendelés #${order.id}`,actor]);
+      await client.query(`INSERT INTO inventory_movements(product_id,location_id,movement_type,quantity,balance_after,unit_cost,stock_value_after,note,created_by) VALUES($1,$2,'receipt',$3,$4,$5,$6,$7,$8)`, [item.product_id,order.location_id,receiveQty,newQty,newCost,money(newQty*newCost),`Beszerzési rendelés #${order.id}`,who]);
     }
 
     const totals = await client.query(`SELECT BOOL_AND(received_quantity>=ordered_quantity) all_received,BOOL_OR(received_quantity>0) any_received FROM purchase_order_items WHERE purchase_order_id=$1`, [req.params.id]);
     const newStatus = totals.rows[0]?.all_received ? "received" : totals.rows[0]?.any_received ? "partially_received" : order.status;
-    await client.query(`UPDATE purchase_orders SET status=$2,received_at=CASE WHEN $2='received' THEN now() ELSE received_at END,updated_by=$3,updated_at=now() WHERE id=$1`, [req.params.id,newStatus,actor]);
+    await client.query(`UPDATE purchase_orders SET status=$2,received_at=CASE WHEN $2='received' THEN now() ELSE received_at END,updated_by=$3,updated_at=now() WHERE id=$1`, [req.params.id,newStatus,who]);
     await client.query("COMMIT");
     res.json({ ok:true,status:newStatus });
   } catch (err:any) {
