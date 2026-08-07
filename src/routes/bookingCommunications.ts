@@ -6,6 +6,17 @@ import { processDueBookingCommunications, queueAppointmentCommunications } from 
 const router=Router();
 router.use(requireAuth);
 
+let workerRunning=false;
+if(process.env.BOOKING_COMMUNICATION_WORKER_DISABLED!=="1"){
+  const run=async()=>{
+    if(workerRunning)return;
+    workerRunning=true;
+    try{await processDueBookingCommunications(100)}catch(error:any){console.warn("booking communication worker:",error?.message||String(error))}finally{workerRunning=false}
+  };
+  setTimeout(()=>void run(),15_000);
+  setInterval(()=>void run(),5*60_000);
+}
+
 router.get("/queue",async(req:AuthRequest,res,next)=>{try{const locationId=String(req.query.location_id||req.user?.location_id||"").trim();const status=String(req.query.status||"").trim();const params:any[]=[];let where="WHERE 1=1";if(locationId){params.push(locationId);where+=` AND q.location_id::text=$${params.length}::text`;}if(status){params.push(status);where+=` AND q.status=$${params.length}`;}const{rows}=await db.query(`SELECT q.*,COALESCE(c.full_name,c.name,'Vendég') client_name,l.name location_name,a.start_time,a.status appointment_status FROM booking_communication_queue q LEFT JOIN clients c ON c.id=q.client_id LEFT JOIN locations l ON l.id=q.location_id LEFT JOIN appointments a ON a.id=q.appointment_id ${where} ORDER BY q.created_at DESC LIMIT 300`,params);res.json(rows);}catch(err){next(err)}});
 
 router.get("/settings",async(req:AuthRequest,res,next)=>{try{const locationId=String(req.query.location_id||req.user?.location_id||"").trim();if(!locationId)return res.status(400).json({error:"location_id kötelező."});const{rows}=await db.query(`SELECT * FROM booking_communication_settings WHERE location_id=$1::uuid`,[locationId]);res.json(rows[0]||null);}catch(err){next(err)}});
