@@ -4,16 +4,8 @@ import pool from "../db";
 import onlineBookingRouter from "./onlineBooking";
 
 const router = Router();
-
-/**
- * Online időpontfoglalás: katalógus, szabad időpontok, foglalás,
- * várólista és vendégoldali lemondás.
- */
 router.use("/booking", onlineBookingRouter);
 
-/**
- * Statikus szalonlista – marketing oldalnak.
- */
 const PUBLIC_SALONS = [
   { id: "budapest-ix", slug: "budapest-ix", city_label: "Kleopátra Szépségszalon – Budapest IX.", address: "Mester u. 1." },
   { id: "budapest-viii", slug: "budapest-viii", city_label: "Kleopátra Szépségszalon – Budapest VIII.", address: "Rákóczi u. 63." },
@@ -24,24 +16,20 @@ const PUBLIC_SALONS = [
   { id: "salgotarjan", slug: "salgotarjan", city_label: "Kleopátra Szépségszalon – Salgótarján", address: "Füleki u. 44." },
 ];
 
-router.get("/salons", (_req: Request, res: Response) => {
-  res.json(PUBLIC_SALONS);
-});
+router.get("/salons", (_req: Request, res: Response) => res.json(PUBLIC_SALONS));
 
 router.get("/services", async (_req: Request, res: Response) => {
   try {
-    const sql = `
-      SELECT
-        s.id::text AS id,
-        s.name AS name,
-        COALESCE(s.duration_minutes,30) AS duration_min,
-        COALESCE(s.promo_price,s.list_price,s.base_price,0) AS price,
-        COALESCE(s.service_type_name,s.category_name,'Egyéb szolgáltatások') AS category_name
+    const result = await pool.query(`
+      SELECT s.id::text id,s.name,
+        COALESCE(s.duration_minutes,30) duration_min,
+        COALESCE(s.promo_price,s.list_price,s.base_price,0) price,
+        COALESCE(st.name,'Egyéb szolgáltatások') category_name
       FROM public.services s
-      WHERE s.is_active = TRUE
-      ORDER BY COALESCE(s.service_type_name,s.category_name,''), s.name;
-    `;
-    const result = await pool.query(sql);
+      LEFT JOIN public.service_types st ON st.id=s.service_type_id
+      WHERE s.is_active=true AND COALESCE(s.online_bookable,true)=true
+      ORDER BY COALESCE(st.display_order,999999),st.name,s.name
+    `);
     return res.json(result.rows);
   } catch (err) {
     console.error("GET /api/public/services hiba:", err);
