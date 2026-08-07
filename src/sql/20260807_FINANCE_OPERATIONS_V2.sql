@@ -33,8 +33,7 @@ CREATE TABLE IF NOT EXISTS financial_categories (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS financial_categories_system_uq
-ON financial_categories(system_key)
-WHERE system_key IS NOT NULL;
+ON financial_categories(system_key);
 
 CREATE TABLE IF NOT EXISTS financial_movements (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
