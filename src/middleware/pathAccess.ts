@@ -37,10 +37,19 @@ function strongest(values: string[]) { return values.sort((a,b)=>(rank[b]??0)-(r
 function moreRestrictive(a:string,b:string){ return (rank[a]??1) <= (rank[b]??1) ? a : b; }
 
 function ruleForPath(path: string): Rule | null {
-  if (path === "/api/hr" || path.startsWith("/api/hr/")) return { feature: "hr", menu: "team" };
+  // HR-en belül a bér/kompenzáció külön érzékeny jogosultságot kap.
   if (path === "/api/payroll" || path.startsWith("/api/payroll/")) return { feature: "hr", menu: "team.payroll" };
+  if (path.startsWith("/api/hr/compensation-plans")) return { feature: "hr", menu: "team.payroll" };
+  if (/^\/api\/hr\/employees\/[^/]+\/compensation(?:\/|$)/.test(path)) return { feature: "hr", menu: "team.payroll" };
+  if (path === "/api/hr" || path.startsWith("/api/hr/")) return { feature: "hr", menu: "team" };
+
   if (path.startsWith("/api/transactions/inventory")) return { feature: "inventory", menu: "inventory" };
+
+  // Vezetői összesítők külön dashboard-jogosultságot kapnak, nem a napi pénztárjogot.
+  if (path.startsWith("/api/transactions/cashier/management-summary") || path.startsWith("/api/transactions/management"))
+    return { feature: "management_dashboard", menu: "analytics.main" };
   if (path.startsWith("/api/transactions/cashier")) return { feature: "finance", menu: "finance.checkout" };
+
   if (path.startsWith("/api/transactions/audit")) return { feature: "audit", menu: "settings.audit" };
   return null;
 }
