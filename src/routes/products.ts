@@ -10,7 +10,8 @@ type ProductRow = {
   product_group_id:string|null; product_category_id:string|null; base_unit_id:string|null; package_size:number|null; vat_rate:number|null;
   purchase_price_net:number|null; retail_price_gross:number|null; is_active:boolean|null; is_service_material:boolean|null; is_retail:boolean|null;
   is_cleaning:boolean|null; is_hospitality:boolean|null; is_merchandise:boolean|null; size_label:string|null; color_text:string|null; target_gender:string|null;
-  product_group_name?:string|null; product_category_name?:string|null; critical_quantity?:number|null; ordered_quantity?:number|null;
+  product_type_code?:string|null; product_type_name?:string|null; product_group_name?:string|null; product_category_name?:string|null;
+  critical_quantity?:number|null; ordered_quantity?:number|null;
 };
 
 function mapRowToProduct(row:any):ProductRow{return {
@@ -18,7 +19,8 @@ function mapRowToProduct(row:any):ProductRow{return {
   product_group_id:row.product_group_id,product_category_id:row.product_category_id,base_unit_id:row.base_unit_id,package_size:row.package_size,vat_rate:row.vat_rate,
   purchase_price_net:row.purchase_price_net==null?null:Number(row.purchase_price_net),retail_price_gross:row.retail_price_gross==null?null:Number(row.retail_price_gross),is_active:row.is_active,
   is_service_material:row.is_service_material,is_retail:row.is_retail,is_cleaning:row.is_cleaning,is_hospitality:row.is_hospitality,is_merchandise:row.is_merchandise,
-  size_label:row.size_label,color_text:row.color_text,target_gender:row.target_gender,product_group_name:row.product_group_name,product_category_name:row.product_category_name,
+  size_label:row.size_label,color_text:row.color_text,target_gender:row.target_gender,
+  product_type_code:row.product_type_code,product_type_name:row.product_type_name,product_group_name:row.product_group_name,product_category_name:row.product_category_name,
   critical_quantity:row.critical_quantity==null?null:Number(row.critical_quantity),ordered_quantity:row.ordered_quantity==null?null:Number(row.ordered_quantity)
 };}
 
@@ -30,11 +32,11 @@ async function taxonomyNameColumns(){
 
 router.get("/",async(req:Request,res:Response)=>{try{
   const includeInactive=String(req.query.include_inactive||"")==="1"; const n=await taxonomyNameColumns();
-  const sql=`SELECT p.*,pg.${n.group} AS product_group_name,pc.${n.cat} AS product_category_name FROM products p LEFT JOIN product_groups pg ON pg.id=p.product_group_id LEFT JOIN product_categories pc ON pc.id=p.product_category_id WHERE ($1::boolean) OR p.is_active=true ORDER BY pg.${n.group} NULLS LAST,pc.${n.cat} NULLS LAST,p.name`;
+  const sql=`SELECT p.*,pg.product_type_code,pg.product_type_name,pg.${n.group} AS product_group_name,pc.${n.cat} AS product_category_name FROM products p LEFT JOIN product_groups pg ON pg.id=p.product_group_id LEFT JOIN product_categories pc ON pc.id=p.product_category_id WHERE ($1::boolean) OR p.is_active=true ORDER BY pg.product_type_name NULLS LAST,pg.${n.group} NULLS LAST,pc.${n.cat} NULLS LAST,p.name`;
   const {rows}=await pool.query(sql,[includeInactive]); res.json(rows.map(mapRowToProduct));
 }catch(err){console.error('GET /products hiba:',err);res.status(500).json({error:'Nem sikerült lekérdezni a termékeket.'});}});
 
-router.get("/:id",async(req:Request,res:Response)=>{try{const n=await taxonomyNameColumns();const {rows}=await pool.query(`SELECT p.*,pg.${n.group} AS product_group_name,pc.${n.cat} AS product_category_name FROM products p LEFT JOIN product_groups pg ON pg.id=p.product_group_id LEFT JOIN product_categories pc ON pc.id=p.product_category_id WHERE p.id=$1::uuid LIMIT 1`,[req.params.id]);if(!rows.length)return res.status(404).json({error:'Termék nem található.'});res.json(mapRowToProduct(rows[0]));}catch(err){console.error(err);res.status(500).json({error:'Nem sikerült lekérdezni a terméket.'});}});
+router.get("/:id",async(req:Request,res:Response)=>{try{const n=await taxonomyNameColumns();const {rows}=await pool.query(`SELECT p.*,pg.product_type_code,pg.product_type_name,pg.${n.group} AS product_group_name,pc.${n.cat} AS product_category_name FROM products p LEFT JOIN product_groups pg ON pg.id=p.product_group_id LEFT JOIN product_categories pc ON pc.id=p.product_category_id WHERE p.id=$1::uuid LIMIT 1`,[req.params.id]);if(!rows.length)return res.status(404).json({error:'Termék nem található.'});res.json(mapRowToProduct(rows[0]));}catch(err){console.error(err);res.status(500).json({error:'Nem sikerült lekérdezni a terméket.'});}});
 
 router.post("/",async(req:Request,res:Response)=>{try{const b=req.body||{};if(!String(b.name||'').trim())return res.status(400).json({error:'A termék neve kötelező.'});const {rows}=await pool.query(`INSERT INTO products(name,internal_code,barcode,brand,line_name,product_group_id,product_category_id,purchase_price_net,retail_price_gross,vat_rate,size_label,color_text,target_gender,is_active,is_service_material,is_retail,is_cleaning,is_hospitality,is_merchandise) VALUES($1::text,$2::text,$3::text,$4::text,$5::text,$6::uuid,$7::uuid,$8::numeric,$9::numeric,$10::numeric,$11::text,$12::text,$13::text,COALESCE($14::boolean,true),COALESCE($15::boolean,false),COALESCE($16::boolean,true),COALESCE($17::boolean,false),COALESCE($18::boolean,false),COALESCE($19::boolean,false)) RETURNING *`,[String(b.name).trim(),b.internal_code??null,b.barcode??null,b.brand??null,b.line_name??null,b.product_group_id||null,b.product_category_id||null,b.purchase_price_net??null,b.retail_price_gross??null,b.vat_rate??null,b.size_label??null,b.color_text??null,b.target_gender??null,b.is_active,b.is_service_material,b.is_retail,b.is_cleaning,b.is_hospitality,b.is_merchandise]);res.status(201).json(mapRowToProduct(rows[0]));}catch(err){console.error(err);res.status(500).json({error:'Nem sikerült létrehozni a terméket.'});}});
 
