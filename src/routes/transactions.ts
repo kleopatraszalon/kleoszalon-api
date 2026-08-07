@@ -6,9 +6,9 @@ import cashierRouter from "./cashier";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
+import auditLogRouter from "./auditLog";
 
 const router = express.Router();
-
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
 router.use("/inventory", inventoryRouter);
 router.use("/ai-support", aiSupportRouter);
@@ -18,5 +18,5 @@ router.use("/cashier/management-summary", managementSummaryRouter);
 router.use("/notifications", notificationsRouter);
 router.use("/management", managementSummaryRouter);
 router.use("/dashboard-settings", dashboardSettingsRouter);
-
+router.use("/audit", auditLogRouter);
 export default router;
