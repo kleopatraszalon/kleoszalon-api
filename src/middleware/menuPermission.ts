@@ -50,10 +50,7 @@ async function checkMenuPermission(
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
 
     const menu = await db.query(`SELECT id FROM menus WHERE code=$1 AND COALESCE(is_active,true)=true LIMIT 1`, [menuCode]);
-    if (!menu.rows[0]) {
-      // A menümigráció hiánya ne tegye működésképtelenné a régi modult.
-      return next();
-    }
+    if (!menu.rows[0]) return next();
 
     const rows = await db.query(
       `SELECT role_key, ${action} AS allowed, scope_type
@@ -76,31 +73,35 @@ async function checkMenuPermission(
     req.accessScope = allowed
       .map((r: any) => String(r.scope_type || "own_location"))
       .sort((a: string, b: string) => (rank[b] ?? 0) - (rank[a] ?? 0))[0] || "own_location";
-    next();
+    return next();
   } catch (error: any) {
-    // Hiányzó jogosultsági migrációnál kompatibilisen továbbengedünk.
     if (["42P01", "42703"].includes(String(error?.code || ""))) return next();
-    next(error);
+    return next(error);
   }
 }
 
-/**
- * Szerveroldali műveleti jogosultság-ellenőrzés menükód alapján.
- * - admin: teljes hozzáférés
- * - ha a menühöz az adott szerepkörökre még nincs explicit szabály, a régi
- *   működés marad érvényben (backward compatibility)
- * - ha van szabály, legalább egy szerepkörnek engedélyeznie kell a műveletet
- * A kiszámolt legerősebb hatókört req.accessScope értéken továbbadjuk.
- */
 export function requireMenuPermission(menuCode: string, action: MenuAction = "can_view") {
   return (req: AuthRequest & { accessScope?: string }, res: Response, next: NextFunction) => {
-    // A menü guard önállóan is elvégzi a hitelesítést, ezért nem függ attól,
-    // hogy a szülő routeren külön requireAuth fut-e.
     if (!req.user) {
       return requireAuth(req, res, () => {
         void checkMenuPermission(menuCode, action, req, res, next);
       });
     }
     void checkMenuPermission(menuCode, action, req, res, next);
+  };
+}
+
+/** Egységes CRUD-védelem egy teljes routerre. */
+export function requireMenuPermissionByMethod(menuCode: string) {
+  return (req: AuthRequest & { accessScope?: string }, res: Response, next: NextFunction) => {
+    let action: MenuAction = "can_view";
+    switch (String(req.method || "GET").toUpperCase()) {
+      case "POST": action = "can_create"; break;
+      case "PUT":
+      case "PATCH": action = "can_edit"; break;
+      case "DELETE": action = "can_delete"; break;
+      default: action = "can_view";
+    }
+    return requireMenuPermission(menuCode, action)(req, res, next);
   };
 }
