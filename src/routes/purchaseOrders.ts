@@ -8,6 +8,48 @@ router.use(requireFeature("inventory"));
 const num = (v: unknown) => Number(v || 0);
 const money = (v: unknown) => Math.round(num(v) * 100) / 100;
 
+async function createOrder(req: any, res: any, next: any) {
+  const client = await db.connect();
+  try {
+    const supplierName = String(req.body?.supplier_name || "").trim();
+    const locationId = req.body?.location_id == null || req.body.location_id === "" ? null : String(req.body.location_id);
+    const expectedAt = req.body?.expected_at || null;
+    const note = String(req.body?.note || "").trim() || null;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!supplierName) return res.status(400).json({ message: "A beszállító megadása kötelező." });
+    if (!items.length) return res.status(400).json({ message: "Legalább egy rendelési tétel szükséges." });
+
+    await client.query("BEGIN");
+    const createdBy = req.user?.email || String(req.user?.id || "");
+    const order = await client.query(
+      `INSERT INTO purchase_orders (location_id,supplier_name,status,expected_at,note,created_by)
+       VALUES ($1,$2,'draft',$3,$4,$5) RETURNING *`,
+      [locationId, supplierName, expectedAt, note, createdBy]
+    );
+
+    for (const item of items) {
+      const productId = String(item?.product_id || "");
+      const qty = num(item?.ordered_quantity);
+      const unitCost = money(item?.unit_cost);
+      if (!productId || !(qty > 0) || unitCost < 0) throw new Error("Érvénytelen rendelési tétel.");
+      await client.query(
+        `INSERT INTO purchase_order_items (purchase_order_id,product_id,ordered_quantity,unit_cost,note)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [order.rows[0].id, productId, qty, unitCost, item?.note || null]
+      );
+    }
+
+    await client.query("COMMIT");
+    return res.status(201).json(order.rows[0]);
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    if (String(err?.message || "").startsWith("Érvénytelen rendelési")) return res.status(400).json({ message: err.message });
+    return next(err);
+  } finally {
+    client.release();
+  }
+}
+
 router.get("/suggestions", async (req, res, next) => {
   try {
     const locationId = String(req.query.location_id || "").trim() || null;
@@ -64,48 +106,14 @@ router.get("/orders/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post("/orders", async (req: any, res, next) => {
-  const client = await db.connect();
-  try {
-    const supplierName = String(req.body?.supplier_name || "").trim();
-    const locationId = req.body?.location_id == null || req.body.location_id === "" ? null : String(req.body.location_id);
-    const expectedAt = req.body?.expected_at || null;
-    const note = String(req.body?.note || "").trim() || null;
-    const items = Array.isArray(req.body?.items) ? req.body.items : [];
-    if (!supplierName) return res.status(400).json({ message: "A beszállító megadása kötelező." });
-    if (!items.length) return res.status(400).json({ message: "Legalább egy rendelési tétel szükséges." });
-    await client.query("BEGIN");
-    const createdBy = req.user?.email || String(req.user?.id || "");
-    const order = await client.query(
-      `INSERT INTO purchase_orders (location_id,supplier_name,status,expected_at,note,created_by)
-       VALUES ($1,$2,'draft',$3,$4,$5) RETURNING *`,
-      [locationId, supplierName, expectedAt, note, createdBy]
-    );
-    for (const item of items) {
-      const productId = String(item?.product_id || "");
-      const qty = num(item?.ordered_quantity);
-      const unitCost = money(item?.unit_cost);
-      if (!productId || !(qty > 0) || unitCost < 0) throw new Error("Érvénytelen rendelési tétel.");
-      await client.query(
-        `INSERT INTO purchase_order_items (purchase_order_id,product_id,ordered_quantity,unit_cost,note)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [order.rows[0].id, productId, qty, unitCost, item?.note || null]
-      );
-    }
-    await client.query("COMMIT");
-    res.status(201).json(order.rows[0]);
-  } catch (err: any) {
-    await client.query("ROLLBACK");
-    if (String(err?.message || "").startsWith("Érvénytelen rendelési")) return res.status(400).json({ message: err.message });
-    next(err);
-  } finally { client.release(); }
-});
+router.post("/orders", createOrder);
 
 router.post("/orders/from-suggestion", async (req: any, res, next) => {
   try {
     const balanceId = String(req.body?.balance_id || "");
     const supplierName = String(req.body?.supplier_name || "").trim();
     if (!balanceId || !supplierName) return res.status(400).json({ message: "balance_id és supplier_name szükséges." });
+
     const suggestion = await db.query(
       `SELECT b.product_id, b.location_id, COALESCE(b.unit_cost,0)::numeric AS unit_cost,
               GREATEST(COALESCE(b.min_quantity,0)*2-COALESCE(b.quantity,0),0)::numeric AS suggested_quantity
@@ -113,6 +121,7 @@ router.post("/orders/from-suggestion", async (req: any, res, next) => {
     );
     const s = suggestion.rows[0];
     if (!s || num(s.suggested_quantity) <= 0) return res.status(400).json({ message: "Ehhez a készlethez nincs utánrendelési igény." });
+
     req.body = {
       location_id: s.location_id,
       supplier_name: supplierName,
@@ -120,7 +129,8 @@ router.post("/orders/from-suggestion", async (req: any, res, next) => {
       note: req.body?.note || "Automatikus utánrendelési javaslatból",
       items: [{ product_id: s.product_id, ordered_quantity: num(s.suggested_quantity), unit_cost: num(s.unit_cost) }],
     };
-    return router.handle({ ...req, url: "/orders", method: "POST" }, res, next);
+
+    return createOrder(req, res, next);
   } catch (err) { next(err); }
 });
 
@@ -153,6 +163,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     if (!order) { await client.query("ROLLBACK"); return res.status(404).json({ message: "A rendelés nem található." }); }
     if (["received","cancelled"].includes(order.status)) { await client.query("ROLLBACK"); return res.status(409).json({ message: "Ez a rendelés már nem bevételezhető." }); }
     const actor = req.user?.email || String(req.user?.id || "");
+
     for (const x of incoming) {
       const itemId = String(x?.item_id || "");
       const receiveQty = num(x?.received_quantity);
@@ -182,6 +193,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
         [item.product_id,order.location_id,receiveQty,newQty,newCost,money(newQty*newCost),`Beszerzési rendelés #${order.id}`,actor]
       );
     }
+
     const totals = await client.query(
       `SELECT BOOL_AND(received_quantity >= ordered_quantity) AS all_received,
               BOOL_OR(received_quantity > 0) AS any_received
