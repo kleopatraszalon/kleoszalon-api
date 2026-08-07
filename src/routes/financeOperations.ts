@@ -11,7 +11,6 @@ const money = (value: unknown) => {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 };
-
 const actor = (req: AuthRequest) => req.user?.email || String(req.user?.id || "");
 
 router.get("/overview", async (req: AuthRequest, res, next) => {
@@ -20,158 +19,36 @@ router.get("/overview", async (req: AuthRequest, res, next) => {
     const params: any[] = [];
     let locationFilter = "";
     if (locationId) { params.push(locationId); locationFilter = `WHERE (a.location_id::text=$1 OR a.location_id IS NULL)`; }
-    const accounts = await db.query(
-      `SELECT a.*,
-              a.opening_balance + COALESCE(SUM(CASE WHEN m.direction='income' THEN m.amount ELSE -m.amount END),0) AS current_balance
-       FROM financial_accounts a
-       LEFT JOIN financial_movements m ON m.account_id=a.id
-       ${locationFilter}
-       GROUP BY a.id ORDER BY a.account_type,a.name`, params);
+    const accounts = await db.query(`SELECT a.*,a.opening_balance + COALESCE(SUM(CASE WHEN m.direction='income' THEN m.amount ELSE -m.amount END),0) AS current_balance FROM financial_accounts a LEFT JOIN financial_movements m ON m.account_id=a.id ${locationFilter} GROUP BY a.id ORDER BY a.account_type,a.name`, params);
     const movementParams: any[] = [];
     let movementWhere = "WHERE m.occurred_at >= date_trunc('day',now())";
     if (locationId) { movementParams.push(locationId); movementWhere += ` AND (m.location_id::text=$1 OR m.location_id IS NULL)`; }
-    const totals = await db.query(
-      `SELECT COALESCE(SUM(amount) FILTER(WHERE direction='income'),0)::numeric income,
-              COALESCE(SUM(amount) FILTER(WHERE direction='expense'),0)::numeric expense,
-              COUNT(*)::int movement_count
-       FROM financial_movements m ${movementWhere}`, movementParams);
-    const refunds = await db.query(
-      `SELECT COALESCE(SUM(amount),0)::numeric total,COUNT(*)::int count
-       FROM financial_refunds
-       WHERE refunded_at>=date_trunc('day',now())
-         AND ($1::text='' OR location_id::text=$1)`, [locationId]);
-    res.json({ accounts: accounts.rows, today: totals.rows[0], refunds_today: refunds.rows[0] });
+    const totals = await db.query(`SELECT COALESCE(SUM(amount) FILTER(WHERE direction='income'),0)::numeric income,COALESCE(SUM(amount) FILTER(WHERE direction='expense'),0)::numeric expense,COUNT(*)::int movement_count FROM financial_movements m ${movementWhere}`, movementParams);
+    const refunds = await db.query(`SELECT COALESCE(SUM(amount),0)::numeric total,COUNT(*)::int count FROM financial_refunds WHERE refunded_at>=date_trunc('day',now()) AND ($1::text='' OR location_id::text=$1)`, [locationId]);
+    const invoices = await db.query(`SELECT COUNT(*) FILTER(WHERE status IN ('approved','overdue'))::int open_count,COALESCE(SUM(gross_total) FILTER(WHERE status IN ('approved','overdue')),0)::numeric open_total,COUNT(*) FILTER(WHERE due_date < CURRENT_DATE AND status='approved')::int overdue_count FROM finance_invoices WHERE ($1::text='' OR location_id::text=$1 OR location_id IS NULL)`, [locationId]).catch(()=>({rows:[{open_count:0,open_total:0,overdue_count:0}]} as any));
+    res.json({ accounts: accounts.rows, today: totals.rows[0], refunds_today: refunds.rows[0], invoices: invoices.rows[0] });
   } catch (err) { next(err); }
 });
 
-router.get("/accounts", async (req: AuthRequest, res, next) => {
-  try {
-    const locationId = String(req.query.location_id || req.user?.location_id || "").trim();
-    const { rows } = await db.query(
-      `SELECT a.*,
-              a.opening_balance + COALESCE(SUM(CASE WHEN m.direction='income' THEN m.amount ELSE -m.amount END),0) AS current_balance
-       FROM financial_accounts a
-       LEFT JOIN financial_movements m ON m.account_id=a.id
-       WHERE ($1::text='' OR a.location_id::text=$1 OR a.location_id IS NULL)
-       GROUP BY a.id ORDER BY a.active DESC,a.account_type,a.name`, [locationId]);
-    res.json(rows);
-  } catch (err) { next(err); }
-});
+router.get("/accounts", async (req: AuthRequest, res, next) => { try { const locationId=String(req.query.location_id||req.user?.location_id||"").trim(); const {rows}=await db.query(`SELECT a.*,a.opening_balance + COALESCE(SUM(CASE WHEN m.direction='income' THEN m.amount ELSE -m.amount END),0) AS current_balance FROM financial_accounts a LEFT JOIN financial_movements m ON m.account_id=a.id WHERE ($1::text='' OR a.location_id::text=$1 OR a.location_id IS NULL) GROUP BY a.id ORDER BY a.active DESC,a.account_type,a.name`,[locationId]);res.json(rows);}catch(err){next(err);} });
+router.post("/accounts", async (req: AuthRequest, res, next) => { try { const name=String(req.body?.name||"").trim(),type=String(req.body?.account_type||"cash").trim(),locationId=String(req.body?.location_id||req.user?.location_id||"").trim()||null;if(!name)return res.status(400).json({message:"A pénzügyi számla/pénztár neve kötelező."});const {rows}=await db.query(`INSERT INTO financial_accounts(location_id,name,account_type,currency,opening_balance,note) VALUES($1::uuid,$2,$3,$4,$5,$6) RETURNING *`,[locationId,name,type,String(req.body?.currency||"HUF"),money(req.body?.opening_balance),req.body?.note||null]);res.status(201).json(rows[0]);}catch(err){next(err);} });
+router.get("/categories", async (req: AuthRequest, res, next) => { try { const locationId=String(req.query.location_id||req.user?.location_id||"").trim();const {rows}=await db.query(`SELECT * FROM financial_categories WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY direction,name`,[locationId]);res.json(rows);}catch(err){next(err);} });
+router.post("/categories", async (req: AuthRequest, res, next) => { try { const name=String(req.body?.name||"").trim(),direction=String(req.body?.direction||"both").trim(),locationId=String(req.body?.location_id||req.user?.location_id||"").trim()||null;if(!name)return res.status(400).json({message:"A kategória neve kötelező."});const {rows}=await db.query(`INSERT INTO financial_categories(location_id,direction,name,code) VALUES($1::uuid,$2,$3,$4) RETURNING *`,[locationId,direction,name,req.body?.code||null]);res.status(201).json(rows[0]);}catch(err){next(err);} });
+router.get("/movements", async (req: AuthRequest, res, next) => { try { const locationId=String(req.query.location_id||req.user?.location_id||"").trim(),from=String(req.query.from||"").trim(),to=String(req.query.to||"").trim(),accountId=String(req.query.account_id||"").trim();const params:any[]=[];let where="WHERE 1=1";if(locationId){params.push(locationId);where+=` AND (m.location_id::text=$${params.length} OR m.location_id IS NULL)`;}if(accountId){params.push(accountId);where+=` AND m.account_id::text=$${params.length}`;}if(from){params.push(from);where+=` AND m.occurred_at >= $${params.length}::date`;}if(to){params.push(to);where+=` AND m.occurred_at < ($${params.length}::date + interval '1 day')`;}const {rows}=await db.query(`SELECT m.*,a.name account_name,c.name category_name FROM financial_movements m JOIN financial_accounts a ON a.id=m.account_id LEFT JOIN financial_categories c ON c.id=m.category_id ${where} ORDER BY m.occurred_at DESC,m.created_at DESC LIMIT 500`,params);res.json(rows);}catch(err){next(err);} });
+router.post("/movements", async (req: AuthRequest, res, next) => { try { const accountId=String(req.body?.account_id||"").trim(),direction=String(req.body?.direction||"").trim(),amount=money(req.body?.amount);if(!accountId||!["income","expense"].includes(direction)||!(amount>0))return res.status(400).json({message:"Számla, irány és pozitív összeg szükséges."});const account=await db.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true`,[accountId]);if(!account.rows[0])return res.status(404).json({message:"A pénzügyi számla nem található."});const {rows}=await db.query(`INSERT INTO financial_movements(location_id,account_id,category_id,direction,amount,occurred_at,reference_type,reference_id,counterparty,note,created_by) VALUES($1,$2::uuid,$3::uuid,$4,$5,COALESCE($6::timestamptz,now()),$7,$8,$9,$10,$11) RETURNING *`,[account.rows[0].location_id,accountId,req.body?.category_id||null,direction,amount,req.body?.occurred_at||null,req.body?.reference_type||"manual",req.body?.reference_id||null,req.body?.counterparty||null,req.body?.note||null,actor(req)]);res.status(201).json(rows[0]);}catch(err){next(err);} });
 
-router.post("/accounts", async (req: AuthRequest, res, next) => {
-  try {
-    const name = String(req.body?.name || "").trim();
-    const type = String(req.body?.account_type || "cash").trim();
-    const locationId = String(req.body?.location_id || req.user?.location_id || "").trim() || null;
-    if (!name) return res.status(400).json({ message: "A pénzügyi számla/pénztár neve kötelező." });
-    const { rows } = await db.query(
-      `INSERT INTO financial_accounts(location_id,name,account_type,currency,opening_balance,note)
-       VALUES($1::uuid,$2,$3,$4,$5,$6) RETURNING *`,
-      [locationId,name,type,String(req.body?.currency||"HUF"),money(req.body?.opening_balance),req.body?.note||null]);
-    res.status(201).json(rows[0]);
-  } catch (err) { next(err); }
-});
+router.post("/transfers", async (req: AuthRequest, res, next) => { const client=await db.connect();try{const source=String(req.body?.source_account_id||"").trim(),destination=String(req.body?.destination_account_id||"").trim(),amount=money(req.body?.amount);if(!source||!destination||source===destination||!(amount>0))return res.status(400).json({message:"Két különböző számla és pozitív összeg szükséges."});await client.query("BEGIN");const accounts=await client.query(`SELECT * FROM financial_accounts WHERE id=ANY($1::uuid[]) AND active=true`,[[source,destination]]);if(accounts.rows.length!==2)throw new Error("Egy vagy több pénzügyi számla nem található.");const sourceAccount=accounts.rows.find((x:any)=>String(x.id)===source),destAccount=accounts.rows.find((x:any)=>String(x.id)===destination);const out=await client.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,note,created_by) VALUES($1,$2,'expense',$3,COALESCE($4::timestamptz,now()),'transfer',$5,$6) RETURNING id`,[sourceAccount.location_id,source,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req)]);const inc=await client.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,note,created_by) VALUES($1,$2,'income',$3,COALESCE($4::timestamptz,now()),'transfer',$5,$6) RETURNING id`,[destAccount.location_id,destination,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req)]);const transfer=await client.query(`INSERT INTO financial_transfers(location_id,source_account_id,destination_account_id,amount,transferred_at,note,created_by,source_movement_id,destination_movement_id) VALUES($1,$2,$3,$4,COALESCE($5::timestamptz,now()),$6,$7,$8,$9) RETURNING *`,[sourceAccount.location_id||destAccount.location_id,source,destination,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req),out.rows[0].id,inc.rows[0].id]);await client.query("COMMIT");res.status(201).json(transfer.rows[0]);}catch(err:any){await client.query("ROLLBACK");if(String(err?.message).includes("nem található"))return res.status(400).json({message:err.message});next(err);}finally{client.release();} });
+router.post("/refunds", async (req: AuthRequest, res, next) => { const client=await db.connect();try{const accountId=String(req.body?.account_id||"").trim(),amount=money(req.body?.amount),reason=String(req.body?.reason||"").trim(),workOrderId=String(req.body?.work_order_id||"").trim()||null;if(!accountId||!(amount>0)||!reason)return res.status(400).json({message:"Számla, pozitív összeg és indoklás szükséges."});await client.query("BEGIN");const account=await client.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true`,[accountId]);if(!account.rows[0])throw new Error("A pénzügyi számla nem található.");const category=await client.query(`SELECT id FROM financial_categories WHERE system_key='refund_expense' LIMIT 1`);const movement=await client.query(`INSERT INTO financial_movements(location_id,account_id,category_id,direction,amount,occurred_at,reference_type,reference_id,note,created_by) VALUES($1,$2,$3,'expense',$4,now(),'refund',$5,$6,$7) RETURNING id`,[account.rows[0].location_id,accountId,category.rows[0]?.id||null,amount,workOrderId,reason,actor(req)]);const refund=await client.query(`INSERT INTO financial_refunds(location_id,work_order_id,account_id,amount,reason,status,created_by,movement_id) VALUES($1,$2,$3,$4,$5,'completed',$6,$7) RETURNING *`,[account.rows[0].location_id,workOrderId,accountId,amount,reason,actor(req),movement.rows[0].id]);await client.query("COMMIT");res.status(201).json(refund.rows[0]);}catch(err:any){await client.query("ROLLBACK");if(String(err?.message).includes("nem található"))return res.status(400).json({message:err.message});next(err);}finally{client.release();} });
+router.get("/transfers", async (_req, res, next) => { try{const {rows}=await db.query(`SELECT t.*,s.name source_account_name,d.name destination_account_name FROM financial_transfers t JOIN financial_accounts s ON s.id=t.source_account_id JOIN financial_accounts d ON d.id=t.destination_account_id ORDER BY t.transferred_at DESC LIMIT 200`);res.json(rows);}catch(err){next(err);} });
+router.get("/refunds", async (_req, res, next) => { try{const {rows}=await db.query(`SELECT r.*,a.name account_name FROM financial_refunds r JOIN financial_accounts a ON a.id=r.account_id ORDER BY r.refunded_at DESC LIMIT 200`);res.json(rows);}catch(err){next(err);} });
 
-router.get("/categories", async (req: AuthRequest, res, next) => {
-  try {
-    const locationId = String(req.query.location_id || req.user?.location_id || "").trim();
-    const { rows } = await db.query(
-      `SELECT * FROM financial_categories
-       WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL)
-       ORDER BY direction,name`, [locationId]);
-    res.json(rows);
-  } catch (err) { next(err); }
-});
-
-router.post("/categories", async (req: AuthRequest, res, next) => {
-  try {
-    const name = String(req.body?.name||"").trim();
-    const direction = String(req.body?.direction||"both").trim();
-    const locationId = String(req.body?.location_id || req.user?.location_id || "").trim() || null;
-    if (!name) return res.status(400).json({ message:"A kategória neve kötelező." });
-    const { rows } = await db.query(
-      `INSERT INTO financial_categories(location_id,direction,name,code) VALUES($1::uuid,$2,$3,$4) RETURNING *`,
-      [locationId,direction,name,req.body?.code||null]);
-    res.status(201).json(rows[0]);
-  } catch (err) { next(err); }
-});
-
-router.get("/movements", async (req: AuthRequest, res, next) => {
-  try {
-    const locationId = String(req.query.location_id || req.user?.location_id || "").trim();
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
-    const accountId = String(req.query.account_id || "").trim();
-    const params:any[]=[]; let where="WHERE 1=1";
-    if(locationId){params.push(locationId);where+=` AND (m.location_id::text=$${params.length} OR m.location_id IS NULL)`;}
-    if(accountId){params.push(accountId);where+=` AND m.account_id::text=$${params.length}`;}
-    if(from){params.push(from);where+=` AND m.occurred_at >= $${params.length}::date`;}
-    if(to){params.push(to);where+=` AND m.occurred_at < ($${params.length}::date + interval '1 day')`;}
-    const { rows } = await db.query(
-      `SELECT m.*,a.name account_name,c.name category_name
-       FROM financial_movements m
-       JOIN financial_accounts a ON a.id=m.account_id
-       LEFT JOIN financial_categories c ON c.id=m.category_id
-       ${where} ORDER BY m.occurred_at DESC,m.created_at DESC LIMIT 500`, params);
-    res.json(rows);
-  } catch (err) { next(err); }
-});
-
-router.post("/movements", async (req: AuthRequest, res, next) => {
-  try {
-    const accountId=String(req.body?.account_id||"").trim();
-    const direction=String(req.body?.direction||"").trim();
-    const amount=money(req.body?.amount);
-    if(!accountId||!["income","expense"].includes(direction)||!(amount>0)) return res.status(400).json({message:"Számla, irány és pozitív összeg szükséges."});
-    const account=await db.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true`,[accountId]);
-    if(!account.rows[0]) return res.status(404).json({message:"A pénzügyi számla nem található."});
-    const { rows }=await db.query(
-      `INSERT INTO financial_movements(location_id,account_id,category_id,direction,amount,occurred_at,reference_type,reference_id,counterparty,note,created_by)
-       VALUES($1,$2::uuid,$3::uuid,$4,$5,COALESCE($6::timestamptz,now()),$7,$8,$9,$10,$11) RETURNING *`,
-      [account.rows[0].location_id,accountId,req.body?.category_id||null,direction,amount,req.body?.occurred_at||null,req.body?.reference_type||"manual",req.body?.reference_id||null,req.body?.counterparty||null,req.body?.note||null,actor(req)]);
-    res.status(201).json(rows[0]);
-  } catch (err) { next(err); }
-});
-
-router.post("/transfers", async (req: AuthRequest, res, next) => {
-  const client=await db.connect();
-  try {
-    const source=String(req.body?.source_account_id||"").trim(),destination=String(req.body?.destination_account_id||"").trim(),amount=money(req.body?.amount);
-    if(!source||!destination||source===destination||!(amount>0)) return res.status(400).json({message:"Két különböző számla és pozitív összeg szükséges."});
-    await client.query("BEGIN");
-    const accounts=await client.query(`SELECT * FROM financial_accounts WHERE id=ANY($1::uuid[]) AND active=true`,[[source,destination]]);
-    if(accounts.rows.length!==2) throw new Error("Egy vagy több pénzügyi számla nem található.");
-    const sourceAccount=accounts.rows.find((x:any)=>String(x.id)===source),destAccount=accounts.rows.find((x:any)=>String(x.id)===destination);
-    const out=await client.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,note,created_by) VALUES($1,$2,'expense',$3,COALESCE($4::timestamptz,now()),'transfer',$5,$6) RETURNING id`,[sourceAccount.location_id,source,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req)]);
-    const inc=await client.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,note,created_by) VALUES($1,$2,'income',$3,COALESCE($4::timestamptz,now()),'transfer',$5,$6) RETURNING id`,[destAccount.location_id,destination,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req)]);
-    const transfer=await client.query(`INSERT INTO financial_transfers(location_id,source_account_id,destination_account_id,amount,transferred_at,note,created_by,source_movement_id,destination_movement_id) VALUES($1,$2,$3,$4,COALESCE($5::timestamptz,now()),$6,$7,$8,$9) RETURNING *`,[sourceAccount.location_id||destAccount.location_id,source,destination,amount,req.body?.transferred_at||null,req.body?.note||null,actor(req),out.rows[0].id,inc.rows[0].id]);
-    await client.query("COMMIT");res.status(201).json(transfer.rows[0]);
-  } catch(err:any){await client.query("ROLLBACK"); if(String(err?.message).includes("nem található")) return res.status(400).json({message:err.message}); next(err);} finally{client.release();}
-});
-
-router.post("/refunds", async (req: AuthRequest, res, next) => {
-  const client=await db.connect();
-  try {
-    const accountId=String(req.body?.account_id||"").trim(),amount=money(req.body?.amount),reason=String(req.body?.reason||"").trim(),workOrderId=String(req.body?.work_order_id||"").trim()||null;
-    if(!accountId||!(amount>0)||!reason) return res.status(400).json({message:"Számla, pozitív összeg és indoklás szükséges."});
-    await client.query("BEGIN");
-    const account=await client.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true`,[accountId]);
-    if(!account.rows[0]) throw new Error("A pénzügyi számla nem található.");
-    const category=await client.query(`SELECT id FROM financial_categories WHERE system_key='refund_expense' LIMIT 1`);
-    const movement=await client.query(`INSERT INTO financial_movements(location_id,account_id,category_id,direction,amount,occurred_at,reference_type,reference_id,note,created_by) VALUES($1,$2,$3,'expense',$4,now(),'refund',$5,$6,$7) RETURNING id`,[account.rows[0].location_id,accountId,category.rows[0]?.id||null,amount,workOrderId,reason,actor(req)]);
-    const refund=await client.query(`INSERT INTO financial_refunds(location_id,work_order_id,account_id,amount,reason,status,created_by,movement_id) VALUES($1,$2,$3,$4,$5,'completed',$6,$7) RETURNING *`,[account.rows[0].location_id,workOrderId,accountId,amount,reason,actor(req),movement.rows[0].id]);
-    await client.query("COMMIT"); res.status(201).json(refund.rows[0]);
-  } catch(err:any){await client.query("ROLLBACK");if(String(err?.message).includes("nem található")) return res.status(400).json({message:err.message});next(err);} finally{client.release();}
-});
-
-router.get("/transfers", async (req: AuthRequest, res, next) => {
-  try { const {rows}=await db.query(`SELECT t.*,s.name source_account_name,d.name destination_account_name FROM financial_transfers t JOIN financial_accounts s ON s.id=t.source_account_id JOIN financial_accounts d ON d.id=t.destination_account_id ORDER BY t.transferred_at DESC LIMIT 200`);res.json(rows); }
-  catch(err){next(err);}
-});
-
-router.get("/refunds", async (req: AuthRequest, res, next) => {
-  try { const {rows}=await db.query(`SELECT r.*,a.name account_name FROM financial_refunds r JOIN financial_accounts a ON a.id=r.account_id ORDER BY r.refunded_at DESC LIMIT 200`);res.json(rows); }
-  catch(err){next(err);}
-});
+// ===== PÉNZÜGY 2.0 - SZÁMLÁK ÉS KÖNYVELÉSI LÁNC =====
+router.get("/invoices", async (req:AuthRequest,res,next)=>{try{const locationId=String(req.query.location_id||req.user?.location_id||"").trim();const direction=String(req.query.direction||"").trim();const status=String(req.query.status||"").trim();const {rows}=await db.query(`SELECT i.*,a.name payment_account_name FROM finance_invoices i LEFT JOIN financial_accounts a ON a.id=i.payment_account_id WHERE ($1::text='' OR i.location_id::text=$1 OR i.location_id IS NULL) AND ($2::text='' OR i.direction=$2) AND ($3::text='' OR i.status=$3) ORDER BY i.issue_date DESC,i.created_at DESC LIMIT 500`,[locationId,direction,status]);res.json(rows);}catch(err){next(err);}});
+router.post("/invoices", async (req:AuthRequest,res,next)=>{try{const b=req.body||{};const direction=String(b.direction||"");if(!['incoming','outgoing'].includes(direction))return res.status(400).json({message:'A számla iránya incoming vagy outgoing lehet.'});const gross=money(b.gross_total),net=money(b.net_total),vat=money(b.vat_total);if(!(gross>0))return res.status(400).json({message:'A bruttó összeg legyen pozitív.'});const locationId=String(b.location_id||req.user?.location_id||'').trim()||null;const {rows}=await db.query(`INSERT INTO finance_invoices(location_id,direction,invoice_no,partner_name,partner_tax_no,issue_date,performance_date,due_date,currency,net_total,vat_total,gross_total,status,work_order_id,purchase_order_id,note,created_by) VALUES($1::uuid,$2,$3,$4,$5,COALESCE($6::date,CURRENT_DATE),COALESCE($7::date,$6::date,CURRENT_DATE),COALESCE($8::date,$6::date,CURRENT_DATE),COALESCE($9,'HUF'),$10,$11,$12,'draft',$13,$14,$15,$16) RETURNING *`,[locationId,direction,String(b.invoice_no||'').trim()||null,String(b.partner_name||'').trim()||null,String(b.partner_tax_no||'').trim()||null,b.issue_date||null,b.performance_date||null,b.due_date||null,b.currency||'HUF',net,vat,gross,b.work_order_id||null,b.purchase_order_id||null,b.note||null,actor(req)]);res.status(201).json(rows[0]);}catch(err){next(err);}});
+router.post("/invoices/:id/approve", async (req:AuthRequest,res,next)=>{try{const {rows}=await db.query(`UPDATE finance_invoices SET status='approved',approved_at=now(),approved_by=$2,updated_at=now() WHERE id=$1::uuid AND status='draft' RETURNING *`,[req.params.id,actor(req)]);if(!rows[0])return res.status(409).json({message:'Csak piszkozat számla hagyható jóvá.'});res.json(rows[0]);}catch(err){next(err);}});
+router.post("/invoices/:id/pay", async (req:AuthRequest,res,next)=>{const client=await db.connect();try{await client.query('BEGIN');const invRes=await client.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid FOR UPDATE`,[req.params.id]);const inv=invRes.rows[0];if(!inv)throw Object.assign(new Error('Számla nem található.'),{status:404});if(!['approved','overdue'].includes(inv.status))throw Object.assign(new Error('Csak jóváhagyott vagy lejárt számla fizethető.'),{status:409});const accountId=String(req.body?.account_id||inv.payment_account_id||'').trim();if(!accountId)throw Object.assign(new Error('Válassz pénzügyi számlát/pénztárt.'),{status:400});const account=await client.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true`,[accountId]);if(!account.rows[0])throw Object.assign(new Error('A pénzügyi számla nem található.'),{status:404});const direction=inv.direction==='incoming'?'expense':'income';const movement=await client.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,reference_id,counterparty,note,created_by) VALUES($1,$2,$3,$4,COALESCE($5::timestamptz,now()),'invoice',$6,$7,$8,$9) RETURNING *`,[inv.location_id,accountId,direction,inv.gross_total,req.body?.paid_at||null,inv.id,inv.partner_name,`Számla ${inv.invoice_no||inv.id}`,actor(req)]);const {rows}=await client.query(`UPDATE finance_invoices SET status='paid',paid_at=COALESCE($2::timestamptz,now()),payment_account_id=$3::uuid,payment_movement_id=$4::uuid,updated_at=now() WHERE id=$1::uuid RETURNING *`,[inv.id,req.body?.paid_at||null,accountId,movement.rows[0].id]);await client.query('COMMIT');res.json(rows[0]);}catch(err:any){await client.query('ROLLBACK');if(err?.status)return res.status(err.status).json({message:err.message});next(err);}finally{client.release();}});
+router.post("/invoices/:id/cancel", async (req:AuthRequest,res,next)=>{try{const reason=String(req.body?.reason||'').trim();if(!reason)return res.status(400).json({message:'A sztornó indoklása kötelező.'});const {rows}=await db.query(`UPDATE finance_invoices SET status='cancelled',cancelled_at=now(),cancel_reason=$2,updated_at=now() WHERE id=$1::uuid AND status<>'paid' RETURNING *`,[req.params.id,reason]);if(!rows[0])return res.status(409).json({message:'Kifizetett számla nem sztornózható ezen a műveleten keresztül.'});res.json(rows[0]);}catch(err){next(err);}});
+router.post("/invoices/:id/post-to-ledger", async (req:AuthRequest,res,next)=>{const client=await db.connect();try{await client.query('BEGIN');const invRes=await client.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid FOR UPDATE`,[req.params.id]);const inv=invRes.rows[0];if(!inv)throw Object.assign(new Error('Számla nem található.'),{status:404});if(!['approved','paid','overdue'].includes(inv.status))throw Object.assign(new Error('Piszkozat vagy sztornózott számla nem könyvelhető.'),{status:409});if(inv.journal_entry_id)throw Object.assign(new Error('A számla már fel lett adva a főkönyvbe.'),{status:409});const jr=await client.query(`INSERT INTO accounting_journal_entries(location_id,entry_date,document_no,source_type,source_id,description,status,created_by) VALUES($1,$2,$3,'invoice',$4,$5,'posted',$6) RETURNING *`,[inv.location_id,inv.performance_date||inv.issue_date,inv.invoice_no||`INV-${String(inv.id).slice(0,8)}`,inv.id,`${inv.direction==='incoming'?'Bejövő':'Kimenő'} számla - ${inv.partner_name||''}`,actor(req)]);const jid=jr.rows[0].id;const net=n(inv.net_total),vat=n(inv.vat_total),gross=n(inv.gross_total);if(inv.direction==='incoming'){await client.query(`INSERT INTO accounting_journal_lines(journal_entry_id,account_code,account_name,debit,credit) VALUES($1,'5','Költség / ráfordítás',$2,0),($1,'466','Előzetesen felszámított ÁFA',$3,0),($1,'454','Szállítók',0,$4)`,[jid,net,vat,gross]);}else{await client.query(`INSERT INTO accounting_journal_lines(journal_entry_id,account_code,account_name,debit,credit) VALUES($1,'311','Vevők',$2,0),($1,'91','Árbevétel',0,$3),($1,'467','Fizetendő ÁFA',0,$4)`,[jid,gross,net,vat]);}const {rows}=await client.query(`UPDATE finance_invoices SET journal_entry_id=$2::uuid,posted_at=now(),updated_at=now() WHERE id=$1::uuid RETURNING *`,[inv.id,jid]);await client.query('COMMIT');res.json({invoice:rows[0],journal:jr.rows[0]});}catch(err:any){await client.query('ROLLBACK');if(err?.status)return res.status(err.status).json({message:err.message});next(err);}finally{client.release();}});
 
 export default router;
+function n(v:any){const x=Number(v||0);return Number.isFinite(x)?x:0;}
