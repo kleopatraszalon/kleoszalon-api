@@ -4,6 +4,8 @@ import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
 import notificationsRouter from "./notifications";
+import managementSummaryRouter from "./managementSummary";
+import dashboardSettingsRouter from "./dashboardSettings";
 
 const router = express.Router();
 
@@ -13,5 +15,7 @@ router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
 router.use("/cashier", cashierRouter);
 router.use("/notifications", notificationsRouter);
+router.use("/management", managementSummaryRouter);
+router.use("/dashboard-settings", dashboardSettingsRouter);
 
 export default router;
