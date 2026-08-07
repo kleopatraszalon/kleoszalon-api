@@ -7,7 +7,7 @@ router.use(requireAuth);
 
 const n = (value: unknown) => Number(value || 0);
 
-router.get("/summary", async (req: AuthRequest, res, next) => {
+router.get(["/", "/summary"], async (req: AuthRequest, res, next) => {
   try {
     const from = String(req.query.from || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10));
     const to = String(req.query.to || new Date().toISOString().slice(0, 10));
