@@ -22,6 +22,11 @@ function isAdmin(req: AuthRequest): boolean {
   return roleKeys(req.user?.role).map((x) => x.toLowerCase()).includes("admin");
 }
 
+async function bestEffort(label: string, fn: () => Promise<any>) {
+  try { await fn(); }
+  catch (err: any) { console.warn(`⚠️ Menü előkészítés kihagyva (${label}):`, err?.message || err); }
+}
+
 async function ensureTeamImportMenu() {
   await pool.query(`
     INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
@@ -83,10 +88,7 @@ async function ensureCleanMenu() {
     UPDATE menus child SET parent_id=settings.id, is_active=true
     FROM menus settings
     WHERE settings.code='settings'
-      AND child.code IN (
-        'screens.signage','screens.kiosk',
-        'integrations.marketplace','integrations.api','integrations.logs'
-      )
+      AND child.code IN ('screens.signage','screens.kiosk','integrations.marketplace','integrations.api','integrations.logs')
   `);
   await pool.query(`UPDATE menus SET is_active=false WHERE code IN ('screens','integrations')`);
 }
@@ -124,31 +126,49 @@ router.put("/reorder-roots", requireAuth, async (req: AuthRequest, res) => {
 });
 
 router.get("/", requireAuth, async (req: AuthRequest, res) => {
-  try {
-    await ensureVirSpecModules();
-    await ensureTeamImportMenu();
-    await ensureProcurementMenu();
-    await ensureCleanMenu();
+  const roles = roleKeys(req.user?.role).map((x) => x.toLowerCase());
+  const admin = roles.includes("admin");
 
-    const roles = roleKeys(req.user?.role).map((x) => x.toLowerCase());
-    const admin = roles.includes("admin");
-    const { rows } = await pool.query(
-      `SELECT DISTINCT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,
-        COALESCE(p.can_view,$2::boolean) can_view,
-        COALESCE(p.can_create,$2::boolean) can_create,
-        COALESCE(p.can_edit,$2::boolean) can_edit,
-        COALESCE(p.can_delete,$2::boolean) can_delete,
-        COALESCE(p.can_approve,$2::boolean) can_approve,
-        COALESCE(p.can_export,$2::boolean) can_export,
-        COALESCE(p.can_view_financial,$2::boolean) can_view_financial,
-        COALESCE(p.can_manage_permissions,$2::boolean) can_manage_permissions,
-        COALESCE(p.scope_type,CASE WHEN $2 THEN 'all_locations' ELSE 'own_location' END) scope_type
-       FROM menus m
-       LEFT JOIN role_menu_permissions p ON p.menu_id=m.id AND lower(p.role_key)=ANY($1::text[])
-       WHERE COALESCE(m.is_active,true) AND ($2 OR COALESCE(p.can_view,false))
-       ORDER BY m.order_index,m.id`,
-      [roles, admin]
-    );
+  // Fontos: a menü megjelenése nem függhet migrációk sikerétől.
+  await bestEffort("VIR modulok", () => ensureVirSpecModules());
+  await bestEffort("HR import menü", () => ensureTeamImportMenu());
+  await bestEffort("Beszerzés menü", () => ensureProcurementMenu());
+  await bestEffort("menütisztítás", () => ensureCleanMenu());
+
+  try {
+    let rows: any[] = [];
+    try {
+      const result = await pool.query(
+        `SELECT DISTINCT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,
+          COALESCE(p.can_view,$2::boolean) can_view,
+          COALESCE(p.can_create,$2::boolean) can_create,
+          COALESCE(p.can_edit,$2::boolean) can_edit,
+          COALESCE(p.can_delete,$2::boolean) can_delete,
+          COALESCE(p.can_approve,$2::boolean) can_approve,
+          COALESCE(p.can_export,$2::boolean) can_export,
+          COALESCE(p.can_view_financial,$2::boolean) can_view_financial,
+          COALESCE(p.can_manage_permissions,$2::boolean) can_manage_permissions,
+          COALESCE(p.scope_type,CASE WHEN $2 THEN 'all_locations' ELSE 'own_location' END) scope_type
+         FROM menus m
+         LEFT JOIN role_menu_permissions p ON p.menu_id=m.id AND lower(p.role_key)=ANY($1::text[])
+         WHERE COALESCE(m.is_active,true) AND ($2 OR COALESCE(p.can_view,false))
+         ORDER BY m.order_index,m.id`,
+        [roles, admin]
+      );
+      rows = result.rows;
+    } catch (permissionError: any) {
+      console.warn("⚠️ Jogosultságos menülekérdezés hibás:", permissionError?.message || permissionError);
+      if (!admin) throw permissionError;
+      const fallback = await pool.query(
+        `SELECT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,
+                true can_view,true can_create,true can_edit,true can_delete,true can_approve,
+                true can_export,true can_view_financial,true can_manage_permissions,'all_locations'::text scope_type
+         FROM menus m
+         WHERE COALESCE(m.is_active,true)
+         ORDER BY m.order_index,m.id`
+      );
+      rows = fallback.rows;
+    }
 
     const byId = new Map<number, any>();
     rows.forEach((r) => byId.set(Number(r.id), {
@@ -157,11 +177,10 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
       required_role: "all",
       role: "all",
       permissions: {
-        can_view: r.can_view, can_create: r.can_create, can_edit: r.can_edit,
-        can_delete: r.can_delete, can_approve: r.can_approve, can_export: r.can_export,
-        can_view_financial: r.can_view_financial,
-        can_manage_permissions: r.can_manage_permissions,
-        scope_type: r.scope_type,
+        can_view:r.can_view, can_create:r.can_create, can_edit:r.can_edit,
+        can_delete:r.can_delete, can_approve:r.can_approve, can_export:r.can_export,
+        can_view_financial:r.can_view_financial, can_manage_permissions:r.can_manage_permissions,
+        scope_type:r.scope_type,
       },
       submenus: [],
     }));
@@ -173,14 +192,14 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
       else roots.push(item);
     });
     const sort = (items: any[]) => {
-      items.sort((a, b) => (a.order_index || 0) - (b.order_index || 0) || a.id - b.id);
-      items.forEach((x) => sort(x.submenus));
+      items.sort((a,b)=>(a.order_index||0)-(b.order_index||0)||a.id-b.id);
+      items.forEach((x)=>sort(x.submenus));
     };
     sort(roots);
-    res.json(roots);
+    return res.json(roots);
   } catch (err: any) {
     console.error("❌ Jogosultságalapú menühiba:", err?.message || err);
-    res.status(500).json({ error: "A menü betöltése nem sikerült." });
+    return res.status(500).json({ error: "A menü betöltése nem sikerült.", detail: err?.message || String(err) });
   }
 });
 
