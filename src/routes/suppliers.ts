@@ -1,14 +1,15 @@
 import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
+import { requireMenuPermission } from "../middleware/menuPermission";
 
 const router = Router();
-router.use(requireFeature("inventory"));
+router.use(requireFeature("procurement"));
 
 const n = (v: unknown) => Number(v || 0);
 const clean = (v: unknown) => String(v ?? "").trim();
 
-router.get("/", async (req, res, next) => {
+router.get("/", requireMenuPermission("procurement.suppliers","can_view"), async (req, res, next) => {
   try {
     const includeInactive = String(req.query.include_inactive || "") === "1";
     const { rows } = await db.query(
@@ -23,7 +24,7 @@ router.get("/", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post("/", async (req: any, res, next) => {
+router.post("/", requireMenuPermission("procurement.suppliers","can_create"), async (req: any, res, next) => {
   try {
     const name = clean(req.body?.name);
     if (!name) return res.status(400).json({ message: "A beszállító neve kötelező." });
@@ -43,7 +44,7 @@ router.post("/", async (req: any, res, next) => {
   }
 });
 
-router.patch("/:id", async (req, res, next) => {
+router.patch("/:id", requireMenuPermission("procurement.suppliers","can_edit"), async (req, res, next) => {
   try {
     const { rows } = await db.query(
       `UPDATE suppliers SET name=COALESCE(NULLIF($2,''),name),tax_number=$3,email=$4,phone=$5,contact_name=$6,
@@ -59,7 +60,7 @@ router.patch("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get("/:id/products", async (req, res, next) => {
+router.get("/:id/products", requireMenuPermission("procurement.prices","can_view"), async (req, res, next) => {
   try {
     const { rows } = await db.query(
       `SELECT pst.*,p.name AS product_name,p.internal_code,p.brand,
@@ -79,7 +80,7 @@ router.get("/:id/products", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.put("/:supplierId/products/:productId", async (req, res, next) => {
+router.put("/:supplierId/products/:productId", requireMenuPermission("procurement.prices","can_edit"), async (req, res, next) => {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
@@ -102,7 +103,7 @@ router.put("/:supplierId/products/:productId", async (req, res, next) => {
   finally { client.release(); }
 });
 
-router.get("/intelligence/grouped-suggestions", async (req, res, next) => {
+router.get("/intelligence/grouped-suggestions", requireMenuPermission("procurement.suggestions","can_view"), async (req, res, next) => {
   try {
     const locationId = clean(req.query.location_id) || null;
     const { rows } = await db.query(
