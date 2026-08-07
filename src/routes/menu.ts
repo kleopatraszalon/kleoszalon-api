@@ -81,6 +81,67 @@ async function ensureProcurementMenu() {
   `).catch(() => undefined);
 }
 
+async function ensureCurrentStageMenus() {
+  // Az új etapok menüpontjai nem függhetnek attól, hogy a kézi SQL migrációt már lefuttatták-e.
+  // A menü API minden lekérés előtt idempotensen biztosítja őket.
+  await pool.query(`
+    ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;
+    ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;
+    ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+  `);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL`);
+
+  await pool.query(`
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    VALUES('finance','Pénzügyek','WalletCards',NULL,60,NULL,'finance',true)
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,is_active=true
+  `);
+  await pool.query(`
+    WITH p AS (SELECT id FROM menus WHERE code='finance' LIMIT 1)
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    SELECT 'finance.control','Pénzügyi kontroll és havi zárás',NULL,'/finance?section=control',145,p.id,'finance',true
+    FROM p
+    ON CONFLICT(code) DO UPDATE SET
+      name=EXCLUDED.name,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
+      parent_id=EXCLUDED.parent_id,feature_key=EXCLUDED.feature_key,is_active=true
+  `);
+
+  let settingsId: number | null = null;
+  const found = await pool.query(`
+    SELECT id FROM menus
+    WHERE code IN ('settings','settings.admin','administration')
+       OR lower(name) IN ('beállítások és adminisztráció','beállítások','adminisztráció')
+    ORDER BY CASE WHEN code='settings' THEN 0 ELSE 1 END,id LIMIT 1
+  `);
+  settingsId = found.rows[0]?.id ? Number(found.rows[0].id) : null;
+  if (!settingsId) {
+    const created = await pool.query(`
+      INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+      VALUES('settings','Beállítások és adminisztráció','Settings',NULL,190,NULL,'audit',true)
+      ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,is_active=true
+      RETURNING id
+    `);
+    settingsId = Number(created.rows[0].id);
+  }
+  await pool.query(`
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    VALUES('settings.system_health','Rendszerellenőrzés','Activity','/admin/system-health',190,$1,'audit',true)
+    ON CONFLICT(code) DO UPDATE SET
+      name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
+      parent_id=EXCLUDED.parent_id,feature_key=EXCLUDED.feature_key,is_active=true
+  `,[settingsId]);
+
+  // Jogosultság: admin biztosan, manager olvasási joggal. Ha a jogosultságtábla régebbi,
+  // a hibát best-effort módon elengedjük; adminnak a menülekérdezés ettől még megjeleníti.
+  await pool.query(`
+    INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,true,false,false,false,false,true,true,(r.role_key='admin'), 'all_locations',now()
+    FROM (VALUES ('admin'),('manager')) r(role_key)
+    JOIN menus m ON m.code IN ('finance.control','settings.system_health')
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_export=true,can_view_financial=true,updated_at=now()
+  `).catch(() => undefined);
+}
+
 async function ensureCleanMenu() {
   await pool.query(`UPDATE menus SET name='Irányítópult' WHERE code='dashboard'`);
   await pool.query(`UPDATE menus SET is_active=false WHERE code IN ('inventory.receiving','inventory.suppliers')`);
@@ -129,10 +190,10 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
   const roles = roleKeys(req.user?.role).map((x) => x.toLowerCase());
   const admin = roles.includes("admin");
 
-  // Fontos: a menü megjelenése nem függhet migrációk sikerétől.
   await bestEffort("VIR modulok", () => ensureVirSpecModules());
   await bestEffort("HR import menü", () => ensureTeamImportMenu());
   await bestEffort("Beszerzés menü", () => ensureProcurementMenu());
+  await bestEffort("aktuális etap menük", () => ensureCurrentStageMenus());
   await bestEffort("menütisztítás", () => ensureCleanMenu());
 
   try {
