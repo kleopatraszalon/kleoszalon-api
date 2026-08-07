@@ -3,7 +3,7 @@ BEGIN;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
-CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code);
 
 DO $$
 DECLARE
