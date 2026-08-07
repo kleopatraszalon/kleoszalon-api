@@ -82,12 +82,32 @@ router.post("/import/altegio", upload.single("file"), async (req: Request, res: 
   try {
     await client.query("BEGIN");
 
-    let group = await client.query(`SELECT id FROM public.product_groups WHERE lower(COALESCE(name,name_hu,''))=lower('Altegio import') LIMIT 1`);
+    let group = await client.query(`
+      SELECT id
+      FROM public.product_groups
+      WHERE lower(COALESCE(name,name_hu,''))=lower('Altegio import')
+         OR upper(COALESCE(code,''))='ALTEGIO_IMPORT'
+      LIMIT 1
+    `);
     let groupId: string;
     if (group.rowCount) groupId = String(group.rows[0].id);
     else {
       groupId = randomUUID();
-      await client.query(`INSERT INTO public.product_groups(id,name,name_hu,name_en,name_ru) VALUES($1::uuid,'Altegio import','Altegio import','Altegio import','Altegio import')`, [groupId]);
+      await client.query(`
+        INSERT INTO public.product_groups(
+          id,name,name_hu,name_en,name_ru,code,sort_order,is_active
+        )
+        VALUES(
+          $1::uuid,
+          'Altegio import',
+          'Altegio import',
+          'Altegio import',
+          'Altegio import',
+          'ALTEGIO_IMPORT',
+          999,
+          true
+        )
+      `, [groupId]);
     }
 
     let order = 0;
