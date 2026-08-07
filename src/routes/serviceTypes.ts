@@ -10,8 +10,16 @@ const router = Router();
  */
 router.get("/", async (_req: Request, res: Response) => {
   try {
+    await pool.query(`
+      ALTER TABLE public.service_types
+        ADD COLUMN IF NOT EXISTS display_order integer NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS altegio_category_key text;
+    `);
+
     const result = await pool.query(
-      `SELECT id, name FROM public.service_types ORDER BY name;`
+      `SELECT id, name, display_order
+       FROM public.service_types
+       ORDER BY display_order ASC, name ASC;`
     );
     res.json(result.rows);
   } catch (err) {
