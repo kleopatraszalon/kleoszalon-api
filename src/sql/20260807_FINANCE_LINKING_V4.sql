@@ -1,5 +1,16 @@
 BEGIN;
 
+-- Kompatibilitási réteg a meglévő work_orders táblához.
+ALTER TABLE work_orders
+  ADD COLUMN IF NOT EXISTS invoice_status text NOT NULL DEFAULT 'not_requested',
+  ADD COLUMN IF NOT EXISTS financial_closed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS financial_closed_by text,
+  ADD COLUMN IF NOT EXISTS amount_due numeric(14,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS gross_total numeric(14,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS discount_amount numeric(14,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS tip_amount numeric(14,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS client_name text;
+
 CREATE UNIQUE INDEX IF NOT EXISTS finance_invoices_workorder_unique_uq
 ON finance_invoices(work_order_id)
 WHERE direction='outgoing' AND work_order_id IS NOT NULL AND status <> 'cancelled';
