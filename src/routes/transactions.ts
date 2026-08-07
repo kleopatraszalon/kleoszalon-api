@@ -11,6 +11,7 @@ import purchaseOrdersRouter from "./purchaseOrders";
 import suppliersRouter from "./suppliers";
 import procurementWorkflowRouter from "./procurementWorkflow";
 import bookingOperationsRouter from "./bookingOperations";
+import bookingCommunicationsRouter from "./bookingCommunications";
 import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
@@ -25,9 +26,8 @@ router.use("/suppliers", requireFeature("procurement"), requireMenuPermissionByM
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
 
-// Időpont 2.0: várólista, technikai szünet, áthelyezés, lemondás,
-// ismétlődő foglalás és változástörténet. A router saját auth guardot használ.
 router.use("/booking-operations", bookingOperationsRouter);
+router.use("/booking-communications", bookingCommunicationsRouter);
 
 router.use("/cashier", requireFeature("finance"), requireMenuPermissionByMethod("finance.checkout"), cashierRouter);
 router.use("/cashier/management-summary", requireFeature("management_dashboard"), requireMenuPermission("finance", "can_view_financial"), managementSummaryRouter);
