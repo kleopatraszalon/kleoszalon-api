@@ -11,24 +11,30 @@ import purchaseOrdersRouter from "./purchaseOrders";
 import suppliersRouter from "./suppliers";
 import procurementWorkflowRouter from "./procurementWorkflow";
 import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
+import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
+import { requireFeature } from "../middleware/featureAccess";
 
 const router = express.Router();
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
 
-// Az adatbázis-sémát pgAdmin migrációk kezelik. Runtime közben nem futtatunk
-// CREATE/ALTER TABLE műveleteket. A beszerzési route-oknál a feature-szintű
-// ellenőrzés mellett a konkrét művelet (view/create/edit/approve/export) is
-// szerveroldalon érvényesül.
-router.use("/inventory", inventoryRouter);
+// Központi RBAC: a feature-jog dönti el, hogy a modul használható-e,
+// a menüjog pedig a konkrét CRUD műveletet. Admin teljes hozzáférésű.
+router.use("/inventory", requireFeature("inventory"), requireMenuPermissionByMethod("inventory"), inventoryRouter);
 router.use("/procurement", requirePurchaseOrderAccess, purchaseOrdersRouter);
 router.use("/procurement-workflow", requireProcurementWorkflowAccess, procurementWorkflowRouter);
-router.use("/suppliers", suppliersRouter);
+router.use("/suppliers", requireFeature("procurement"), requireMenuPermissionByMethod("procurement.suppliers"), suppliersRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
-router.use("/cashier", cashierRouter);
-router.use("/cashier/management-summary", managementSummaryRouter);
+
+// Pénztár: olvasás / létrehozás / módosítás művelet-szinten védett.
+router.use("/cashier", requireFeature("finance"), requireMenuPermissionByMethod("finance.checkout"), cashierRouter);
+// Vezetői összesítők pénzügyi adatok, ezért külön pénzügyi láthatóság kell.
+router.use("/cashier/management-summary", requireFeature("management_dashboard"), requireMenuPermission("finance", "can_view_financial"), managementSummaryRouter);
+router.use("/management", requireFeature("management_dashboard"), requireMenuPermission("analytics", "can_view_financial"), managementSummaryRouter);
+router.use("/dashboard-settings", requireFeature("management_dashboard"), dashboardSettingsRouter);
+
 router.use("/notifications", notificationsRouter);
-router.use("/management", managementSummaryRouter);
-router.use("/dashboard-settings", dashboardSettingsRouter);
-router.use("/audit", auditLogRouter);
+// Audit csak olvasható a megfelelő jogosultsággal; az audit route saját admin műveletei
+// ettől függetlenül további ellenőrzést is alkalmazhatnak.
+router.use("/audit", requireFeature("audit"), requireMenuPermission("settings.audit", "can_view"), auditLogRouter);
 export default router;
