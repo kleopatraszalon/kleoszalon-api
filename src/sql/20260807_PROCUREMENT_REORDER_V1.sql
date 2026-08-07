@@ -38,4 +38,14 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
 CREATE INDEX IF NOT EXISTS purchase_order_items_order_idx ON purchase_order_items(purchase_order_id,id);
 CREATE INDEX IF NOT EXISTS purchase_order_items_product_idx ON purchase_order_items(product_id,created_at DESC);
 
+DO $$
+BEGIN
+  IF to_regprocedure('kleo_audit_row_change()') IS NOT NULL THEN
+    DROP TRIGGER IF EXISTS kleo_audit_purchase_orders ON purchase_orders;
+    CREATE TRIGGER kleo_audit_purchase_orders AFTER INSERT OR UPDATE OR DELETE ON purchase_orders FOR EACH ROW EXECUTE FUNCTION kleo_audit_row_change();
+    DROP TRIGGER IF EXISTS kleo_audit_purchase_order_items ON purchase_order_items;
+    CREATE TRIGGER kleo_audit_purchase_order_items AFTER INSERT OR UPDATE OR DELETE ON purchase_order_items FOR EACH ROW EXECUTE FUNCTION kleo_audit_row_change();
+  END IF;
+END $$;
+
 COMMIT;
