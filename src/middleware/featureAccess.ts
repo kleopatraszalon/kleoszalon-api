@@ -13,9 +13,21 @@ function roleKeys(req: AuthRequest): string[] {
   return value.split(",").map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase()).filter(Boolean);
 }
 
+function effectiveFeature(req: AuthRequest, requested: string) {
+  // A régebbi beszerzési routerek még inventory feature-rel készültek. A közös
+  // middleware itt választja szét a két üzleti területet anélkül, hogy a régi
+  // endpoint-kompatibilitást megtörnénk.
+  if (requested === "inventory") {
+    const url = String((req as any).originalUrl || (req as any).url || "");
+    if (/\/api\/transactions\/(procurement|procurement-workflow|suppliers)(\/|\?|$)/.test(url)) return "procurement";
+  }
+  return requested;
+}
+
 export function requireFeature(featureKey: string) {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
+      const key=effectiveFeature(req,featureKey);
       const roles = roleKeys(req);
       if (roles.includes("admin")) return next();
       if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
@@ -24,7 +36,7 @@ export function requireFeature(featureKey: string) {
         `SELECT COUNT(*)::int AS count
          FROM role_feature_permissions
          WHERE role_key = ANY($1::text[]) AND feature_key = $2`,
-        [roles, featureKey]
+        [roles, key]
       );
 
       // Visszafelé kompatibilis átmenet: amíg egy funkcióhoz nincs szerepkör-szabály,
@@ -36,13 +48,13 @@ export function requireFeature(featureKey: string) {
          FROM role_feature_permissions
          WHERE role_key = ANY($1::text[]) AND feature_key = $2 AND can_use = true
          LIMIT 1`,
-        [roles, featureKey]
+        [roles, key]
       );
       if (allowed.rowCount) return next();
-      return res.status(403).json({ error: "Ehhez a funkcióhoz nincs jogosultsága.", feature_key: featureKey });
+      return res.status(403).json({ error: "Ehhez a funkcióhoz nincs jogosultsága.", feature_key: key });
     } catch (error: any) {
       // Ha a migráció még nem futott le, ne törjük el a meglévő rendszert.
-      if (String(error?.code || "") === "42P01") return next();
+      if (["42P01","42703"].includes(String(error?.code || ""))) return next();
       next(error);
     }
   };
