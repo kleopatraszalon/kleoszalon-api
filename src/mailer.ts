@@ -26,15 +26,22 @@ if (!DISABLE_SMTP && SMTP_USER && SMTP_PASS) {
   console.warn("📭 DISABLE_SMTP=1 vagy hiányzó SMTP hitelesítés – e-mail csak LOG-ban lesz.");
 }
 
+export type MailAttachment = {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+};
+
 export type OutgoingMail = {
   to: string;
   subject: string;
   text: string;
   html?: string;
+  attachments?: MailAttachment[];
 };
 
 export async function sendEmail(message: OutgoingMail) {
-  console.log(`[MAIL] to=${message.to} subject=${message.subject}`);
+  console.log(`[MAIL] to=${message.to} subject=${message.subject} attachments=${message.attachments?.length || 0}`);
   if (DISABLE_SMTP || !transporter) {
     console.warn("📭 SMTP küldés kihagyva; az üzenet naplózva lett.");
     return { sent: false, logged: true };
@@ -47,6 +54,7 @@ export async function sendEmail(message: OutgoingMail) {
       subject: message.subject,
       text: message.text,
       html: message.html || `<p>${message.text.replace(/\n/g, "<br/>")}</p>`,
+      attachments: message.attachments,
     });
     console.log("✅ E-mail elküldve, messageId:", info.messageId);
     return { sent: true, logged: false, messageId: info.messageId };
