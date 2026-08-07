@@ -10,17 +10,18 @@ import auditLogRouter from "./auditLog";
 import purchaseOrdersRouter from "./purchaseOrders";
 import suppliersRouter from "./suppliers";
 import procurementWorkflowRouter from "./procurementWorkflow";
+import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
 
 const router = express.Router();
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
 
 // Az adatbázis-sémát pgAdmin migrációk kezelik. Runtime közben nem futtatunk
-// CREATE/ALTER TABLE műveleteket, mert a Render adatbázis-felhasználó jogosultsága
-// és a már meglévő oszloptípusok miatt ez az összes beszerzési GET kérést 500-zal
-// blokkolhatta. A route-ok csak üzleti adatot olvasnak/írnak.
+// CREATE/ALTER TABLE műveleteket. A beszerzési route-oknál a feature-szintű
+// ellenőrzés mellett a konkrét művelet (view/create/edit/approve/export) is
+// szerveroldalon érvényesül.
 router.use("/inventory", inventoryRouter);
-router.use("/procurement", purchaseOrdersRouter);
-router.use("/procurement-workflow", procurementWorkflowRouter);
+router.use("/procurement", requirePurchaseOrderAccess, purchaseOrdersRouter);
+router.use("/procurement-workflow", requireProcurementWorkflowAccess, procurementWorkflowRouter);
 router.use("/suppliers", suppliersRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
