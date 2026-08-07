@@ -175,7 +175,7 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
   let createdServices = 0, updatedServices = 0, staffVariants = 0;
   try {
     await client.query("BEGIN");
-    const categoryIds = new Map<string,string>();
+    const categoryIds = new Map<string,number>();
 
     for (let i=0;i<categories.length;i++) {
       const category = categories[i];
@@ -186,11 +186,11 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
          ORDER BY CASE WHEN altegio_category_key=$1::text THEN 0 ELSE 1 END LIMIT 1`,
         [key, category]
       );
-      let id: string;
+      let id: number;
       if (found.rowCount) {
-        id = String(found.rows[0].id);
+        id = Number(found.rows[0].id);
         await client.query(
-          `UPDATE public.service_types SET name=$2::text, altegio_category_key=$3::text, display_order=$4::integer, updated_at=now() WHERE id=$1::uuid`,
+          `UPDATE public.service_types SET name=$2::text, altegio_category_key=$3::text, display_order=$4::integer, updated_at=now() WHERE id=$1::integer`,
           [id, category, key, i]
         );
       } else {
@@ -198,7 +198,7 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
           `INSERT INTO public.service_types(name,altegio_category_key,display_order) VALUES($1::text,$2::text,$3::integer) RETURNING id`,
           [category,key,i]
         );
-        id=String(ins.rows[0].id);
+        id=Number(ins.rows[0].id);
       }
       categoryIds.set(category,id);
     }
@@ -210,7 +210,7 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
       const found = await client.query(
         `SELECT id FROM public.services
          WHERE altegio_service_id=$1::bigint
-            OR (lower(trim(name))=lower(trim($2::text)) AND service_type_id=$3::uuid)
+            OR (lower(trim(name))=lower(trim($2::text)) AND service_type_id=$3::integer)
          ORDER BY CASE WHEN altegio_service_id=$1::bigint THEN 0 ELSE 1 END, is_active DESC NULLS LAST LIMIT 1`,
         [altegioId,r.name,typeId]
       );
@@ -223,7 +223,7 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
              name=$2::text,
              code=COALESCE(NULLIF(code,''),$3::text),
              short_name=COALESCE(NULLIF($4::text,''),short_name),
-             service_type_id=$5::uuid,
+             service_type_id=$5::integer,
              base_price=$6::numeric,
              list_price=COALESCE($7::numeric,$6::numeric),
              currency=COALESCE(NULLIF(currency,''),'HUF'),
@@ -250,7 +250,7 @@ router.post("/import/altegio", requireImportAdmin, upload.single("file"), async 
              online_bookable,is_active,is_combo,altegio_service_id,altegio_api_id,receipt_name,online_name,
              price_from,price_to,source_system,source_payload,imported_at
            ) VALUES(
-             $1::text,$2::text,$3::text,$4::uuid,NULL,
+             $1::text,$2::text,$3::text,$4::integer,NULL,
              $5::numeric,COALESCE($6::numeric,$5::numeric),'HUF',$7::integer,$8::text,NULL,
              true,true,false,$9::bigint,$10::text,$11::text,$12::text,
              $5::numeric,$6::numeric,'altegio',$13::jsonb,now()
