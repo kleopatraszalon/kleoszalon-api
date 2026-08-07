@@ -10,13 +10,20 @@ import auditLogRouter from "./auditLog";
 import purchaseOrdersRouter from "./purchaseOrders";
 import suppliersRouter from "./suppliers";
 import procurementWorkflowRouter from "./procurementWorkflow";
+import { ensureProcurementSchema } from "../procurement/ensureProcurementSchema";
 
 const router = express.Router();
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
-router.use("/inventory", inventoryRouter);
-router.use("/procurement", purchaseOrdersRouter);
-router.use("/procurement-workflow", procurementWorkflowRouter);
-router.use("/suppliers", suppliersRouter);
+
+const procurementSchemaGuard = async (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  try { await ensureProcurementSchema(); next(); }
+  catch (err) { next(err); }
+};
+
+router.use("/inventory", procurementSchemaGuard, inventoryRouter);
+router.use("/procurement", procurementSchemaGuard, purchaseOrdersRouter);
+router.use("/procurement-workflow", procurementSchemaGuard, procurementWorkflowRouter);
+router.use("/suppliers", procurementSchemaGuard, suppliersRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
 router.use("/cashier", cashierRouter);
