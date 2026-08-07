@@ -4,6 +4,7 @@ import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
 import financeOperationsRouter from "./financeOperations";
+import financeLinkingRouter from "./financeLinking";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -32,6 +33,7 @@ router.use("/booking-communications", bookingCommunicationsRouter);
 
 router.use("/cashier", requireFeature("finance"), requireMenuPermissionByMethod("finance.checkout"), cashierRouter);
 router.use("/finance-operations", requireFeature("finance"), requireMenuPermissionByMethod("finance"), financeOperationsRouter);
+router.use("/finance-linking", requireFeature("finance"), requireMenuPermissionByMethod("finance"), financeLinkingRouter);
 router.use("/cashier/management-summary", requireFeature("management_dashboard"), requireMenuPermission("finance", "can_view_financial"), managementSummaryRouter);
 router.use("/management", requireFeature("management_dashboard"), requireMenuPermission("analytics", "can_view_financial"), managementSummaryRouter);
 router.use("/dashboard-settings", requireFeature("management_dashboard"), dashboardSettingsRouter);
