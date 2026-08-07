@@ -1,6 +1,7 @@
 // src/middleware/auth.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { enforceKnownModuleAccess } from "./pathAccess";
 
 export interface AuthRequest extends Request {
   user?: {
@@ -33,7 +34,7 @@ function getTokenFromReq(req: Request): string | null {
   return null;
 }
 
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const token = getTokenFromReq(req);
 
   if (!token) {
@@ -46,17 +47,18 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
     const decoded = jwt.verify(token, JWT_SECRET) as any;
 
     req.user = {
-      id: decoded.id,
+      id: decoded.id ?? decoded.userId,
       email: decoded.email,
       role: decoded.role,
       location_id: decoded.location_id ?? null,
     };
 
+    const allowed = await enforceKnownModuleAccess(req, res);
+    if (!allowed) return;
     return next();
   } catch (err: any) {
-    console.error("JWT hiba:", err);
+    console.error("JWT / jogosultsági hiba:", err);
 
-    // Lejárt token esetén: süti törlése + kulturált üzenet
     if (err.name === "TokenExpiredError") {
       res.clearCookie("token", { path: "/" });
       return res.status(401).json({
@@ -64,8 +66,12 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
       });
     }
 
-    return res.status(401).json({
-      error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
-    });
+    if (["JsonWebTokenError", "NotBeforeError"].includes(String(err?.name || ""))) {
+      return res.status(401).json({
+        error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
+      });
+    }
+
+    return next(err);
   }
 }
