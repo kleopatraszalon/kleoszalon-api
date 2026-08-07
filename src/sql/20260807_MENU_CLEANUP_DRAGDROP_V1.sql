@@ -72,7 +72,7 @@ UPDATE menus SET order_index=120 WHERE code='online';
 UPDATE menus SET order_index=130 WHERE code='commerce';
 UPDATE menus SET order_index=140 WHERE code='settings';
 
--- A raktár-jogosultságokat örökítjük az új Beszerzés modulra.
+-- A Raktár és készlet jogosultságait örökítjük az új Beszerzés modulra.
 INSERT INTO role_menu_permissions(
   role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,
   can_export,can_view_financial,can_manage_permissions,scope_type
@@ -80,7 +80,7 @@ INSERT INTO role_menu_permissions(
 SELECT rp.role_key,target.id,rp.can_view,rp.can_create,rp.can_edit,rp.can_delete,
        rp.can_approve,rp.can_export,rp.can_view_financial,rp.can_manage_permissions,rp.scope_type
 FROM role_menu_permissions rp
-JOIN menus source ON source.id=rp.menu_id AND source.code='warehouse'
+JOIN menus source ON source.id=rp.menu_id AND source.code='inventory'
 CROSS JOIN menus target
 WHERE target.code='procurement' OR target.code LIKE 'procurement.%'
 ON CONFLICT(role_key,menu_id) DO NOTHING;
