@@ -1,7 +1,9 @@
 import { Router } from "express";
 import db from "../db";
+import { requireFeature } from "../middleware/featureAccess";
 
 const router = Router();
+router.use(requireFeature("inventory"));
 
 type MovementType = "opening" | "receipt" | "adjustment";
 
@@ -107,93 +109,50 @@ router.post("/movements", async (req, res, next) => {
     const note = req.body?.note ? String(req.body.note).trim() : null;
     const createdBy = req.body?.created_by ?? null;
 
-    if (!productId) {
-      return res.status(400).json({ message: "A product_id megadása kötelező." });
-    }
-    if (!["opening", "receipt", "adjustment"].includes(movementType)) {
-      return res.status(400).json({ message: "Érvénytelen készletmozgás típus." });
-    }
-    if (requestedQuantity === null) {
-      return res.status(400).json({ message: "A quantity csak szám lehet." });
-    }
-    if ((movementType === "opening" || movementType === "receipt") && requestedQuantity < 0) {
-      return res.status(400).json({ message: "Nyitókészlet és bevételezés nem lehet negatív." });
-    }
+    if (!productId) return res.status(400).json({ message: "A product_id megadása kötelező." });
+    if (!["opening", "receipt", "adjustment"].includes(movementType)) return res.status(400).json({ message: "Érvénytelen készletmozgás típus." });
+    if (requestedQuantity === null) return res.status(400).json({ message: "A quantity csak szám lehet." });
+    if ((movementType === "opening" || movementType === "receipt") && requestedQuantity < 0) return res.status(400).json({ message: "Nyitókészlet és bevételezés nem lehet negatív." });
 
     await client.query("BEGIN");
-
     const productCheck = await client.query(`SELECT id, name FROM products WHERE id = $1`, [productId]);
-    if (!productCheck.rows[0]) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "A termék nem található." });
-    }
+    if (!productCheck.rows[0]) { await client.query("ROLLBACK"); return res.status(404).json({ message: "A termék nem található." }); }
 
     const balanceResult = await client.query(
-      `SELECT id, quantity
-       FROM product_stock_balances
+      `SELECT id, quantity FROM product_stock_balances
        WHERE product_id = $1
          AND (($2::text IS NULL AND location_id IS NULL) OR location_id::text = $2::text)
-       FOR UPDATE`,
-      [productId, locationId]
-    );
+       FOR UPDATE`, [productId, locationId]);
 
     const currentBalance = Number(balanceResult.rows[0]?.quantity ?? 0);
     let movementQuantity: number;
     let newBalance: number;
-
-    if (movementType === "opening") {
-      newBalance = requestedQuantity;
-      movementQuantity = newBalance - currentBalance;
-    } else {
-      movementQuantity = requestedQuantity;
-      newBalance = currentBalance + movementQuantity;
-    }
+    if (movementType === "opening") { newBalance = requestedQuantity; movementQuantity = newBalance - currentBalance; }
+    else { movementQuantity = requestedQuantity; newBalance = currentBalance + movementQuantity; }
 
     if (newBalance < 0) {
       await client.query("ROLLBACK");
-      return res.status(409).json({
-        message: "A készletkorrekció negatív készletet eredményezne.",
-        current_balance: currentBalance,
-        requested_change: movementQuantity,
-      });
+      return res.status(409).json({ message: "A készletkorrekció negatív készletet eredményezne.", current_balance: currentBalance, requested_change: movementQuantity });
     }
 
     if (balanceResult.rows[0]) {
-      await client.query(
-        `UPDATE product_stock_balances
-         SET quantity = $2, updated_at = now()
-         WHERE id = $1`,
-        [balanceResult.rows[0].id, newBalance]
-      );
+      await client.query(`UPDATE product_stock_balances SET quantity = $2, updated_at = now() WHERE id = $1`, [balanceResult.rows[0].id, newBalance]);
     } else {
-      await client.query(
-        `INSERT INTO product_stock_balances (product_id, location_id, quantity, updated_at)
-         VALUES ($1, $2, $3, now())`,
-        [productId, locationId, newBalance]
-      );
+      await client.query(`INSERT INTO product_stock_balances (product_id, location_id, quantity, updated_at) VALUES ($1, $2, $3, now())`, [productId, locationId, newBalance]);
     }
 
     const movement = await client.query(
-      `INSERT INTO inventory_movements
-        (product_id, location_id, movement_type, quantity, balance_after, note, created_by)
+      `INSERT INTO inventory_movements (product_id, location_id, movement_type, quantity, balance_after, note, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, product_id, location_id, movement_type, quantity, balance_after, note, created_by, created_at`,
-      [productId, locationId, movementType, movementQuantity, newBalance, note, createdBy]
-    );
+      [productId, locationId, movementType, movementQuantity, newBalance, note, createdBy]);
 
     await client.query("COMMIT");
-
-    res.status(201).json({
-      product: productCheck.rows[0],
-      movement: movement.rows[0],
-      balance: newBalance,
-    });
+    res.status(201).json({ product: productCheck.rows[0], movement: movement.rows[0], balance: newBalance });
   } catch (err) {
     await client.query("ROLLBACK");
     next(err);
-  } finally {
-    client.release();
-  }
+  } finally { client.release(); }
 });
 
 export default router;
