@@ -29,7 +29,7 @@ router.get("/coworkers", async (req: AuthRequest, res, next) => {
        FROM employees
        WHERE COALESCE(active, true) = true
          AND ('employee:' || id::text) <> $1
-       ORDER BY COALESCE(full_name, email)` ,
+       ORDER BY COALESCE(full_name, email)`,
       [me.key]
     );
     res.json(rows);
@@ -87,9 +87,10 @@ router.get("/conversations/:id/messages", async (req: AuthRequest, res, next) =>
     );
     if (!allowed.rows[0]) return res.status(404).json({ message: "A beszélgetés nem található." });
     const { rows } = await db.query(
-      `SELECT id, conversation_id, sender_key, sender_name, content, created_at, read_at
+      `SELECT id, conversation_id, sender_key, sender_name, content, created_at, read_at,
+              (sender_key = $2) AS is_mine
        FROM staff_chat_messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 300`,
-      [req.params.id]
+      [req.params.id, me.key]
     );
     await db.query(
       `UPDATE staff_chat_messages SET read_at = COALESCE(read_at, now())
@@ -116,7 +117,7 @@ router.post("/conversations/:id/messages", async (req: AuthRequest, res, next) =
       [req.params.id, me.key, me.name, content]
     );
     await db.query(`UPDATE staff_chat_conversations SET updated_at = now() WHERE id = $1`, [req.params.id]);
-    res.status(201).json(rows[0]);
+    res.status(201).json({ ...rows[0], is_mine: true });
   } catch (err) { next(err); }
 });
 
