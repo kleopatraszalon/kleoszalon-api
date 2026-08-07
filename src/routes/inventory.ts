@@ -1,11 +1,9 @@
 import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
-import { ensureProcurementSchema } from "../procurement/ensureProcurementSchema";
 
 const router = Router();
 router.use(requireFeature("inventory"));
-router.use(async (_req, _res, next) => { try { await ensureProcurementSchema(); next(); } catch (err) { next(err); } });
 
 type MovementType = "opening" | "receipt" | "adjustment";
 
