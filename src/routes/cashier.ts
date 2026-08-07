@@ -169,6 +169,82 @@ router.post("/workorders/:id/settle", async (req: AuthRequest, res, next) => {
   } finally { client.release(); }
 });
 
+router.get("/management-summary", async (req: AuthRequest, res, next) => {
+  try {
+    const from = String(req.query.from || new Date().toISOString().slice(0, 10));
+    const to = String(req.query.to || from);
+    const locationId = String(req.query.location_id || "").trim();
+    const params: any[] = [from, to];
+    let locationFilter = "";
+    if (locationId) { params.push(locationId); locationFilter = `AND wo.location_id::text = $${params.length}`; }
+
+    const [revenue, staff, stock, crm] = await Promise.all([
+      db.query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN wi.item_type='service' THEN wi.line_total ELSE 0 END),0)::numeric AS service_revenue,
+           COALESCE(SUM(CASE WHEN wi.item_type='product' THEN wi.line_total ELSE 0 END),0)::numeric AS product_revenue,
+           COALESCE(SUM(wi.line_total),0)::numeric AS gross_revenue,
+           COALESCE(SUM(DISTINCT wo.discount_amount),0)::numeric AS discounts,
+           COALESCE(SUM(DISTINCT wo.tip_amount),0)::numeric AS tips,
+           COUNT(DISTINCT wo.id)::int AS closed_workorders
+         FROM work_orders wo
+         LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
+         WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date ${locationFilter}`,
+        params
+      ),
+      db.query(
+        `SELECT wo.employee_id::text AS employee_id,
+                COALESCE(e.full_name,'Nincs hozzárendelve') AS employee_name,
+                COUNT(*)::int AS workorder_count,
+                COALESCE(SUM(wo.amount_paid),0)::numeric AS revenue,
+                COALESCE(AVG(NULLIF(wo.amount_paid,0)),0)::numeric AS avg_ticket
+         FROM work_orders wo
+         LEFT JOIN employees e ON e.id::text=wo.employee_id::text
+         WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date ${locationFilter}
+         GROUP BY wo.employee_id,e.full_name
+         ORDER BY revenue DESC
+         LIMIT 10`,
+        params
+      ),
+      db.query(
+        `SELECT
+           COALESCE(SUM(b.quantity*b.unit_cost),0)::numeric AS inventory_value,
+           COUNT(*) FILTER (WHERE b.quantity <= b.min_quantity)::int AS low_stock_count,
+           COUNT(*) FILTER (WHERE b.quantity = 0)::int AS out_of_stock_count,
+           COUNT(*)::int AS stocked_products
+         FROM product_stock_balances b
+         WHERE ($1::text = '' AND b.location_id IS NULL) OR ($1::text <> '' AND b.location_id::text=$1::text)`,
+        [locationId]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS visits,
+                COUNT(DISTINCT profile_id)::int AS unique_guests,
+                COALESCE(SUM(amount_paid),0)::numeric AS guest_revenue,
+                COALESCE(AVG(amount_paid),0)::numeric AS avg_guest_spend
+         FROM crm_visit_history
+         WHERE visited_at::date BETWEEN $1::date AND $2::date
+           ${locationId ? `AND location_id::text = $3` : ""}`,
+        params
+      )
+    ]);
+
+    const total = Number(revenue.rows[0]?.gross_revenue || 0);
+    const service = Number(revenue.rows[0]?.service_revenue || 0);
+    const product = Number(revenue.rows[0]?.product_revenue || 0);
+    res.json({
+      period: { from, to, location_id: locationId || null },
+      revenue: {
+        ...revenue.rows[0],
+        service_share_percent: total > 0 ? Math.round(service / total * 10000) / 100 : 0,
+        product_share_percent: total > 0 ? Math.round(product / total * 10000) / 100 : 0,
+      },
+      stock: stock.rows[0],
+      crm: crm.rows[0],
+      staff: staff.rows,
+    });
+  } catch (err) { next(err); }
+});
+
 router.get("/daily-summary", async (req: AuthRequest, res, next) => {
   try {
     const businessDate = String(req.query.date || new Date().toISOString().slice(0,10));
