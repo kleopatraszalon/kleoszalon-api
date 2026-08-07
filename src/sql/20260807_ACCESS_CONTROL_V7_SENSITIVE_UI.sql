@@ -5,8 +5,7 @@ UPDATE menus
 SET name='Audit és rendszeresemény-napló',
     route='/modules/settings/audit-log',
     feature_key='audit',
-    is_active=true,
-    updated_at=COALESCE(updated_at,now())
+    is_active=true
 WHERE code='settings.audit';
 
 -- Chat felügyelet külön adminisztrációs menüpont.
