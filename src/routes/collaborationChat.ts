@@ -1,9 +1,11 @@
 import { Router } from "express";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { requireFeature } from "../middleware/featureAccess";
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireFeature("staff_chat"));
 
 async function actor(req: AuthRequest) {
   const email = String(req.user?.email || "").trim().toLowerCase();
@@ -221,6 +223,39 @@ router.post("/conversations/:id/messages", async (req: AuthRequest, res, next) =
     await db.query(`UPDATE staff_chat_conversations SET updated_at = now() WHERE id = $1`, [req.params.id]);
     await db.query(`UPDATE staff_chat_members SET last_read_at = now() WHERE conversation_id = $1 AND member_key = $2`, [req.params.id, me.key]);
     res.status(201).json({ ...rows[0], is_mine: true });
+  } catch (err) { next(err); }
+});
+
+// Teljes chat-felügyelet: kizárólag külön staff_chat_all feature-rel.
+router.get("/supervision/conversations", requireFeature("staff_chat_all"), async (req: AuthRequest, res, next) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const { rows } = await db.query(
+      `SELECT c.id,c.is_group,c.title,c.created_by,c.created_at,c.updated_at,
+              COUNT(DISTINCT sm.member_key)::int AS member_count,
+              COUNT(m.id)::int AS message_count,
+              MAX(m.created_at) AS last_message_at,
+              STRING_AGG(DISTINCT COALESCE(e.full_name,e.email,sm.member_key), ', ' ORDER BY COALESCE(e.full_name,e.email,sm.member_key)) AS members
+       FROM staff_chat_conversations c
+       LEFT JOIN staff_chat_members sm ON sm.conversation_id=c.id
+       LEFT JOIN employees e ON ('employee:' || e.id::text)=sm.member_key
+       LEFT JOIN staff_chat_messages m ON m.conversation_id=c.id
+       WHERE ($1='' OR COALESCE(c.title,'') ILIKE '%'||$1||'%' OR COALESCE(e.full_name,'') ILIKE '%'||$1||'%' OR COALESCE(e.email,'') ILIKE '%'||$1||'%')
+       GROUP BY c.id,c.is_group,c.title,c.created_by,c.created_at,c.updated_at
+       ORDER BY COALESCE(MAX(m.created_at),c.updated_at) DESC
+       LIMIT 300`, [q]);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+router.get("/supervision/conversations/:id/messages", requireFeature("staff_chat_all"), async (req: AuthRequest, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id,conversation_id,sender_key,sender_name,content,created_at,read_at
+       FROM staff_chat_messages WHERE conversation_id=$1 ORDER BY created_at ASC LIMIT 1000`,
+      [req.params.id]
+    );
+    res.json(rows);
   } catch (err) { next(err); }
 });
 
