@@ -6,6 +6,7 @@ import cashierRouter from "./cashier";
 import financeOperationsRouter from "./financeOperations";
 import financeLinkingRouter from "./financeLinking";
 import financeControlRouter from "./financeControl";
+import systemHealthRouter from "./systemHealth";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -18,28 +19,21 @@ import bookingCommunicationsRouter from "./bookingCommunications";
 import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
-
-const router = express.Router();
-router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
-
-router.use("/inventory", requireFeature("inventory"), requireMenuPermissionByMethod("inventory"), inventoryRouter);
-router.use("/procurement", requirePurchaseOrderAccess, purchaseOrdersRouter);
-router.use("/procurement-workflow", requireProcurementWorkflowAccess, procurementWorkflowRouter);
-router.use("/suppliers", requireFeature("procurement"), requireMenuPermissionByMethod("procurement.suppliers"), suppliersRouter);
-router.use("/ai-support", aiSupportRouter);
-router.use("/staff-chat", collaborationChatRouter);
-
-router.use("/booking-operations", bookingOperationsRouter);
-router.use("/booking-communications", bookingCommunicationsRouter);
-
-router.use("/cashier", requireFeature("finance"), requireMenuPermissionByMethod("finance.checkout"), cashierRouter);
-router.use("/finance-operations", requireFeature("finance"), requireMenuPermissionByMethod("finance"), financeOperationsRouter);
-router.use("/finance-linking", requireFeature("finance"), requireMenuPermissionByMethod("finance"), financeLinkingRouter);
-router.use("/finance-control", requireFeature("finance"), requireMenuPermissionByMethod("finance"), financeControlRouter);
-router.use("/cashier/management-summary", requireFeature("management_dashboard"), requireMenuPermission("finance", "can_view_financial"), managementSummaryRouter);
-router.use("/management", requireFeature("management_dashboard"), requireMenuPermission("analytics", "can_view_financial"), managementSummaryRouter);
-router.use("/dashboard-settings", requireFeature("management_dashboard"), dashboardSettingsRouter);
-
-router.use("/notifications", notificationsRouter);
-router.use("/audit", requireFeature("audit"), requireMenuPermission("settings.audit", "can_view"), auditLogRouter);
+const router=express.Router();
+router.get("/",(_req,res)=>res.json([{id:1,type:"income",amount:10000}]));
+router.use("/inventory",requireFeature("inventory"),requireMenuPermissionByMethod("inventory"),inventoryRouter);
+router.use("/procurement",requirePurchaseOrderAccess,purchaseOrdersRouter);
+router.use("/procurement-workflow",requireProcurementWorkflowAccess,procurementWorkflowRouter);
+router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMethod("procurement.suppliers"),suppliersRouter);
+router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
+router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);
+router.use("/cashier",requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
+router.use("/finance-operations",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
+router.use("/finance-linking",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeLinkingRouter);
+router.use("/finance-control",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeControlRouter);
+router.use("/system-health",systemHealthRouter);
+router.use("/cashier/management-summary",requireFeature("management_dashboard"),requireMenuPermission("finance","can_view_financial"),managementSummaryRouter);
+router.use("/management",requireFeature("management_dashboard"),requireMenuPermission("analytics","can_view_financial"),managementSummaryRouter);
+router.use("/dashboard-settings",requireFeature("management_dashboard"),dashboardSettingsRouter);
+router.use("/notifications",notificationsRouter);router.use("/audit",requireFeature("audit"),requireMenuPermission("settings.audit","can_view"),auditLogRouter);
 export default router;
