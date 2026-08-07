@@ -13,16 +13,25 @@ CREATE TABLE IF NOT EXISTS dashboard_layout_profiles (
 CREATE INDEX IF NOT EXISTS dashboard_layout_profiles_location_idx
   ON dashboard_layout_profiles(location_key, role_key);
 
--- Globális alapértelmezett profil. A régi dashboard_settings tartalmát átveszi, ha létezik.
-INSERT INTO dashboard_layout_profiles(role_key,location_key,settings,widget_order,updated_by,updated_at)
-SELECT
-  '*',
-  '*',
-  COALESCE((SELECT settings FROM dashboard_settings WHERE id=1), '{}'::jsonb),
-  '["executive_overview","period_insights","targets","live_business","classic_kpis","revenue_mix","location_performance","hr_performance","top_staff_alerts"]'::jsonb,
-  'migration',
-  now()
-ON CONFLICT(role_key,location_key) DO NOTHING;
+-- Globális alapértelmezett profil. A régi dashboard_settings tartalmát átveszi, ha a tábla létezik.
+DO $$
+DECLARE
+  legacy_settings jsonb := '{}'::jsonb;
+BEGIN
+  IF to_regclass('public.dashboard_settings') IS NOT NULL THEN
+    SELECT COALESCE(settings,'{}'::jsonb) INTO legacy_settings
+    FROM dashboard_settings WHERE id=1;
+    legacy_settings := COALESCE(legacy_settings,'{}'::jsonb);
+  END IF;
+
+  INSERT INTO dashboard_layout_profiles(role_key,location_key,settings,widget_order,updated_by,updated_at)
+  VALUES(
+    '*','*',legacy_settings,
+    '["executive_overview","period_insights","targets","live_business","classic_kpis","revenue_mix","location_performance","hr_performance","top_staff_alerts"]'::jsonb,
+    'migration',now()
+  )
+  ON CONFLICT(role_key,location_key) DO NOTHING;
+END $$;
 
 -- Alap szerepkörprofilok. Ezek később a Dashboard Admin felületen módosíthatók.
 INSERT INTO dashboard_layout_profiles(role_key,location_key,settings,widget_order,updated_by,updated_at)
