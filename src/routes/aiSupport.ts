@@ -38,15 +38,23 @@ A Munkalapoknál elérhető az életciklus: várakozik, megérkezett, folyamatba
 Ha a felhasználó azt kérdezi, hol talál valamit, adj konkrét menü- vagy útvonaljavaslatot. Ha a jelenlegi oldal kontextusa rendelkezésre áll, arra építs.
 Ne állítsd, hogy végrehajtottál műveletet. Ne kérj vagy jeleníts meg jelszót, bankkártyaadatot, API-kulcsot vagy más titkot. Ha nem tudod biztosan, mondd meg, és javasold a legvalószínűbb menüpontot.`;
 
+router.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    configured: Boolean(process.env.OPENAI_API_KEY),
+    model: process.env.OPENAI_MODEL || "gpt-5-mini",
+  });
+});
+
 router.post("/chat", async (req, res) => {
   const ip = String(req.ip || req.socket.remoteAddress || "unknown");
   if (!allowRequest(ip)) {
-    return res.status(429).json({ message: "Túl sok AI-kérés. Kérlek próbáld újra egy perc múlva." });
+    return res.status(429).json({ code: "local_rate_limit", message: "Túl sok AI-kérés. Kérlek próbáld újra egy perc múlva." });
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return res.status(503).json({ message: "Az AI támogatás még nincs aktiválva. A szerveren be kell állítani az OPENAI_API_KEY környezeti változót." });
+    return res.status(503).json({ code: "missing_api_key", message: "Az AI támogatás még nincs aktiválva. A szerveren be kell állítani az OPENAI_API_KEY környezeti változót." });
   }
 
   const messages = cleanMessages(req.body?.messages);
@@ -56,7 +64,7 @@ router.post("/chat", async (req, res) => {
   const role = String(req.body?.context?.role || "").slice(0, 100);
 
   if (!messages.length || messages[messages.length - 1].role !== "user") {
-    return res.status(400).json({ message: "Hiányzik a felhasználói kérdés." });
+    return res.status(400).json({ code: "missing_user_message", message: "Hiányzik a felhasználói kérdés." });
   }
 
   try {
@@ -99,14 +107,29 @@ router.post("/chat", async (req, res) => {
     }
 
     if (!answer) answer = "Most nem sikerült választ generálnom. Próbáld meg másképp megfogalmazni a kérdést.";
-    return res.json({ answer });
+    return res.json({ answer, model: data?.model || process.env.OPENAI_MODEL || "gpt-5-mini" });
   } catch (err: any) {
-    const status = err?.response?.status;
-    const detail = err?.response?.data?.error?.message;
-    console.error("AI support chat error:", status || err?.message, detail || "");
-    return res.status(status === 429 ? 429 : 502).json({
-      message: status === 429 ? "Az AI szolgáltatás jelenleg túlterhelt vagy elérte a keretet. Próbáld újra később." : "Az AI támogatás átmenetileg nem elérhető.",
-    });
+    const status = Number(err?.response?.status || 0);
+    const openAiError = err?.response?.data?.error || {};
+    const openAiCode = String(openAiError?.code || openAiError?.type || "openai_error");
+    const detail = String(openAiError?.message || err?.message || "Ismeretlen AI hiba").slice(0, 600);
+
+    console.error("AI support chat error:", { status, code: openAiCode, detail });
+
+    if (status === 401) {
+      return res.status(502).json({ code: "invalid_api_key", message: "Az OpenAI API-kulcs érvénytelen vagy nem használható. Ellenőrizd az OPENAI_API_KEY értékét a Render Environment Variables között." });
+    }
+    if (status === 429) {
+      return res.status(429).json({ code: openAiCode, message: "Az OpenAI API elérte a használati vagy számlázási keretet. Ellenőrizd az API Billing / Usage beállításokat.", detail });
+    }
+    if (status === 400) {
+      return res.status(502).json({ code: openAiCode, message: "Az OpenAI API elutasította a kérést. Ellenőrizd az OPENAI_MODEL beállítást; a részletes hiba lent látható.", detail });
+    }
+    if (status === 403) {
+      return res.status(502).json({ code: openAiCode, message: "Az API-kulcsnak nincs jogosultsága ehhez a modellhez vagy projekthez.", detail });
+    }
+
+    return res.status(502).json({ code: openAiCode, message: "Az AI támogatás átmenetileg nem elérhető.", detail });
   }
 });
 
