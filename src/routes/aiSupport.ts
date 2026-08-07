@@ -76,8 +76,16 @@ router.post("/chat", async (req, res) => {
     ].filter(Boolean).join("\n");
 
     const input = [
-      ...(contextText ? [{ role: "developer", content: [{ type: "input_text", text: contextText }] }] : []),
-      ...messages.map(m => ({ role: m.role, content: [{ type: "input_text", text: m.content }] })),
+      ...(contextText
+        ? [{ role: "developer", content: [{ type: "input_text", text: contextText }] }]
+        : []),
+      ...messages.map(m => ({
+        role: m.role,
+        content: [{
+          type: m.role === "assistant" ? "output_text" : "input_text",
+          text: m.content,
+        }],
+      })),
     ];
 
     const response = await axios.post(
@@ -123,7 +131,7 @@ router.post("/chat", async (req, res) => {
       return res.status(429).json({ code: openAiCode, message: "Az OpenAI API elérte a használati vagy számlázási keretet. Ellenőrizd az API Billing / Usage beállításokat.", detail });
     }
     if (status === 400) {
-      return res.status(502).json({ code: openAiCode, message: "Az OpenAI API elutasította a kérést. Ellenőrizd az OPENAI_MODEL beállítást; a részletes hiba lent látható.", detail });
+      return res.status(502).json({ code: openAiCode, message: "Az OpenAI API elutasította a kérést. A részletes hiba lent látható.", detail });
     }
     if (status === 403) {
       return res.status(502).json({ code: openAiCode, message: "Az API-kulcsnak nincs jogosultsága ehhez a modellhez vagy projekthez.", detail });
