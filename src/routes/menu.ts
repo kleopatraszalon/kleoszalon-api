@@ -69,7 +69,7 @@ async function ensureProcurementMenu() {
     SELECT rp.role_key,target.id,rp.can_view,rp.can_create,rp.can_edit,rp.can_delete,
            rp.can_approve,rp.can_export,rp.can_view_financial,rp.can_manage_permissions,rp.scope_type
     FROM role_menu_permissions rp
-    JOIN menus source ON source.id=rp.menu_id AND source.code='warehouse'
+    JOIN menus source ON source.id=rp.menu_id AND source.code='inventory'
     CROSS JOIN menus target
     WHERE target.code='procurement' OR target.code LIKE 'procurement.%'
     ON CONFLICT(role_key,menu_id) DO NOTHING
@@ -78,15 +78,7 @@ async function ensureProcurementMenu() {
 
 async function ensureCleanMenu() {
   await pool.query(`UPDATE menus SET name='Irányítópult' WHERE code='dashboard'`);
-
-  // A beszerzésnek már külön modulja van, ezért a raktári duplikátumok ne jelenjenek meg.
-  await pool.query(`
-    UPDATE menus SET is_active=false
-    WHERE code IN ('inventory.receiving','inventory.suppliers')
-  `);
-
-  // A technikai/admin funkciók ne foglaljanak külön főmenü-szintet.
-  // A hasznos gyerekek közvetlenül a Beállítások és adminisztráció alá kerülnek.
+  await pool.query(`UPDATE menus SET is_active=false WHERE code IN ('inventory.receiving','inventory.suppliers')`);
   await pool.query(`
     UPDATE menus child SET parent_id=settings.id, is_active=true
     FROM menus settings
@@ -101,7 +93,6 @@ async function ensureCleanMenu() {
 
 router.put("/reorder-roots", requireAuth, async (req: AuthRequest, res) => {
   if (!isAdmin(req)) return res.status(403).json({ message: "Csak adminisztrátor rendezheti a főmenüt." });
-
   const orderedIds = Array.isArray(req.body?.ordered_ids)
     ? req.body.ordered_ids.map((x: unknown) => Number(x)).filter((x: number) => Number.isInteger(x) && x > 0)
     : [];
@@ -118,7 +109,6 @@ router.put("/reorder-roots", requireAuth, async (req: AuthRequest, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({ message: "A sorrend csak aktív főmenü-elemeket tartalmazhat." });
     }
-
     for (let i = 0; i < orderedIds.length; i += 1) {
       await client.query(`UPDATE menus SET order_index=$2 WHERE id=$1 AND parent_id IS NULL`, [orderedIds[i], (i + 1) * 10]);
     }
