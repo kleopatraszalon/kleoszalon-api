@@ -9,11 +9,13 @@ import dashboardSettingsRouter from "./dashboardSettings";
 import auditLogRouter from "./auditLog";
 import purchaseOrdersRouter from "./purchaseOrders";
 import suppliersRouter from "./suppliers";
+import procurementWorkflowRouter from "./procurementWorkflow";
 
 const router = express.Router();
 router.get("/", (_req, res) => res.json([{ id: 1, type: "income", amount: 10000 }]));
 router.use("/inventory", inventoryRouter);
 router.use("/procurement", purchaseOrdersRouter);
+router.use("/procurement-workflow", procurementWorkflowRouter);
 router.use("/suppliers", suppliersRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
