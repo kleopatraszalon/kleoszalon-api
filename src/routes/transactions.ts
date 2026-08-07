@@ -14,6 +14,7 @@ router.use("/inventory", inventoryRouter);
 router.use("/ai-support", aiSupportRouter);
 router.use("/staff-chat", collaborationChatRouter);
 router.use("/cashier", cashierRouter);
+router.use("/cashier/management-summary", managementSummaryRouter);
 router.use("/notifications", notificationsRouter);
 router.use("/management", managementSummaryRouter);
 router.use("/dashboard-settings", dashboardSettingsRouter);
