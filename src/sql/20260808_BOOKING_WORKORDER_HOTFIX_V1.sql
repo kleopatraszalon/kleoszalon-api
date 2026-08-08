@@ -49,20 +49,34 @@ BEGIN
 END $$;
 
 -- Menü: Időpontok és jelenlét alatt legyen külön Munkalapok.
+-- A PL/pgSQL változó neve szándékosan eltér a menus.parent_id oszloptól,
+-- így nincs kétértelmű oszlophivatkozás.
 DO $$
-DECLARE parent_id bigint;
+DECLARE v_parent_id bigint;
 BEGIN
   IF to_regclass('public.menus') IS NULL THEN RETURN; END IF;
-  SELECT id INTO parent_id FROM menus
-   WHERE parent_id IS NULL AND (lower(name) LIKE 'időpont%' OR route IN ('/appointments/calendar','/modules/appointments'))
-   ORDER BY id LIMIT 1;
-  IF parent_id IS NOT NULL THEN
-    IF NOT EXISTS (SELECT 1 FROM menus WHERE route IN ('/workorders','/workorders/list')) THEN
+
+  SELECT m.id INTO v_parent_id
+    FROM menus m
+   WHERE m.parent_id IS NULL
+     AND (lower(m.name) LIKE 'időpont%' OR m.route IN ('/appointments/calendar','/modules/appointments'))
+   ORDER BY m.id
+   LIMIT 1;
+
+  IF v_parent_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM menus m
+       WHERE m.route IN ('/workorders','/workorders/list')
+    ) THEN
       INSERT INTO menus(name,route,icon,parent_id,order_index,required_role)
-      VALUES('Munkalapok','/workorders','ClipboardCheck',parent_id,25,'all');
+      VALUES('Munkalapok','/workorders','ClipboardCheck',v_parent_id,25,'all');
     ELSE
-      UPDATE menus SET name='Munkalapok',route='/workorders',parent_id=parent_id,order_index=25
-       WHERE route IN ('/workorders','/workorders/list');
+      UPDATE menus m
+         SET name='Munkalapok',
+             route='/workorders',
+             parent_id=v_parent_id,
+             order_index=25
+       WHERE m.route IN ('/workorders','/workorders/list');
     END IF;
   END IF;
 END $$;
