@@ -195,8 +195,8 @@ router.get("/", async (req: AuthRequest, res) => {
         AND ($2='%%' OR COALESCE(c.full_name,c.name,'') ILIKE $2 OR COALESCE(c.email,'') ILIKE $2 OR COALESCE(c.phone,'') ILIKE $2 OR COALESCE(c.city,'') ILIKE $2 OR COALESCE(c.address,'') ILIKE $2 OR EXISTS(SELECT 1 FROM crm_client_tags ctz JOIN crm_tags tz ON tz.id=ctz.tag_id WHERE ctz.client_id=c.id AND tz.name ILIKE $2))
         AND ($3='all' OR ($3='active' AND c.is_active) OR ($3='inactive' AND NOT c.is_active))
         AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM crm_client_tags z WHERE z.client_id=c.id AND z.tag_id=$4::uuid))
-      ORDER BY COALESCE(NULLIF(c.full_name,''),c.name) COLLATE "C" ASC
-      LIMIT 500`, [locationId, q, status, tagId]);
+      ORDER BY lower(COALESCE(NULLIF(c.full_name,''),c.name)) ASC
+      LIMIT 20000`, [locationId, q, status, tagId]);
     res.json(rows);
   } catch (error) { fail(res, error); }
 });
