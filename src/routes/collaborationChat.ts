@@ -8,17 +8,17 @@ router.use(requireAuth);
 router.use(requireFeature("staff_chat"));
 
 async function actor(req: AuthRequest) {
-  const email = String(req.user?.email || "").trim().toLowerCase();
-  if (email) {
-    const { rows } = await db.query(
-      `SELECT id::text AS employee_id, COALESCE(full_name, email) AS full_name, email
+  const id=String(req.user?.id||"").trim();
+  const email=String(req.user?.email||"").trim().toLowerCase();
+  const {rows}=await db.query(
+    `SELECT id::text AS employee_id,COALESCE(full_name,email,login_name,'Munkatárs') AS full_name,email,login_name
        FROM employees
-       WHERE lower(email) = $1 AND COALESCE(active, true) = true
-       LIMIT 1`,
-      [email]
-    );
-    if (rows[0]) return { key: `employee:${rows[0].employee_id}`, name: rows[0].full_name, email };
-  }
+      WHERE COALESCE(active,true)=true
+        AND (id::text=$1 OR ($2<>'' AND (lower(COALESCE(email,''))=$2 OR lower(COALESCE(login_name,''))=$2)))
+      ORDER BY CASE WHEN id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,
+    [id,email]
+  );
+  if(rows[0])return{key:`employee:${rows[0].employee_id}`,name:rows[0].full_name,email:rows[0].email||email};
   return { key: `user:${req.user?.id ?? "unknown"}`, name: req.user?.email || `Felhasználó ${req.user?.id ?? ""}`, email };
 }
 
