@@ -5,18 +5,6 @@ async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)
 export async function ensureMenuHealth(){
   await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);
 
-  // Régi migrációk után előfordulhat ugyanaz a menükód többször. Ezt még az
-  // egyedi index létrehozása ELŐTT rendezzük, különben az egész önjavítás leáll.
-  // A legkisebb id marad kanonikus; a többi rekordot nem töröljük fizikailag,
-  // hanem inaktiváljuk, így szükség esetén auditálható/visszaállítható marad.
-  await pool.query(`WITH ranked AS (
-    SELECT id,code,ROW_NUMBER() OVER(PARTITION BY code ORDER BY id) rn
-    FROM menus WHERE code IS NOT NULL
-  )
-  UPDATE menus m SET code=NULL,is_active=false
-  FROM ranked r WHERE m.id=r.id AND r.rn>1`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL`);
-
   // A két kritikus főmenü legyen biztosan jelen, akkor is, ha egy korábbi menümigráció kimaradt.
   await pool.query(`DO $$ DECLARE p bigint; BEGIN
     SELECT id INTO p FROM menus WHERE code='appointments' OR (parent_id IS NULL AND lower(name) LIKE 'időpont%') ORDER BY CASE WHEN code='appointments' THEN 0 ELSE 1 END,id LIMIT 1;
@@ -27,16 +15,16 @@ export async function ensureMenuHealth(){
       UPDATE menus SET name='Munkalapok',route='/workorders',parent_id=p,order_index=25,feature_key='workorders',is_active=true WHERE code='appointments.workorders';
     ELSE
       UPDATE menus SET code='appointments.workorders',name='Munkalapok',route='/workorders',parent_id=p,order_index=25,feature_key='workorders',is_active=true
-       WHERE id=(SELECT id FROM menus WHERE route IN('/workorders','/workorders/list','/munkalapok') ORDER BY id LIMIT 1);
+       WHERE id=(SELECT id FROM menus WHERE route IN('/workorders','/workorders/list') ORDER BY id LIMIT 1);
       IF NOT FOUND THEN INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active) VALUES('appointments.workorders','Munkalapok','ClipboardCheck','/workorders',25,p,'workorders',true); END IF;
     END IF;
-    UPDATE menus SET is_active=false WHERE route IN('/workorders','/workorders/list','/munkalapok') AND COALESCE(code,'')<>'appointments.workorders';
+    UPDATE menus SET is_active=false WHERE route IN('/workorders','/workorders/list') AND COALESCE(code,'')<>'appointments.workorders';
   END $$;`);
 
   await pool.query(`DO $$ DECLARE p bigint; BEGIN
-    SELECT id INTO p FROM menus WHERE code='finance' OR (parent_id IS NULL AND (route IN('/finance','/penzugy') OR lower(name) LIKE 'pénzügy%')) ORDER BY CASE WHEN code='finance' THEN 0 ELSE 1 END,id LIMIT 1;
+    SELECT id INTO p FROM menus WHERE code='finance' OR (parent_id IS NULL AND (route='/finance' OR lower(name) LIKE 'pénzügy%')) ORDER BY CASE WHEN code='finance' THEN 0 ELSE 1 END,id LIMIT 1;
     IF p IS NULL THEN INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active) VALUES('finance','Pénzügyek','WalletCards',NULL,60,NULL,'finance',true) RETURNING id INTO p;
-    ELSE UPDATE menus SET code=COALESCE(code,'finance'),name='Pénzügyek',icon=COALESCE(icon,'WalletCards'),route=NULL,is_active=true WHERE id=p; END IF;
+    ELSE UPDATE menus SET code=COALESCE(code,'finance'),name='Pénzügyek',icon=COALESCE(icon,'WalletCards'),is_active=true WHERE id=p; END IF;
 
     IF EXISTS(SELECT 1 FROM menus WHERE code='finance.nav_online_invoice') THEN
       UPDATE menus SET name='NAV Online Számla',route='/finance/nav-online-invoice',parent_id=p,order_index=150,feature_key='finance',is_active=true WHERE code='finance.nav_online_invoice';
@@ -48,22 +36,14 @@ export async function ensureMenuHealth(){
     UPDATE menus SET is_active=false WHERE route='/finance/nav-online-invoice' AND COALESCE(code,'')<>'finance.nav_online_invoice';
   END $$;`);
 
-  // Hibás/örökölt útvonalak átvezetése a ténylegesen létező frontend oldalakra.
   await safe(`UPDATE menus SET route='/webshop/admin',is_active=true WHERE code='commerce.webshop'`);
   await safe(`UPDATE menus SET route='/signage',is_active=true WHERE code='screens.signage'`);
   await safe(`UPDATE menus SET route='/kiosk',is_active=true WHERE code='screens.kiosk'`);
-  await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code='finance.dashboard'`);
+  await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
   await safe(`UPDATE menus SET route='/modules/team/timetable',is_active=true WHERE code='team.schedule'`);
   await safe(`UPDATE menus SET route='/admin/vir/reports',is_active=true WHERE code='analytics.reports'`);
   await safe(`UPDATE menus SET route='/services',is_active=true WHERE code='settings.services'`);
 
-  // Azonos képernyőre mutató régi pénzügyi ál-menük helyett egy áttekintés +
-  // a valódi NAV almenü maradjon. A pénztár, számlák és kontroll a /finance
-  // oldalon belül külön panelek, nem külön route-ok.
-  await safe(`UPDATE menus SET is_active=false WHERE code IN('finance.checkout','finance.cash')`);
-
-  // Tényleges UI nélküli, régi scaffold elemek ne jelenjenek meg. A rekordokat nem töröljük,
-  // hogy visszaállíthatók legyenek, ha a modul később elkészül.
   await safe(`UPDATE menus SET is_active=false WHERE code IN(
     'integrations','integrations.marketplace','integrations.api','integrations.logs',
     'marketing','marketing.campaigns','marketing.notifications','marketing.templates','marketing.segments','marketing.feedback',
@@ -76,15 +56,10 @@ export async function ensureMenuHealth(){
     'analytics.revenue','analytics.appointments','analytics.clients','analytics.staff','analytics.services','analytics.inventory'
   )`);
 
-  // Régi, kód nélküli menüaliasok: ha ugyanarra az aktív kanonikus oldalra mutatnak, ne duplázódjanak.
   await safe(`UPDATE menus m SET is_active=false WHERE m.code IS NULL AND m.is_active=true AND EXISTS(
     SELECT 1 FROM menus k WHERE k.code IS NOT NULL AND k.is_active=true AND k.id<>m.id AND COALESCE(k.route,'')<>'' AND k.route=m.route
   )`);
 
-  // Kifejezetten a régi magyar route-aliasok ne jelenjenek meg külön menüként.
-  await safe(`UPDATE menus SET is_active=false WHERE route IN('/munkalapok','/penzugy','/logisztika','/bejelentkezesek') AND code IS NULL`);
-
-  // Jogosultságok: NAV technikai/admin funkció; munkalap a szerepkör szerinti scope-pal.
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now() FROM menus m WHERE m.code IN('appointments.workorders','finance.nav_online_invoice')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,can_view_financial=true,can_manage_permissions=true,scope_type='all_locations',updated_at=now()`);
