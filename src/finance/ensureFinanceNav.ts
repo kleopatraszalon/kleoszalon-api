@@ -15,6 +15,7 @@ export function ensureFinanceNav(){
     ensurePromise=(async()=>{
       await ensureHrV2();
       for(const file of [
+        '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
         '20260807_payroll_accounting_v2.sql',
         '20260807_FINANCE_INVOICES_V3.sql',
