@@ -1,0 +1,1 @@
+A futásidőben alkalmazott javítás az `src/menu/ensureMenuHealth.ts` fájlban található. A menüregressziót okozó destruktív deduplikálás kikerült, a dashboard és a kanonikus főmenük újraaktiválódnak.

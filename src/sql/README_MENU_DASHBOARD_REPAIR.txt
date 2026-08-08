@@ -1,0 +1,1 @@
+A tényleges regresszió-javítás futásidőben az src/menu/ensureMenuHealth.ts fájlban történik. Ez a fájl csak audit-megjegyzés: a 2026-08-08-i menüdeduplikálás után a kanonikus főmenük újraaktiválásra kerülnek, a destruktív kód-nullázás megszűnt.
