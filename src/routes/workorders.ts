@@ -2,255 +2,28 @@ import { Router } from "express";
 import db from "../db";
 
 const router = Router();
+const WORK_ORDER_STATUSES = new Set(["waiting","arrived","in_progress","completed","cancelled","no_show"]);
+function normalizeStatus(value: unknown, fallback = "arrived") {const status=String(value??fallback).trim().toLowerCase();return WORK_ORDER_STATUSES.has(status)?status:null;}
 
-const WORK_ORDER_STATUSES = new Set([
-  "waiting",
-  "arrived",
-  "in_progress",
-  "completed",
-  "cancelled",
-  "no_show",
-]);
-
-function normalizeStatus(value: unknown, fallback = "arrived") {
-  const status = String(value ?? fallback).trim().toLowerCase();
-  return WORK_ORDER_STATUSES.has(status) ? status : null;
+async function consumeWorkOrderStock(client:any,workOrderId:string|number){
+ const workOrderResult=await client.query(`SELECT id,location_id,stock_consumed_at FROM work_orders WHERE id=$1 FOR UPDATE`,[workOrderId]);const workOrder=workOrderResult.rows[0];if(!workOrder)throw new Error("A munkalap nem található");if(workOrder.stock_consumed_at)return;
+ const items=await client.query(`SELECT product_id,SUM(quantity)::numeric quantity FROM work_order_items WHERE work_order_id=$1 AND item_type='product' AND product_id IS NOT NULL GROUP BY product_id`,[workOrderId]);
+ for(const item of items.rows){const quantity=Number(item.quantity??0);if(!(quantity>0))continue;await client.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity) VALUES($1,$2,0) ON CONFLICT(product_id,location_id) DO NOTHING`,[item.product_id,workOrder.location_id??null]);const balance=await client.query(`UPDATE product_stock_balances SET quantity=quantity-$3,updated_at=now() WHERE product_id=$1 AND location_id IS NOT DISTINCT FROM $2 AND quantity>=$3 RETURNING quantity`,[item.product_id,workOrder.location_id??null,quantity]);if(!balance.rows[0]){const product=await client.query(`SELECT name FROM products WHERE id=$1`,[item.product_id]);throw new Error(`Nincs elegendő készlet: ${product.rows[0]?.name??`#${item.product_id}`}`)}await client.query(`INSERT INTO inventory_movements(product_id,location_id,work_order_id,movement_type,quantity,balance_after,note) VALUES($1,$2,$3,'work_order_consumption',$4,$5,$6) ON CONFLICT DO NOTHING`,[item.product_id,workOrder.location_id??null,workOrderId,-quantity,balance.rows[0].quantity,"Automatikus anyagfelhasználás munkalap lezárásakor"])}
+ await client.query(`UPDATE work_orders SET stock_consumed_at=now(),updated_at=now() WHERE id=$1`,[workOrderId]);
 }
 
-async function consumeWorkOrderStock(client: any, workOrderId: string | number) {
-  const workOrderResult = await client.query(
-    `SELECT id, location_id, stock_consumed_at FROM work_orders WHERE id = $1 FOR UPDATE`,
-    [workOrderId]
-  );
-  const workOrder = workOrderResult.rows[0];
-  if (!workOrder) throw new Error("A munkalap nem található");
-  if (workOrder.stock_consumed_at) return;
+router.get("/workorders",async(_req,res,next)=>{try{const result=await db.query(`SELECT v.*,w.work_order_number,w.locked_at,w.archived_at,w.archive_hash FROM v_work_orders_list v JOIN work_orders w ON w.id=v.id ORDER BY v.created_at DESC`);res.json(result.rows)}catch(err){next(err)}});
+router.get("/workorders/:id",async(req,res,next)=>{try{const{id}=req.params;const header=await db.query(`SELECT v.*,w.work_order_number,w.source_created_at,w.source_snapshot,w.locked_at,w.locked_reason,w.archived_at,w.archive_hash FROM v_work_order_details v JOIN work_orders w ON w.id=v.id WHERE v.id=$1`,[id]);if(!header.rows[0])return res.status(404).json({message:"A munkalap nem található"});const items=await db.query(`SELECT id,item_type,service_id,product_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes FROM work_order_items WHERE work_order_id=$1 ORDER BY created_at`,[id]);const payments=await db.query(`SELECT id,payment_method,amount,paid_at,note FROM work_order_payments WHERE work_order_id=$1 ORDER BY paid_at`,[id]);res.json({...header.rows[0],items:items.rows,payments:payments.rows})}catch(err){next(err)}});
+router.get("/workorders/:id/archive",async(req,res,next)=>{try{const{rows}=await db.query(`SELECT id,work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash FROM work_order_archive WHERE work_order_id=$1::uuid`,[req.params.id]);if(!rows[0])return res.status(404).json({message:"Ehhez a munkalaphoz még nincs lezárt archív példány."});res.json(rows[0])}catch(err){next(err)}});
 
-  const items = await client.query(
-    `SELECT product_id, SUM(quantity)::numeric AS quantity
-     FROM work_order_items
-     WHERE work_order_id = $1 AND item_type = 'product' AND product_id IS NOT NULL
-     GROUP BY product_id`,
-    [workOrderId]
-  );
+router.patch("/workorders/:id/lifecycle",async(req,res,next)=>{const client=await db.connect();try{const status=normalizeStatus(req.body?.status,"");if(!status)return res.status(400).json({message:"Érvénytelen munkalap státusz"});await client.query("BEGIN");const current=await client.query(`SELECT id,work_order_number,locked_at,status FROM work_orders WHERE id=$1 FOR UPDATE`,[req.params.id]);if(!current.rows[0]){await client.query("ROLLBACK");return res.status(404).json({message:"A munkalap nem található"})}if(current.rows[0].locked_at){await client.query("ROLLBACK");return res.status(409).json({message:`A(z) ${current.rows[0].work_order_number} munkalap lezárt és archivált; nem módosítható.`})}const now=new Date().toISOString();const startedAt=status==="in_progress"?(req.body?.started_at??now):req.body?.started_at;const completedAt=status==="completed"?(req.body?.completed_at??now):req.body?.completed_at;const cancelledAt=status==="cancelled"?now:null;const result=await client.query(`UPDATE work_orders SET status=$2,started_at=COALESCE($3::timestamptz,started_at),completed_at=COALESCE($4::timestamptz,completed_at),cancelled_at=CASE WHEN $2='cancelled' THEN $5::timestamptz ELSE cancelled_at END,status_updated_at=now(),updated_at=now() WHERE id=$1 RETURNING *`,[req.params.id,status,startedAt??null,completedAt??null,cancelledAt]);if(status==="completed")await consumeWorkOrderStock(client,req.params.id);await client.query("COMMIT");res.json(result.rows[0])}catch(err:any){await client.query("ROLLBACK");if(err?.code==='55000')return res.status(409).json({message:err.message});if(String(err?.message||"").startsWith("Nincs elegendő készlet"))return res.status(409).json({message:err.message});next(err)}finally{client.release()}});
 
-  for (const item of items.rows) {
-    const quantity = Number(item.quantity ?? 0);
-    if (!(quantity > 0)) continue;
-
-    await client.query(
-      `INSERT INTO product_stock_balances (product_id, location_id, quantity)
-       VALUES ($1, $2, 0)
-       ON CONFLICT (product_id, location_id) DO NOTHING`,
-      [item.product_id, workOrder.location_id ?? null]
-    );
-
-    const balance = await client.query(
-      `UPDATE product_stock_balances
-       SET quantity = quantity - $3, updated_at = now()
-       WHERE product_id = $1
-         AND location_id IS NOT DISTINCT FROM $2
-         AND quantity >= $3
-       RETURNING quantity`,
-      [item.product_id, workOrder.location_id ?? null, quantity]
-    );
-
-    if (!balance.rows[0]) {
-      const product = await client.query(`SELECT name FROM products WHERE id = $1`, [item.product_id]);
-      throw new Error(`Nincs elegendő készlet: ${product.rows[0]?.name ?? `#${item.product_id}`}`);
-    }
-
-    await client.query(
-      `INSERT INTO inventory_movements
-        (product_id, location_id, work_order_id, movement_type, quantity, balance_after, note)
-       VALUES ($1, $2, $3, 'work_order_consumption', $4, $5, $6)
-       ON CONFLICT DO NOTHING`,
-      [
-        item.product_id,
-        workOrder.location_id ?? null,
-        workOrderId,
-        -quantity,
-        balance.rows[0].quantity,
-        "Automatikus anyagfelhasználás munkalap lezárásakor",
-      ]
-    );
-  }
-
-  await client.query(
-    `UPDATE work_orders SET stock_consumed_at = now(), updated_at = now() WHERE id = $1`,
-    [workOrderId]
-  );
-}
-
-router.get("/workorders", async (_req, res, next) => {
-  try {
-    const result = await db.query(`SELECT * FROM v_work_orders_list ORDER BY created_at DESC`);
-    res.json(result.rows);
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get("/workorders/:id", async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const header = await db.query(`SELECT * FROM v_work_order_details WHERE id = $1`, [id]);
-    if (!header.rows[0]) return res.status(404).json({ message: "A munkalap nem található" });
-
-    const items = await db.query(
-      `SELECT id, item_type, service_id, product_id, item_name, quantity, unit_price, discount_amount, line_total, duration_minutes
-       FROM work_order_items WHERE work_order_id = $1 ORDER BY created_at`,
-      [id]
-    );
-    const payments = await db.query(
-      `SELECT id, payment_method, amount, paid_at, note
-       FROM work_order_payments WHERE work_order_id = $1 ORDER BY paid_at`,
-      [id]
-    );
-
-    res.json({ ...header.rows[0], items: items.rows, payments: payments.rows });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.patch("/workorders/:id/lifecycle", async (req, res, next) => {
-  const client = await db.connect();
-  try {
-    const status = normalizeStatus(req.body?.status, "");
-    if (!status) return res.status(400).json({ message: "Érvénytelen munkalap státusz" });
-
-    await client.query("BEGIN");
-    const now = new Date().toISOString();
-    const startedAt = status === "in_progress" ? (req.body?.started_at ?? now) : req.body?.started_at;
-    const completedAt = status === "completed" ? (req.body?.completed_at ?? now) : req.body?.completed_at;
-    const cancelledAt = status === "cancelled" ? now : null;
-
-    const result = await client.query(
-      `UPDATE work_orders
-       SET status = $2,
-           started_at = COALESCE($3::timestamptz, started_at),
-           completed_at = COALESCE($4::timestamptz, completed_at),
-           cancelled_at = CASE WHEN $2 = 'cancelled' THEN $5::timestamptz ELSE cancelled_at END,
-           status_updated_at = now(),
-           updated_at = now()
-       WHERE id = $1
-       RETURNING *`,
-      [req.params.id, status, startedAt ?? null, completedAt ?? null, cancelledAt]
-    );
-
-    if (!result.rows[0]) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "A munkalap nem található" });
-    }
-
-    if (status === "completed") await consumeWorkOrderStock(client, req.params.id);
-    await client.query("COMMIT");
-    res.json(result.rows[0]);
-  } catch (err: any) {
-    await client.query("ROLLBACK");
-    if (String(err?.message || "").startsWith("Nincs elegendő készlet")) {
-      return res.status(409).json({ message: err.message });
-    }
-    next(err);
-  } finally {
-    client.release();
-  }
-});
-
-router.post("/workorders", async (req, res, next) => {
-  const client = await db.connect();
-  try {
-    const {
-      title, notes, employee_id, client_name, client_phone, client_email,
-      location_id, appointment_id, fully_paid, note_for_another_visitor,
-      services, products, created_by, started_at, completed_at,
-    } = req.body;
-
-    const status = normalizeStatus(req.body?.status);
-    if (!status) return res.status(400).json({ message: "Érvénytelen munkalap státusz" });
-
-    await client.query("BEGIN");
-
-    const header = await client.query(
-      `INSERT INTO work_orders
-        (title, notes, status, employee_id, client_name, client_phone, client_email,
-         location_id, appointment_id, fully_paid, note_for_another_visitor, created_by,
-         started_at, completed_at, cancelled_at, status_updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now())
-       RETURNING id`,
-      [
-        title, notes ?? null, status, employee_id ?? null, client_name ?? null,
-        client_phone ?? null, client_email ?? null, location_id ?? null,
-        appointment_id ?? null, Boolean(fully_paid), Boolean(note_for_another_visitor),
-        created_by ?? null,
-        started_at ?? (status === "in_progress" ? new Date().toISOString() : null),
-        completed_at ?? (status === "completed" ? new Date().toISOString() : null),
-        status === "cancelled" ? new Date().toISOString() : null,
-      ]
-    );
-
-    const workOrderId = header.rows[0].id;
-
-    if (Array.isArray(services)) {
-      for (const item of services) {
-        const serviceInfo = await client.query(
-          `SELECT s.id, s.name,
-                  COALESCE(s.price_gross, s.price, 0) AS price_value,
-                  COALESCE(s.duration_minutes, s.default_duration, 0) AS duration_value
-           FROM services s WHERE s.id = $1`,
-          [item.service_id]
-        );
-        const svc = serviceInfo.rows[0];
-        if (!svc) continue;
-        const quantity = Number(item.quantity ?? 1) || 1;
-        const unitPrice = Number(svc.price_value ?? 0);
-        const discountAmount = Number(item.discount_amount ?? 0) || 0;
-        await client.query(
-          `INSERT INTO work_order_items
-            (work_order_id, item_type, service_id, item_name, quantity, unit_price, discount_amount, line_total, duration_minutes)
-           VALUES ($1,'service',$2,$3,$4,$5,$6,$7,$8)`,
-          [workOrderId, item.service_id, svc.name, quantity, unitPrice, discountAmount,
-           quantity * unitPrice - discountAmount, svc.duration_value || null]
-        );
-      }
-    }
-
-    if (Array.isArray(products)) {
-      for (const item of products) {
-        const productInfo = await client.query(
-          `SELECT p.id, p.name, COALESCE(p.price_gross, p.price, 0) AS price_value
-           FROM products p WHERE p.id = $1`,
-          [item.product_id]
-        );
-        const prd = productInfo.rows[0];
-        if (!prd) continue;
-        const quantity = Number(item.quantity ?? 1) || 1;
-        const unitPrice = Number(prd.price_value ?? 0);
-        const discountAmount = Number(item.discount_amount ?? 0) || 0;
-        await client.query(
-          `INSERT INTO work_order_items
-            (work_order_id, item_type, product_id, item_name, quantity, unit_price, discount_amount, line_total)
-           VALUES ($1,'product',$2,$3,$4,$5,$6,$7)`,
-          [workOrderId, item.product_id, prd.name, quantity, unitPrice,
-           discountAmount, quantity * unitPrice - discountAmount]
-        );
-      }
-    }
-
-    await client.query(`SELECT recalc_work_order_totals($1)`, [workOrderId]);
-    if (status === "completed") await consumeWorkOrderStock(client, workOrderId);
-    await client.query("COMMIT");
-    res.status(201).json({ id: workOrderId });
-  } catch (err: any) {
-    await client.query("ROLLBACK");
-    if (String(err?.message || "").startsWith("Nincs elegendő készlet")) {
-      return res.status(409).json({ message: err.message });
-    }
-    next(err);
-  } finally {
-    client.release();
-  }
-});
-
+router.post("/workorders",async(req,res,next)=>{const client=await db.connect();try{const{title,notes,employee_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,services,products,created_by,started_at,completed_at}=req.body;const status=normalizeStatus(req.body?.status);if(!status)return res.status(400).json({message:"Érvénytelen munkalap státusz"});await client.query("BEGIN");
+ if(appointment_id){const existing=await client.query(`SELECT id,work_order_number,locked_at FROM work_orders WHERE appointment_id=$1::uuid LIMIT 1`,[appointment_id]);if(existing.rows[0]){await client.query("COMMIT");return res.status(200).json({id:existing.rows[0].id,work_order_number:existing.rows[0].work_order_number,existing:true,locked:Boolean(existing.rows[0].locked_at)})}}
+ const numberResult=await client.query(`SELECT next_official_work_order_number(now()) work_order_number`);const workOrderNumber=numberResult.rows[0].work_order_number;
+ const sourceSnapshot=appointment_id?(await client.query(`SELECT jsonb_build_object('appointment',to_jsonb(a),'services',COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.sort_order,s.created_at) FROM appointment_services s WHERE s.appointment_id=a.id),'[]'::jsonb)) snapshot FROM appointments a WHERE a.id=$1::uuid`,[appointment_id])).rows[0]?.snapshot:null;
+ const header=await client.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,created_by,started_at,completed_at,cancelled_at,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,now(),$16,now(),$17) RETURNING id,work_order_number`,[title,notes??null,status,employee_id??null,client_name??null,client_phone??null,client_email??null,location_id??null,appointment_id??null,Boolean(fully_paid),Boolean(note_for_another_visitor),created_by??null,started_at??(status==="in_progress"?new Date().toISOString():null),completed_at??(status==="completed"?new Date().toISOString():null),status==="cancelled"?new Date().toISOString():null,workOrderNumber,sourceSnapshot]);const workOrderId=header.rows[0].id;
+ if(Array.isArray(services)){for(const item of services){const serviceInfo=await client.query(`SELECT s.id,s.name,COALESCE(s.price_gross,s.price,0) price_value,COALESCE(s.duration_minutes,s.default_duration,0) duration_value FROM services s WHERE s.id=$1`,[item.service_id]);const svc=serviceInfo.rows[0];if(!svc)continue;const quantity=Number(item.quantity??1)||1,unitPrice=Number(svc.price_value??0),discountAmount=Number(item.discount_amount??0)||0;await client.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,$4,$5,$6,$7,$8)`,[workOrderId,item.service_id,svc.name,quantity,unitPrice,discountAmount,quantity*unitPrice-discountAmount,svc.duration_value||null])}}
+ if(Array.isArray(products)){for(const item of products){const productInfo=await client.query(`SELECT p.id,p.name,COALESCE(p.price_gross,p.price,0) price_value FROM products p WHERE p.id=$1`,[item.product_id]);const prd=productInfo.rows[0];if(!prd)continue;const quantity=Number(item.quantity??1)||1,unitPrice=Number(prd.price_value??0),discountAmount=Number(item.discount_amount??0)||0;await client.query(`INSERT INTO work_order_items(work_order_id,item_type,product_id,item_name,quantity,unit_price,discount_amount,line_total) VALUES($1,'product',$2,$3,$4,$5,$6,$7)`,[workOrderId,item.product_id,prd.name,quantity,unitPrice,discountAmount,quantity*unitPrice-discountAmount])}}
+ await client.query(`SELECT recalc_work_order_totals($1)`,[workOrderId]);if(appointment_id)await client.query(`UPDATE appointments SET work_order_id=$2::uuid,work_order_number=$3 WHERE id=$1::uuid`,[appointment_id,workOrderId,workOrderNumber]);if(status==="completed")await consumeWorkOrderStock(client,workOrderId);await client.query("COMMIT");res.status(201).json({id:workOrderId,work_order_number:workOrderNumber})}catch(err:any){await client.query("ROLLBACK");if(err?.code==='55000')return res.status(409).json({message:err.message});if(String(err?.message||"").startsWith("Nincs elegendő készlet"))return res.status(409).json({message:err.message});next(err)}finally{client.release()}});
 export default router;
