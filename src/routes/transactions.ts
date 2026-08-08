@@ -10,6 +10,7 @@ import systemHealthRouter from "./systemHealth";
 import uatTestCenterRouter from "./uatTestCenter";
 import uatIssuesRouter from "./uatIssues";
 import loyaltyRouter from "./loyalty";
+import loyaltyAnalyticsRouter from "./loyaltyAnalytics";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -35,6 +36,7 @@ router.use("/finance-operations",requireFeature("finance"),requireMenuPermission
 router.use("/finance-linking",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeLinkingRouter);
 router.use("/finance-control",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeControlRouter);
 router.use("/loyalty",loyaltyRouter);
+router.use("/loyalty-analytics",loyaltyAnalyticsRouter);
 router.use("/system-health",systemHealthRouter);
 router.use("/uat",uatTestCenterRouter);
 router.use("/uat-issues",uatIssuesRouter);
