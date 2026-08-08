@@ -16,6 +16,7 @@ export function ensureHrV2() {
         "20260808_CHECKLISTS_V1.sql",
         "20260808_CHECKLIST_TEST_USERS_V1.sql",
         "20260808_CHECKLIST_TEST_USERS_V2.sql",
+        "20260808_EMPLOYEE_SELF_SERVICE_V1.sql",
       ]) {
         const sqlPath = path.join(__dirname, "..", "sql", file);
         const sql = await readFile(sqlPath, "utf8");
