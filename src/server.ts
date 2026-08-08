@@ -49,10 +49,12 @@ import { kioskRouter } from "./routes/kiosk";
 import { ensureSignageTables } from "./signage/ensureSignageTables";
 import { ensureHrV2 } from "./hr/ensureHrV2";
 import { ensureVirSpecModules } from "./virSpec/ensureVirSpecModules";
+import { ensureCustomerPortal } from "./customerPortal/ensureCustomerPortal";
 import virRouter from "./routes/vir";
 import virDrilldownRouter from "./routes/virDrilldown";
 import checklistsRouter from "./routes/checklists";
 import employeeSelfServiceRouter from "./routes/employeeSelfService";
+import customerPortalRouter from "./routes/customerPortal";
 
 const app = express();
 function normalizeOrigin(v:string){return String(v||"").trim().replace(/^["']|["']$/g,"").replace(/\/$/,"")}
@@ -63,7 +65,7 @@ const corsOptions:cors.CorsOptions={origin:(origin,cb)=>{if(!origin)return cb(nu
 app.use(cors(corsOptions));app.options("*",cors(corsOptions));
 const dbState={ok:false,last_ok_at:null as string|null,last_err_at:null as string|null,last_error:""};
 async function tryDbPing(label:string){try{await pool.query("SELECT 1");dbState.ok=true;dbState.last_ok_at=new Date().toISOString();dbState.last_error="";console.log(`DB OK (${label})`);return true}catch(e:any){dbState.ok=false;dbState.last_err_at=new Date().toISOString();dbState.last_error=e?.message??String(e);console.error(`DB FAIL (${label})`,dbState.last_error);return false}}
-async function initDbDependentThings(){const ok=await tryDbPing("startup");if(ok){ensureSignageTables(pool).catch(console.error);ensureHrV2().catch(console.error);ensureVirSpecModules().catch(console.error)}else setTimeout(()=>initDbDependentThings().catch(()=>{}),15000)}initDbDependentThings().catch(()=>{});
+async function initDbDependentThings(){const ok=await tryDbPing("startup");if(ok){ensureSignageTables(pool).catch(console.error);ensureHrV2().catch(console.error);ensureVirSpecModules().catch(console.error);ensureCustomerPortal().catch(console.error)}else setTimeout(()=>initDbDependentThings().catch(()=>{}),15000)}initDbDependentThings().catch(()=>{});
 app.set("trust proxy",1);app.use((_,res,next)=>{res.header("Vary","Origin");res.header("X-Kleo-CORS","corsfix-2026-02-04");res.header("X-Kleo-HR","modern-hr-v4");next()});app.use(express.json({limit:"1mb"}));app.use(cookieParser());
 app.use("/api/vir-drilldown",virDrilldownRouter);
 app.use("/api",(req:Request,res:Response,next:NextFunction)=>{if(req.method==="OPTIONS"||req.path==="/health"||req.path==="/health/db"||req.path.startsWith("/signage/nameday")||req.path.startsWith("/signage/flash"))return next();if(!dbState.ok)return res.status(503).json({ok:false,error:"db_unreachable",message:"A szerver adatbázisa jelenleg nem elérhető (connection timeout).",last_err_at:dbState.last_err_at});next()});
@@ -79,6 +81,6 @@ type HashType="bcrypt"|"argon2"|"pbkdf2"|"sha256"|"plaintext"|"unknown";function
 // Mindkét útvonalat támogatjuk a visszafelé kompatibilitás és stabilitás miatt.
 app.use("/api/menu",menuRoutes);
 app.use("/api/menus",menuRoutes);
-app.use("/api/me",meRouter);app.use("/api/workorders",workorderRoutes);app.use("/api/bookings",bookingsRoutes);app.use("/api/transactions",transactionsRoutes);app.use("/api/locations",locationsRoutes);app.use("/api/dashboard",dashboardRoutes);app.use("/api/employees",employeesRouter);app.use("/api/hr",hrRouter);app.use("/api/payroll",payrollRouter);app.use("/api/payroll-accounting",payrollAccountingRouter);app.use("/api/access-control",accessControlRouter);app.use("/api/services",servicesRouter);app.use("/api/services-available",servicesAvailableRoutes);app.use("/api/employee-calendar",employeeCalendarRoutes);app.use("/api/schedule-day",scheduleDayRoutes);app.use("/api/appointments",appointmentsRouter);app.use("/api/timetable",timetableSelfAccess,timetableRouter);app.use("/api/clients",clientsRouter);app.use("/api/spec-modules",specModulesRouter);app.use("/api/public/marketing",publicMarketingRouter);app.use("/api/service-types",serviceTypesRouter);app.use("/api/vir",virRouter);app.use("/api/checklists",checklistsRouter);app.use("/api/employee-self",employeeSelfServiceRouter);
+app.use("/api/me",meRouter);app.use("/api/workorders",workorderRoutes);app.use("/api/bookings",bookingsRoutes);app.use("/api/transactions",transactionsRoutes);app.use("/api/locations",locationsRoutes);app.use("/api/dashboard",dashboardRoutes);app.use("/api/employees",employeesRouter);app.use("/api/hr",hrRouter);app.use("/api/payroll",payrollRouter);app.use("/api/payroll-accounting",payrollAccountingRouter);app.use("/api/access-control",accessControlRouter);app.use("/api/services",servicesRouter);app.use("/api/services-available",servicesAvailableRoutes);app.use("/api/employee-calendar",employeeCalendarRoutes);app.use("/api/schedule-day",scheduleDayRoutes);app.use("/api/appointments",appointmentsRouter);app.use("/api/timetable",timetableSelfAccess,timetableRouter);app.use("/api/clients",clientsRouter);app.use("/api/spec-modules",specModulesRouter);app.use("/api/public/marketing",publicMarketingRouter);app.use("/api/service-types",serviceTypesRouter);app.use("/api/vir",virRouter);app.use("/api/checklists",checklistsRouter);app.use("/api/employee-self",employeeSelfServiceRouter);app.use("/api/customer-portal",customerPortalRouter);
 app.get("/api/health",(_req,res)=>res.json({ok:true,time:new Date().toISOString(),db:dbState}));
 const PORT=Number(process.env.PORT||3000);app.listen(PORT,()=>console.log(`Kleoszalon API listening on ${PORT}`));
