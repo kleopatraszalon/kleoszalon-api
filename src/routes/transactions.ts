@@ -12,6 +12,7 @@ import uatIssuesRouter from "./uatIssues";
 import loyaltyRouter from "./loyalty";
 import loyaltyAnalyticsRouter from "./loyaltyAnalytics";
 import loyaltyOperationsRouter from "./loyaltyOperations";
+import loyaltyPassLookupRouter from "./loyaltyPassLookup";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -38,6 +39,7 @@ router.use("/finance-linking",requireFeature("finance"),requireMenuPermissionByM
 router.use("/finance-control",requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeControlRouter);
 router.use("/loyalty",loyaltyRouter);
 router.use("/loyalty-analytics",loyaltyAnalyticsRouter);
+router.use("/loyalty-operations",loyaltyPassLookupRouter);
 router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/system-health",systemHealthRouter);
 router.use("/uat",uatTestCenterRouter);
