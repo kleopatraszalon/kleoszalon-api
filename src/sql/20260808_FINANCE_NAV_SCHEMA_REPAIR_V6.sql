@@ -65,6 +65,22 @@ ALTER TABLE accounting_journal_lines
   ADD COLUMN IF NOT EXISTS employee_id uuid,
   ADD COLUMN IF NOT EXISTS note text,
   ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
-CREATE INDEX IF NOT EXISTS accounting_journal_lines_journal_entry_idx ON accounting_journal_lines(journal_entry_id);
 
+-- Egy korábbi V3 kísérleti séma ugyanezeket a táblákat eltérő, NOT NULL
+-- oszlopnevekkel hozta létre. Ha az futott le előbb, a kanonikus INSERT-ek
+-- 500-zal elhasaltak. A régi adatokat megtartjuk, csak a kötelező jelleget oldjuk.
+DO $$
+BEGIN
+  IF EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='accounting_journal_entries' AND column_name='entry_no') THEN
+    EXECUTE 'ALTER TABLE accounting_journal_entries ALTER COLUMN entry_no DROP NOT NULL';
+  END IF;
+  IF EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='accounting_journal_entries' AND column_name='reference_type') THEN
+    EXECUTE 'ALTER TABLE accounting_journal_entries ALTER COLUMN reference_type DROP NOT NULL';
+  END IF;
+  IF EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='accounting_journal_lines' AND column_name='entry_id') THEN
+    EXECUTE 'ALTER TABLE accounting_journal_lines ALTER COLUMN entry_id DROP NOT NULL';
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS accounting_journal_lines_journal_entry_idx ON accounting_journal_lines(journal_entry_id);
 COMMIT;
