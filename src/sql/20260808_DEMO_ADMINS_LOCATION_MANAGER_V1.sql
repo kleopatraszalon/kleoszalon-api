@@ -33,9 +33,31 @@ BEGIN
   WHERE table_schema=current_schema() AND table_name='users' AND column_name='role'
   LIMIT 1;
 
+  -- Korábbi demo adminfiókok átnevezése. A sorrend szándékos:
+  -- előbb admin2 -> admin1, majd a felszabadult admin2-re admin3 -> admin2.
+  UPDATE users
+     SET full_name='H. Rebeka',
+         login_name='admin1',
+         email='demo.admin1@kleoszalon.hu',
+         password_hash='$2b$12$Zea7mWMY.2wv.oUi.WwFJOfrsbBbxdOEHv8r5dbyq7W76NFUJIsQ.',
+         location_id=NULL
+   WHERE lower(COALESCE(email,''))='demo.admin2@kleoszalon.hu'
+     AND lower(COALESCE(login_name,''))='admin2'
+     AND COALESCE(full_name,'')='DEMO Admin 2';
+
+  UPDATE users
+     SET full_name='H. N. Andrea',
+         login_name='admin2',
+         email='demo.admin2@kleoszalon.hu',
+         password_hash='$2b$12$Zea7mWMY.2wv.oUi.WwFJOfrsbBbxdOEHv8r5dbyq7W76NFUJIsQ.',
+         location_id=NULL
+   WHERE lower(COALESCE(email,''))='demo.admin3@kleoszalon.hu'
+     AND lower(COALESCE(login_name,''))='admin3'
+     AND COALESCE(full_name,'')='DEMO Admin 3';
+
   FOR r IN SELECT * FROM (VALUES
-    ('DEMO Admin 2','admin2','demo.admin2@kleoszalon.hu','admin',NULL::uuid),
-    ('DEMO Admin 3','admin3','demo.admin3@kleoszalon.hu','admin',NULL::uuid),
+    ('H. Rebeka','admin1','demo.admin1@kleoszalon.hu','admin',NULL::uuid),
+    ('H. N. Andrea','admin2','demo.admin2@kleoszalon.hu','admin',NULL::uuid),
     ('DEMO Üzletvezető','uzletvezeto1','demo.uzletvezeto@kleoszalon.hu','location_manager',v_location)
   ) AS v(full_name,login_name,email,role_key,location_id)
   LOOP
