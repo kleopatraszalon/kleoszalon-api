@@ -2,6 +2,7 @@ import {readFile} from 'fs/promises';
 import path from 'path';
 import pool from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
+import {ensureCustomerPortal} from '../customerPortal/ensureCustomerPortal';
 import {ensureMenuHealth} from '../menu/ensureMenuHealth';
 
 let ensurePromise:Promise<void>|null=null;
@@ -15,6 +16,7 @@ export function ensureFinanceNav(){
   if(!ensurePromise){
     ensurePromise=(async()=>{
       await ensureHrV2();
+      await ensureCustomerPortal();
       for(const file of [
         '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
@@ -23,10 +25,10 @@ export function ensureFinanceNav(){
         '20260808_FINANCE_NAV_SCHEMA_REPAIR_V6.sql',
         '20260808_NAV_ONLINE_INVOICE_V4.sql',
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
+        '20260808_LOYALTY_CASHIER_V5.sql',
+        '20260806_WORKORDER_STOCK_CONSUMPTION_V1.sql',
+        '20260808_WORK_ORDER_FINALIZATION_V2.sql',
       ]) await runSql(file);
-      // A pénzügyi/NAV séma után a kapcsolódó menük és jogosultságok is
-      // automatikusan kerüljenek konzisztens állapotba. Így a NAV menüpont
-      // nem függ attól, hogy valaki előbb megnyitotta-e a menü API-t.
       await ensureMenuHealth();
     })().catch(err=>{ensurePromise=null;throw err});
   }
