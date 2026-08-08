@@ -28,6 +28,7 @@ import employeeCalendarRoutes from "./routes/employee_calendar";
 import scheduleDayRoutes from "./routes/schedule_day";
 import appointmentsRouter from "./routes/appointments";
 import timetableRouter from "./routes/timetable";
+import timetableSelfAccess from "./middleware/timetableSelfAccess";
 import clientsRouter from "./routes/clients";
 import specModulesRouter from "./routes/specModules";
 import sendLoginCodeEmail from "./mailer";
@@ -78,6 +79,6 @@ type HashType="bcrypt"|"argon2"|"pbkdf2"|"sha256"|"plaintext"|"unknown";function
 // Mindkét útvonalat támogatjuk a visszafelé kompatibilitás és stabilitás miatt.
 app.use("/api/menu",menuRoutes);
 app.use("/api/menus",menuRoutes);
-app.use("/api/me",meRouter);app.use("/api/workorders",workorderRoutes);app.use("/api/bookings",bookingsRoutes);app.use("/api/transactions",transactionsRoutes);app.use("/api/locations",locationsRoutes);app.use("/api/dashboard",dashboardRoutes);app.use("/api/employees",employeesRouter);app.use("/api/hr",hrRouter);app.use("/api/payroll",payrollRouter);app.use("/api/payroll-accounting",payrollAccountingRouter);app.use("/api/access-control",accessControlRouter);app.use("/api/services",servicesRouter);app.use("/api/services-available",servicesAvailableRoutes);app.use("/api/employee-calendar",employeeCalendarRoutes);app.use("/api/schedule-day",scheduleDayRoutes);app.use("/api/appointments",appointmentsRouter);app.use("/api/timetable",timetableRouter);app.use("/api/clients",clientsRouter);app.use("/api/spec-modules",specModulesRouter);app.use("/api/public/marketing",publicMarketingRouter);app.use("/api/service-types",serviceTypesRouter);app.use("/api/vir",virRouter);app.use("/api/checklists",checklistsRouter);app.use("/api/employee-self",employeeSelfServiceRouter);
+app.use("/api/me",meRouter);app.use("/api/workorders",workorderRoutes);app.use("/api/bookings",bookingsRoutes);app.use("/api/transactions",transactionsRoutes);app.use("/api/locations",locationsRoutes);app.use("/api/dashboard",dashboardRoutes);app.use("/api/employees",employeesRouter);app.use("/api/hr",hrRouter);app.use("/api/payroll",payrollRouter);app.use("/api/payroll-accounting",payrollAccountingRouter);app.use("/api/access-control",accessControlRouter);app.use("/api/services",servicesRouter);app.use("/api/services-available",servicesAvailableRoutes);app.use("/api/employee-calendar",employeeCalendarRoutes);app.use("/api/schedule-day",scheduleDayRoutes);app.use("/api/appointments",appointmentsRouter);app.use("/api/timetable",timetableSelfAccess,timetableRouter);app.use("/api/clients",clientsRouter);app.use("/api/spec-modules",specModulesRouter);app.use("/api/public/marketing",publicMarketingRouter);app.use("/api/service-types",serviceTypesRouter);app.use("/api/vir",virRouter);app.use("/api/checklists",checklistsRouter);app.use("/api/employee-self",employeeSelfServiceRouter);
 app.get("/api/health",(_req,res)=>res.json({ok:true,time:new Date().toISOString(),db:dbState}));
 const PORT=Number(process.env.PORT||3000);app.listen(PORT,()=>console.log(`Kleoszalon API listening on ${PORT}`));
