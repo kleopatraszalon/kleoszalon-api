@@ -230,7 +230,13 @@ router.post("/import-altegio-xlsx", upload.single("file"), async (req: AuthReque
       const rawTags = text(row["Kategória"] || row["Címkék"] || row["Címke"]);
       for (const tagName of rawTags.split(/[;,|]/).map(s=>s.trim()).filter(Boolean)) {
         const key = tagName.toLowerCase(); let tagId = tagCache.get(key);
-        if (!tagId) { const t = await db.query(`INSERT INTO crm_tags(name,color) VALUES($1,'#7c5ce5') ON CONFLICT ((lower(name))) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tagName]); tagId = t.rows[0].id; tagCache.set(key,tagId); }
+        if (!tagId) {
+          const t = await db.query(`INSERT INTO crm_tags(name,color) VALUES($1,'#7c5ce5') ON CONFLICT ((lower(name))) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tagName]);
+          const createdTagId = String(t.rows[0]?.id || '');
+          if (!createdTagId) throw new Error('A CRM címke létrehozása nem adott vissza azonosítót.');
+          tagId = createdTagId;
+          tagCache.set(key, createdTagId);
+        }
         const link = await db.query(`INSERT INTO crm_client_tags(client_id,tag_id) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING RETURNING client_id`, [id,tagId]); if (link.rowCount) tagged++;
       }
     }
