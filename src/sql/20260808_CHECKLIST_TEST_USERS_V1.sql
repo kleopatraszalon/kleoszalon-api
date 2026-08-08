@@ -39,12 +39,13 @@ UPDATE employees SET
 WHERE lower(email)='demo.dorottya.farkas@kleoszalon.hu';
 
 -- A users.role több régi telepítésen text, egyes környezetekben json/jsonb lehet.
--- Dinamikus SQL-lel mindkét sémát támogatjuk.
+-- Dinamikus SQL-lel mindegyik támogatott anélkül, hogy a meglévő sémát átírnánk.
 DO $$
 DECLARE
   role_udt text;
   r record;
   role_value text;
+  affected bigint;
 BEGIN
   SELECT udt_name INTO role_udt
   FROM information_schema.columns
@@ -59,12 +60,22 @@ BEGIN
       ('DEMO Farkas Dorottya','demo.dorottya.farkas@kleoszalon.hu','$2b$12$w.QAUtQESmobk0EcNB2jm.c0UcrCfuL4OnDeS1QltdWS8AG3fKE3G','employee')
     ) AS v(full_name,email,password_hash,role_key)
   LOOP
-    IF role_udt IN ('json','jsonb') THEN
+    IF role_udt='jsonb' THEN
       role_value := to_json(r.role_key::text)::text;
       EXECUTE 'UPDATE users SET full_name=$1,password_hash=$2,role=$3::jsonb WHERE lower(email)=lower($4)'
         USING r.full_name,r.password_hash,role_value,r.email;
-      IF NOT FOUND THEN
+      GET DIAGNOSTICS affected = ROW_COUNT;
+      IF affected=0 THEN
         EXECUTE 'INSERT INTO users(full_name,email,password_hash,role) VALUES($1,$2,$3,$4::jsonb)'
+          USING r.full_name,r.email,r.password_hash,role_value;
+      END IF;
+    ELSIF role_udt='json' THEN
+      role_value := to_json(r.role_key::text)::text;
+      EXECUTE 'UPDATE users SET full_name=$1,password_hash=$2,role=$3::json WHERE lower(email)=lower($4)'
+        USING r.full_name,r.password_hash,role_value,r.email;
+      GET DIAGNOSTICS affected = ROW_COUNT;
+      IF affected=0 THEN
+        EXECUTE 'INSERT INTO users(full_name,email,password_hash,role) VALUES($1,$2,$3,$4::json)'
           USING r.full_name,r.email,r.password_hash,role_value;
       END IF;
     ELSE
