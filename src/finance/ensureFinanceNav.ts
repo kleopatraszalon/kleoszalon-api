@@ -2,6 +2,7 @@ import {readFile} from 'fs/promises';
 import path from 'path';
 import pool from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
+import {ensureMenuHealth} from '../menu/ensureMenuHealth';
 
 let ensurePromise:Promise<void>|null=null;
 
@@ -23,6 +24,10 @@ export function ensureFinanceNav(){
         '20260808_NAV_ONLINE_INVOICE_V4.sql',
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
       ]) await runSql(file);
+      // A pénzügyi/NAV séma után a kapcsolódó menük és jogosultságok is
+      // automatikusan kerüljenek konzisztens állapotba. Így a NAV menüpont
+      // nem függ attól, hogy valaki előbb megnyitotta-e a menü API-t.
+      await ensureMenuHealth();
     })().catch(err=>{ensurePromise=null;throw err});
   }
   return ensurePromise;
