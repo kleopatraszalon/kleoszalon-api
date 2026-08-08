@@ -23,6 +23,7 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
     if(!employee)return res.status(403).json({error:"A művelethez nem található saját munkatársi rekord."});
     const path=String(req.path||"");
 
+    if(req.method==="GET"&&path==="/")return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői felületen érhető el."});
     if(req.method==="GET"&&path==="/schedule"){
       (req.query as any).location_id=employee.location_id?String(employee.location_id):"";
       return next();
