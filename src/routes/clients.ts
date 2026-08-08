@@ -1,8 +1,11 @@
 import { Router, Response } from "express";
+import multer from "multer";
+import * as XLSX from "xlsx";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 
 const router = Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 let schemaPromise: Promise<void> | null = null;
 
 function ensureClientSchema() {
@@ -17,11 +20,19 @@ function ensureClientSchema() {
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS birth_date date;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS gender text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS address text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS city text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS notes text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferred_contact text DEFAULT 'phone';
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS marketing_consent boolean NOT NULL DEFAULT false;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_spent numeric(14,2);
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_paid numeric(14,2);
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_visits integer;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_first_visit timestamptz;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_last_visit timestamptz;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_discount numeric(8,2);
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS additional_phones text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
         UPDATE clients SET full_name=COALESCE(NULLIF(full_name,''),name,'Névtelen ügyfél'), name=COALESCE(NULLIF(name,''),full_name,'Névtelen ügyfél');
@@ -72,7 +83,26 @@ const effectiveLocation = (req: AuthRequest) => {
 };
 const fail = (res: Response, error: any) => {
   console.error("❌ CRM ügyfélhiba:", error);
-  return res.status(500).json({ error: "Az ügyféladatok kezelése nem sikerült.", detail: error?.message || String(error) });
+  return res.status(500).json({ error: "Az ügyféladatok kezelése nem sikerült.", detail: error?.message || String(error), code: error?.code || null });
+};
+const text = (v: unknown) => String(v ?? "").trim();
+const num = (v: unknown) => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(String(v).replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+const yes = (v: unknown) => ["igen", "yes", "true", "1", "да"].includes(text(v).toLowerCase());
+const phoneKey = (v: unknown) => text(v).replace(/[^0-9]/g, "");
+const emailKey = (v: unknown) => text(v).toLowerCase();
+const dateValue = (v: unknown) => {
+  if (!v) return null;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString();
+  if (typeof v === "number") {
+    const parsed = XLSX.SSF.parse_date_code(v);
+    if (parsed) return new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, Math.floor(parsed.S || 0))).toISOString();
+  }
+  const d = new Date(text(v));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
 router.use(requireAuth);
@@ -148,6 +178,67 @@ router.get("/duplicates", async (req: AuthRequest, res) => {
   } catch (error) { fail(res, error); }
 });
 
+router.post("/import-altegio-xlsx", upload.single("file"), async (req: AuthRequest, res) => {
+  if (!req.file?.buffer) return res.status(400).json({ error: "XLSX fájl szükséges." });
+  if (!/\.xlsx$/i.test(req.file.originalname)) return res.status(400).json({ error: "Az Altegio ügyfélimport csak .xlsx fájlt fogad." });
+  const locationId = effectiveLocation(req);
+  const db = await pool.connect();
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: null, raw: true });
+    if (!rows.length) return res.status(400).json({ error: "Az XLSX fájl nem tartalmaz ügyféladatokat." });
+    const headers = Object.keys(rows[0] || {});
+    if (!headers.includes("Név") || !headers.includes("Mobiltelefon")) return res.status(400).json({ error: "Nem megfelelő Altegio ügyfél XLSX.", detail: `Hiányzó kötelező oszlop. Felismert oszlopok: ${headers.join(", ")}` });
+
+    await db.query("BEGIN");
+    const existing = await db.query(`SELECT id,phone,email FROM clients WHERE ($1::uuid IS NULL OR location_id=$1::uuid)`, [locationId]);
+    const byPhone = new Map<string,string>();
+    const byEmail = new Map<string,string>();
+    for (const c of existing.rows) { const pk = phoneKey(c.phone); if (pk) byPhone.set(pk, c.id); const ek = emailKey(c.email); if (ek) byEmail.set(ek, c.id); }
+    const tagCache = new Map<string,string>();
+    const tagRows = await db.query(`SELECT id,name FROM crm_tags`);
+    tagRows.rows.forEach(t => tagCache.set(text(t.name).toLowerCase(), t.id));
+
+    let inserted = 0, updated = 0, skipped = 0, tagged = 0;
+    for (const row of rows) {
+      const name = text(row["Név"]);
+      const phone = text(row["Mobiltelefon"]);
+      const email = text(row["Email"]);
+      if (!name || (!phone && !email)) { skipped++; continue; }
+      const pKey = phoneKey(phone), eKey = emailKey(email);
+      let id = (pKey && byPhone.get(pKey)) || (eKey && byEmail.get(eKey)) || "";
+      const birth = dateValue(row["Születési dátum"]);
+      const genderRaw = text(row["Nem"]).toLowerCase();
+      const gender = genderRaw === "nő" || genderRaw === "female" ? "female" : genderRaw === "férfi" || genderRaw === "male" ? "male" : null;
+      const city = text(row["Város"] || row["Település"]);
+      const address = text(row["Cím"] || row["Lakcím"]);
+      const notes = text(row["Megjegyzés"]);
+      const additionalPhones = text(row["További telefonszámok"]);
+      const marketing = yes(row["Hozzájárult a hírlevél fogadásához"]);
+      const spent = num(row["Elköltött:, Ft"]), paid = num(row["Fizetve, Ft"]), visits = num(row["Látogatások száma"]), discount = num(row["Kedvezmény"]);
+      const firstVisit = dateValue(row["Első látogatás"]), lastVisit = dateValue(row["Utolsó látogatás"]);
+
+      if (id) {
+        await db.query(`UPDATE clients SET full_name=$2,name=$2,phone=COALESCE(NULLIF($3,''),phone),email=COALESCE(NULLIF($4,''),email),birth_date=COALESCE($5::timestamptz::date,birth_date),gender=COALESCE($6,gender),city=COALESCE(NULLIF($7,''),city),address=COALESCE(NULLIF($8,''),address),notes=COALESCE(NULLIF($9,''),notes),marketing_consent=$10,source='altegio',altegio_spent=$11,altegio_paid=$12,altegio_visits=$13::integer,altegio_first_visit=$14::timestamptz,altegio_last_visit=$15::timestamptz,altegio_discount=$16,additional_phones=COALESCE(NULLIF($17,''),additional_phones),updated_at=now() WHERE id=$1::uuid`, [id,name,phone,email,birth,gender,city,address,notes,marketing,spent,paid,visits,firstVisit,lastVisit,discount,additionalPhones]);
+        updated++;
+      } else {
+        const result = await db.query(`INSERT INTO clients(full_name,name,phone,email,location_id,birth_date,gender,city,address,notes,marketing_consent,is_active,source,altegio_spent,altegio_paid,altegio_visits,altegio_first_visit,altegio_last_visit,altegio_discount,additional_phones,updated_at) VALUES($1,$1,NULLIF($2,''),NULLIF($3,''),$4::uuid,$5::timestamptz::date,$6,NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10,true,'altegio',$11,$12,$13::integer,$14::timestamptz,$15::timestamptz,$16,NULLIF($17,''),now()) RETURNING id`, [name,phone,email,locationId,birth,gender,city,address,notes,marketing,spent,paid,visits,firstVisit,lastVisit,discount,additionalPhones]);
+        id = result.rows[0].id; if (pKey) byPhone.set(pKey,id); if (eKey) byEmail.set(eKey,id); inserted++;
+      }
+
+      const rawTags = text(row["Kategória"] || row["Címkék"] || row["Címke"]);
+      for (const tagName of rawTags.split(/[;,|]/).map(s=>s.trim()).filter(Boolean)) {
+        const key = tagName.toLowerCase(); let tagId = tagCache.get(key);
+        if (!tagId) { const t = await db.query(`INSERT INTO crm_tags(name,color) VALUES($1,'#7c5ce5') ON CONFLICT ((lower(name))) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tagName]); tagId = t.rows[0].id; tagCache.set(key,tagId); }
+        const link = await db.query(`INSERT INTO crm_client_tags(client_id,tag_id) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING RETURNING client_id`, [id,tagId]); if (link.rowCount) tagged++;
+      }
+    }
+    await db.query("COMMIT");
+    res.json({ ok:true, rows:rows.length, inserted, updated, skipped, tagged });
+  } catch (error) { await db.query("ROLLBACK").catch(()=>undefined); fail(res,error); } finally { db.release(); }
+});
+
 router.get("/", async (req: AuthRequest, res) => {
   try {
     const locationId = effectiveLocation(req);
@@ -155,7 +246,7 @@ router.get("/", async (req: AuthRequest, res) => {
     const status = String(req.query.status || "all");
     const tagId = String(req.query.tag_id || "").trim() || null;
     const { rows } = await pool.query(`
-      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.address,c.notes,
+      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.city,c.address,c.notes,
         c.preferred_contact,c.marketing_consent,c.is_active,c.source,c.created_at,c.updated_at,l.name location_name,
         COALESCE(a.visits,0)::int visits,COALESCE(a.no_shows,0)::int no_shows,a.last_visit,a.next_visit,
         COALESCE(t.tags,'[]'::json) tags
@@ -163,10 +254,9 @@ router.get("/", async (req: AuthRequest, res) => {
       LEFT JOIN LATERAL (SELECT COUNT(*) FILTER(WHERE status IN ('completed','paid','confirmed')) visits,
         COUNT(*) FILTER(WHERE status='no_show') no_shows,MAX(start_time) FILTER(WHERE start_time<=now()) last_visit,
         MIN(start_time) FILTER(WHERE start_time>now() AND status NOT IN ('cancelled','no_show')) next_visit FROM appointments WHERE client_id=c.id) a ON true
-      LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',x.id,'name',x.name,'color',x.color) ORDER BY x.name) tags
-        FROM crm_client_tags ct JOIN crm_tags x ON x.id=ct.tag_id WHERE ct.client_id=c.id) t ON true
+      LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',x.id,'name',x.name,'color',x.color) ORDER BY x.name) tags FROM crm_client_tags ct JOIN crm_tags x ON x.id=ct.tag_id WHERE ct.client_id=c.id) t ON true
       WHERE ($1::uuid IS NULL OR c.location_id=$1::uuid)
-        AND ($2='%%' OR COALESCE(c.full_name,c.name,'') ILIKE $2 OR COALESCE(c.email,'') ILIKE $2 OR COALESCE(c.phone,'') ILIKE $2)
+        AND ($2='%%' OR COALESCE(c.full_name,c.name,'') ILIKE $2 OR COALESCE(c.email,'') ILIKE $2 OR COALESCE(c.phone,'') ILIKE $2 OR COALESCE(c.city,'') ILIKE $2 OR COALESCE(c.address,'') ILIKE $2 OR EXISTS(SELECT 1 FROM crm_client_tags qs JOIN crm_tags qt ON qt.id=qs.tag_id WHERE qs.client_id=c.id AND qt.name ILIKE $2))
         AND ($3='all' OR ($3='active' AND c.is_active) OR ($3='inactive' AND NOT c.is_active))
         AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM crm_client_tags z WHERE z.client_id=c.id AND z.tag_id=$4::uuid))
       ORDER BY c.updated_at DESC,c.full_name LIMIT 500`, [locationId, q, status, tagId]);
@@ -180,10 +270,7 @@ router.post("/", async (req: AuthRequest, res) => {
   if (!String(req.body?.phone || "").trim() && !String(req.body?.email || "").trim()) return res.status(400).json({ error: "Telefonszám vagy e-mail-cím szükséges." });
   try {
     const locationId = effectiveLocation(req);
-    const { rows } = await pool.query(`INSERT INTO clients
-      (full_name,name,phone,email,location_id,birth_date,gender,address,notes,preferred_contact,marketing_consent,is_active,source,updated_at)
-      VALUES($1,$1,$2,$3,$4::uuid,$5::date,$6,$7,$8,$9,$10,COALESCE($11,true),COALESCE($12,'manual'),now()) RETURNING id`,
-      [name,req.body.phone||null,req.body.email||null,locationId,req.body.birth_date||null,req.body.gender||null,req.body.address||null,req.body.notes||null,req.body.preferred_contact||"phone",Boolean(req.body.marketing_consent),req.body.is_active,req.body.source]);
+    const { rows } = await pool.query(`INSERT INTO clients (full_name,name,phone,email,location_id,birth_date,gender,city,address,notes,preferred_contact,marketing_consent,is_active,source,updated_at) VALUES($1,$1,$2,$3,$4::uuid,$5::date,$6,$7,$8,$9,$10,$11,COALESCE($12,true),COALESCE($13,'manual'),now()) RETURNING id`, [name,req.body.phone||null,req.body.email||null,locationId,req.body.birth_date||null,req.body.gender||null,req.body.city||null,req.body.address||null,req.body.notes||null,req.body.preferred_contact||"phone",Boolean(req.body.marketing_consent),req.body.is_active,req.body.source]);
     res.status(201).json({ id: rows[0].id });
   } catch (error) { fail(res, error); }
 });
@@ -204,7 +291,7 @@ router.get("/:id", async (req: AuthRequest, res) => {
 });
 
 router.patch("/:id", async (req: AuthRequest, res) => {
-  const allowed: Record<string,string> = { name:"full_name",phone:"phone",email:"email",location_id:"location_id",birth_date:"birth_date",gender:"gender",address:"address",notes:"notes",preferred_contact:"preferred_contact",marketing_consent:"marketing_consent",is_active:"is_active" };
+  const allowed: Record<string,string> = { name:"full_name",phone:"phone",email:"email",location_id:"location_id",birth_date:"birth_date",gender:"gender",city:"city",address:"address",notes:"notes",preferred_contact:"preferred_contact",marketing_consent:"marketing_consent",is_active:"is_active" };
   const fields:string[]=[]; const values:any[]=[];
   for (const [key,column] of Object.entries(allowed)) if (Object.prototype.hasOwnProperty.call(req.body||{},key)) { values.push(req.body[key] === "" ? null : req.body[key]); fields.push(`${column}=$${values.length}${column==="location_id"?"::uuid":column==="birth_date"?"::date":""}`); }
   if (!fields.length) return res.status(400).json({ error: "Nincs módosítandó adat." });
