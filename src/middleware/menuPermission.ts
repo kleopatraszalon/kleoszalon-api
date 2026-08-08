@@ -49,7 +49,10 @@ async function checkMenuPermission(
     }
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
 
-    const menu = await db.query(`SELECT id FROM menus WHERE code=$1 AND COALESCE(is_active,true)=true LIMIT 1`, [menuCode]);
+    // Az is_active kizárólag a navigáció láthatóságát szabályozza. Egy rejtett
+    // menü mögötti API jogosultságát továbbra is ellenőrizni kell; különben egy
+    // menüpont elrejtése véletlen jogosultság-bypass-t okozna.
+    const menu = await db.query(`SELECT id FROM menus WHERE code=$1 ORDER BY COALESCE(is_active,true) DESC,id LIMIT 1`, [menuCode]);
     if (!menu.rows[0]) return next();
 
     const rows = await db.query(
