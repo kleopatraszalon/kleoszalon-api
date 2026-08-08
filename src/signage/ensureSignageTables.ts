@@ -88,7 +88,6 @@ export async function ensureSignageTables(pool: Pool) {
      ON CONFLICT(key) DO NOTHING`, [JSON.stringify(DEFAULT_APPEARANCE)]
   );
 
-  // Egyszeri vizuális migráció: az új extrémebb Neon Pulse indul el, a Klasszikus sablon továbbra is választható.
   try {
     const applied = (await pool.query(`SELECT value FROM public.signage_settings WHERE key='appearance_extreme_v1_applied' LIMIT 1`)).rows[0]?.value;
     if (!applied) {
@@ -100,21 +99,40 @@ export async function ensureSignageTables(pool: Pool) {
     }
   } catch (e) { console.warn('Signage neon migration skipped:', e); }
 
-  // VIR menü: a meglévő Kijelző admin megmarad, mellé külön kinézet-szerkesztő kerül.
+  // VIR menü: Kijelző admin és Kijelző kinézet közvetlen testvérként jelenjen meg
+  // a Beállítások és adminisztráció alatt. A Sidebar jelenleg két szintet renderel,
+  // ezért a korábbi Kijelző admin -> Kijelző kinézet harmadik szint láthatatlan volt.
   try {
     await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text`);
     await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL`);
-    const parent = (await pool.query(`
+
+    let settingsId = (await pool.query(`
       SELECT id FROM menus
-      WHERE route='/signage' OR code IN ('signage','screens.signage') OR lower(name) LIKE '%kijelző%'
-      ORDER BY CASE WHEN route='/signage' THEN 0 ELSE 1 END,id LIMIT 1
+      WHERE code='settings' OR lower(name) IN ('beállítások és adminisztráció','beállítások','adminisztráció')
+      ORDER BY CASE WHEN code='settings' THEN 0 ELSE 1 END,id LIMIT 1
     `)).rows[0]?.id || null;
+    if (!settingsId) {
+      settingsId = (await pool.query(`
+        INSERT INTO menus(code,name,icon,route,order_index,parent_id,is_active)
+        VALUES('settings','Beállítások és adminisztráció','Settings',NULL,190,NULL,true)
+        ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,is_active=true
+        RETURNING id
+      `)).rows[0]?.id;
+    }
+
+    // A régi Kijelző admin is kerüljön biztosan ugyanide.
+    await pool.query(`
+      UPDATE menus SET parent_id=$1,is_active=true
+      WHERE code IN ('screens.signage','signage') OR route='/signage'
+    `,[settingsId]);
+
     const menuId = (await pool.query(`
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,is_active)
-      VALUES('screens.signage.appearance','Kijelző kinézet','Palette','/signage/appearance',173,$1,true)
+      VALUES('screens.signage.appearance','Kijelző kinézet','Palette','/signage/appearance',174,$1,true)
       ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,is_active=true
-      RETURNING id`, [parent])).rows[0]?.id;
+      RETURNING id`, [settingsId])).rows[0]?.id;
+
     if (menuId) {
       await pool.query(`
         INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
