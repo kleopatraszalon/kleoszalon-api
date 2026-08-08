@@ -13,6 +13,11 @@ router.get('/summary',async(req,res,next)=>{try{
       SELECT * FROM loyalty_transactions
       WHERE ($1::date IS NULL OR created_at::date >= $1::date)
         AND ($2::date IS NULL OR created_at::date <= $2::date)
+    ), period_sales AS (
+      SELECT * FROM loyalty_sales
+      WHERE payment_status='paid'
+        AND ($1::date IS NULL OR created_at::date >= $1::date)
+        AND ($2::date IS NULL OR created_at::date <= $2::date)
     )
     SELECT
       (SELECT COUNT(*)::int FROM loyalty_accounts WHERE status='active') active_accounts,
@@ -29,20 +34,24 @@ router.get('/summary',async(req,res,next)=>{try{
       (SELECT COALESCE(SUM(ABS(amount)),0) FROM period_tx WHERE transaction_type IN ('balance_spend','voucher_spend')) period_redemptions,
       (SELECT COALESCE(SUM(points),0) FROM period_tx WHERE points>0) period_points_earned,
       (SELECT COALESCE(SUM(ABS(points)),0) FROM period_tx WHERE points<0) period_points_spent,
-      (SELECT COUNT(*)::int FROM period_tx) period_transactions
+      (SELECT COUNT(*)::int FROM period_tx) period_transactions,
+      (SELECT COALESCE(SUM(gross_amount),0) FROM period_sales WHERE sale_type='voucher') period_voucher_sales,
+      (SELECT COALESCE(SUM(gross_amount),0) FROM period_sales WHERE sale_type='pass') period_pass_sales,
+      (SELECT COALESCE(SUM(gross_amount),0) FROM period_sales WHERE sale_type='wallet_topup') period_wallet_sales,
+      (SELECT COALESCE(SUM(commission_base),0) FROM period_sales) period_commission_base
   `,[from,to]);
   res.json(rows[0]);
 }catch(err){next(err)}});
 
 router.get('/trend',async(req,res,next)=>{try{
   const days=Math.max(7,Math.min(180,Number(req.query.days||30)));
-  const {rows}=await db.query(`SELECT created_at::date day,
-    COALESCE(SUM(amount) FILTER(WHERE transaction_type='balance_topup'),0) topups,
-    COALESCE(SUM(ABS(amount)) FILTER(WHERE transaction_type IN ('balance_spend','voucher_spend')),0) redemptions,
-    COALESCE(SUM(points) FILTER(WHERE points>0),0) points_earned,
-    COALESCE(SUM(ABS(points)) FILTER(WHERE points<0),0) points_spent
-    FROM loyalty_transactions WHERE created_at>=CURRENT_DATE-($1::int-1)
-    GROUP BY created_at::date ORDER BY day`,[days]);
+  const {rows}=await db.query(`SELECT d.day,
+    COALESCE(t.topups,0) topups,COALESCE(t.redemptions,0) redemptions,COALESCE(t.points_earned,0) points_earned,COALESCE(t.points_spent,0) points_spent,
+    COALESCE(s.voucher_sales,0) voucher_sales,COALESCE(s.pass_sales,0) pass_sales
+    FROM (SELECT generate_series(CURRENT_DATE-($1::int-1),CURRENT_DATE,'1 day')::date day) d
+    LEFT JOIN (SELECT created_at::date day,COALESCE(SUM(amount) FILTER(WHERE transaction_type='balance_topup'),0) topups,COALESCE(SUM(ABS(amount)) FILTER(WHERE transaction_type IN ('balance_spend','voucher_spend')),0) redemptions,COALESCE(SUM(points) FILTER(WHERE points>0),0) points_earned,COALESCE(SUM(ABS(points)) FILTER(WHERE points<0),0) points_spent FROM loyalty_transactions WHERE created_at>=CURRENT_DATE-($1::int-1) GROUP BY created_at::date) t USING(day)
+    LEFT JOIN (SELECT created_at::date day,COALESCE(SUM(gross_amount) FILTER(WHERE sale_type='voucher' AND payment_status='paid'),0) voucher_sales,COALESCE(SUM(gross_amount) FILTER(WHERE sale_type='pass' AND payment_status='paid'),0) pass_sales FROM loyalty_sales WHERE created_at>=CURRENT_DATE-($1::int-1) GROUP BY created_at::date) s USING(day)
+    ORDER BY d.day`,[days]);
   res.json(rows);
 }catch(err){next(err)}});
 
@@ -54,5 +63,6 @@ router.get('/transactions',async(req,res,next)=>{try{
 
 router.get('/points-rules',async(_req,res,next)=>{try{const{rows}=await db.query(`SELECT * FROM loyalty_points_rules ORDER BY active DESC,created_at DESC`);res.json(rows)}catch(err){next(err)}});
 router.post('/points-rules',async(req,res,next)=>{try{const{rows}=await db.query(`INSERT INTO loyalty_points_rules(name,spend_amount,points_earned,point_value,valid_from,valid_until,active) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.body?.name||'Hűségpont szabály',Number(req.body?.spend_amount||100),Number(req.body?.points_earned||1),Number(req.body?.point_value||1),req.body?.valid_from||null,req.body?.valid_until||null,req.body?.active!==false]);res.status(201).json(rows[0])}catch(err){next(err)}});
+router.patch('/points-rules/:id',async(req,res,next)=>{try{const{rows}=await db.query(`UPDATE loyalty_points_rules SET name=COALESCE($2,name),spend_amount=COALESCE($3,spend_amount),points_earned=COALESCE($4,points_earned),point_value=COALESCE($5,point_value),active=COALESCE($6,active),valid_from=$7,valid_until=$8,updated_at=now() WHERE id=$1::uuid RETURNING *`,[req.params.id,req.body?.name??null,req.body?.spend_amount??null,req.body?.points_earned??null,req.body?.point_value??null,req.body?.active??null,req.body?.valid_from||null,req.body?.valid_until||null]);if(!rows[0])return res.status(404).json({message:'Pontszabály nem található.'});res.json(rows[0])}catch(err){next(err)}});
 
 export default router;
