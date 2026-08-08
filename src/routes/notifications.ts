@@ -1,13 +1,14 @@
 import { Router } from "express";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { getLoyaltyNotifications } from "../services/loyaltyNotificationSource";
 
 const router = Router();
 router.use(requireAuth);
 
 type NotificationItem = {
   key: string;
-  type: "chat" | "stock" | "no_show" | "task" | "ai" | "finance" | "workorder";
+  type: "chat" | "stock" | "no_show" | "task" | "ai" | "finance" | "workorder" | "loyalty";
   severity: "info" | "warning" | "critical";
   title: string;
   detail: string;
@@ -95,6 +96,9 @@ router.get("/", async (req: AuthRequest, res, next) => {
     const budget = Number(process.env.AI_MONTHLY_BUDGET_USD || 10);
     const aiCost = Number(aiRows[0]?.cost || 0);
     if (budget > 0 && aiCost / budget >= 0.8) notifications.push({ key:"ai:budget", type:"ai", severity:aiCost >= budget ? "critical" : "warning", title:aiCost >= budget ? "Az AI havi kerete elfogyott" : "Az AI havi keret 80% fölött jár", detail:`Becsült felhasználás: $${aiCost.toFixed(2)} / $${budget.toFixed(2)}`, route:"/dashboard/notifications", created_at:now });
+
+    try { notifications.push(...await getLoyaltyNotifications()); }
+    catch (err: any) { console.warn("loyalty notifications skipped:", String(err?.message || err)); }
 
     const states = new Map(stateRows.map((x:any)=>[String(x.notification_key),x]));
     const items = notifications
