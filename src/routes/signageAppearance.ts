@@ -6,8 +6,7 @@ export const signageAppearancePublicRouter = Router();
 export const signageAppearanceAdminRouter = Router();
 signageAppearanceAdminRouter.use(requireAuth);
 
-export const DEFAULT_SIGNAGE_APPEARANCE = {
-  template: "classic",
+const BASE_APPEARANCE = {
   colors: {
     background: "#09070a",
     surface: "#171219",
@@ -37,6 +36,9 @@ export const DEFAULT_SIGNAGE_APPEARANCE = {
     showPrice: true
   }
 };
+
+export const DEFAULT_SIGNAGE_APPEARANCE = { ...BASE_APPEARANCE, template: "neon" };
+export const CLASSIC_SIGNAGE_APPEARANCE = { ...BASE_APPEARANCE, template: "classic", effects: { ...BASE_APPEARANCE.effects, ambient: false, scanlines: false, glow: 0, blur: 0, radius: 18 } };
 
 async function ensure() {
   await pool.query(`
@@ -92,7 +94,7 @@ signageAppearanceAdminRouter.put("/", async (req, res) => {
     await ensure();
     const config = mergeConfig(req.body?.config ?? req.body ?? {});
     const allowedTemplates = new Set(["classic", "neon", "luxe", "glass"]);
-    if (!allowedTemplates.has(String(config.template))) config.template = "classic";
+    if (!allowedTemplates.has(String(config.template))) config.template = "neon";
     config.popup.intervalSec = Math.max(45, Math.min(1800, Number(config.popup.intervalSec) || 180));
     config.popup.durationSec = Math.max(5, Math.min(60, Number(config.popup.durationSec) || 12));
     config.popup.initialDelaySec = Math.max(10, Math.min(900, Number(config.popup.initialDelaySec) || 45));
@@ -118,9 +120,9 @@ signageAppearanceAdminRouter.post("/reset", async (_req, res) => {
       `INSERT INTO public.signage_settings(key,value,updated_at)
        VALUES('appearance_config',$1,now())
        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()
-       RETURNING updated_at`, [JSON.stringify(DEFAULT_SIGNAGE_APPEARANCE)]
+       RETURNING updated_at`, [JSON.stringify(CLASSIC_SIGNAGE_APPEARANCE)]
     )).rows[0];
-    res.json({ ok: true, config: DEFAULT_SIGNAGE_APPEARANCE, updated_at: row?.updated_at || null });
+    res.json({ ok: true, config: CLASSIC_SIGNAGE_APPEARANCE, updated_at: row?.updated_at || null });
   } catch (e: any) { res.status(500).json({ ok: false, error: e?.message || "appearance_reset_failed" }); }
 });
 
