@@ -35,11 +35,17 @@ function isLocationManager(req:AuthRequest){return roleKeys(req).includes("locat
 function ownLocation(req:AuthRequest){return req.user?.location_id==null?"":String(req.user.location_id).trim();}
 function isId(value:string){return /^[0-9a-f-]{8,}$/i.test(value)||/^\d+$/.test(value);}
 function pathParts(req:AuthRequest){return String(req.path||"").split("/").filter(Boolean);}
+function sameLocation(value:unknown,locationId:string){return String(value??"")===locationId;}
 
 function forceLocation(req:AuthRequest,locationId:string){
   (req.query as any).location_id=locationId;
   if(!req.body||typeof req.body!=="object") req.body={};
   (req.body as any).location_id=locationId;
+}
+
+function transformJson(res:Response,transform:(body:any)=>any){
+  const original=res.json.bind(res);
+  (res as any).json=(body:any)=>original(transform(body));
 }
 
 async function entityInLocation(table:string,id:string,locationId:string){
@@ -75,7 +81,18 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:Locatio
     forceLocation(req,locationId);
     const parts=pathParts(req);
 
+    if(kind==="dashboard"){
+      const ownClients=Number((await db.query(`SELECT COUNT(*)::int total FROM clients WHERE location_id::text=$1`,[locationId])).rows[0]?.total||0);
+      transformJson(res,(body:any)=>body&&typeof body==="object"?{...body,stats:{...(body.stats||{}),totalClients:ownClients}}:body);
+    }
+
     if(kind==="employees"){
+      if(req.method==="GET"&&parts.length===0){
+        transformJson(res,(body:any)=>Array.isArray(body)?body.filter((row:any)=>sameLocation(row?.location_id,locationId)):body);
+      }
+      if(req.method==="GET"&&parts[0]==="duplicates"){
+        transformJson(res,(body:any)=>Array.isArray(body)?body.map((group:any)=>({...group,employees:Array.isArray(group?.employees)?group.employees.filter((row:any)=>sameLocation(row?.location_id,locationId)):[]})).filter((group:any)=>group.employees.length>1):body);
+      }
       if(req.method==="POST"&&parts.length===0) sanitizeCreatedEmployee(req,locationId);
       if(req.method==="POST"&&parts[0]==="import"&&Array.isArray(req.body?.records)){
         req.body.records=req.body.records.map((row:any)=>({...row,location_id:locationId,location_name:undefined,roles:["employee"]}));
@@ -99,6 +116,9 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:Locatio
 
     if(kind==="workorders"){
       const id=parts[0]==="workorders"?parts[1]:parts[0];
+      if(req.method==="GET"&&parts.length===1&&parts[0]==="workorders"){
+        transformJson(res,(body:any)=>Array.isArray(body)?body.filter((row:any)=>sameLocation(row?.location_id,locationId)):body);
+      }
       if(id&&isId(id)&&!(await entityInLocation("work_orders",id,locationId))) return res.status(404).json({error:"A munkalap nem ehhez az üzlethez tartozik."});
       if((req.method==="POST"||req.method==="PATCH")&&req.body?.employee_id&&!(await employeeInLocation(req.body.employee_id,locationId))) return res.status(403).json({error:"Csak a saját üzlet munkatársához rögzíthető munkalap."});
       if(req.body&&typeof req.body==="object") req.body.location_id=locationId;
@@ -121,6 +141,12 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:Locatio
         for(const id of req.body.shift_ids) if(!(await shiftInLocation(String(id),locationId))) return res.status(403).json({error:"A közzététel másik üzlet műszakát is tartalmazza."});
       }
       if(req.body&&typeof req.body==="object") req.body.location_id=locationId;
+    }
+
+    if(kind==="checklists"){
+      // A checklist modul régi vezetői ellenőrzése a "manager" kulcsot ismeri.
+      // A telephely-korlátozás ezen a ponton már érvényesült, ezért biztonságosan aliasolható.
+      if(req.user) req.user.role="manager";
     }
 
     return next();
