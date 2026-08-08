@@ -1,0 +1,50 @@
+import {Router} from 'express';
+import db from '../db';
+import {requireAuth,AuthRequest} from '../middleware/auth';
+
+const router=Router();router.use(requireAuth);
+const actor=(r:AuthRequest)=>r.user?.email||String(r.user?.id||'');
+const money=(v:any)=>Math.round(Number(v||0)*100)/100;
+const REGULAR_METHODS=new Set(['cash','card','transfer','other']);
+
+async function consumeStock(c:any,workOrder:any){
+ if(workOrder.stock_consumed_at)return;
+ const items=(await c.query(`SELECT product_id,SUM(quantity)::numeric quantity FROM work_order_items WHERE work_order_id=$1 AND item_type='product' AND product_id IS NOT NULL GROUP BY product_id`,[workOrder.id])).rows;
+ for(const item of items){const qty=Number(item.quantity||0);if(!(qty>0))continue;
+  await c.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity) VALUES($1,$2,0) ON CONFLICT(product_id,location_id) DO NOTHING`,[item.product_id,workOrder.location_id||null]);
+  const b=await c.query(`UPDATE product_stock_balances SET quantity=quantity-$3,updated_at=now() WHERE product_id=$1 AND location_id IS NOT DISTINCT FROM $2 AND quantity>=$3 RETURNING quantity`,[item.product_id,workOrder.location_id||null,qty]);
+  if(!b.rows[0]){const p=await c.query(`SELECT name FROM products WHERE id=$1`,[item.product_id]);throw new Error(`Nincs elegendő készlet: ${p.rows[0]?.name||item.product_id}`)}
+  await c.query(`INSERT INTO inventory_movements(product_id,location_id,work_order_id,movement_type,quantity,balance_after,note) VALUES($1,$2,$3,'work_order_consumption',$4,$5,$6) ON CONFLICT DO NOTHING`,[item.product_id,workOrder.location_id||null,workOrder.id,-qty,b.rows[0].quantity,'Automatikus anyagfelhasználás végleges munkalap-záráskor']);
+ }
+}
+
+router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{const c=await db.connect();try{
+ await c.query('BEGIN');
+ const wo=(await c.query(`SELECT * FROM work_orders WHERE id=$1 FOR UPDATE`,[req.params.id])).rows[0];
+ if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
+ if(wo.locked_at){await c.query('COMMIT');return res.json({idempotent:true,work_order:wo,message:'A munkalap már lezárt és archivált.'})}
+ const settlement=(await c.query(`SELECT * FROM loyalty_checkout_settlements WHERE work_order_id=$1 FOR UPDATE`,[req.params.id])).rows[0];
+ if(!settlement)throw new Error('A munkalap pénztári/hűség elszámolása még nem történt meg.');
+ if(String(wo.payment_status||'')!=='paid'||!wo.financial_closed_at)throw new Error('A munkalap csak teljesen kifizetett és pénzügyileg lezárt állapotban véglegesíthető.');
+
+ const defaultAccount=String(req.body?.financial_account_id||'').trim();const mappings=req.body?.payment_accounts||{};
+ const payments=(await c.query(`SELECT * FROM work_order_payments WHERE work_order_id=$1 ORDER BY paid_at,id`,[req.params.id])).rows;
+ for(const p of payments){const method=String(p.payment_method||'').toLowerCase();if(!REGULAR_METHODS.has(method))continue;if(String(p.note||'').toLowerCase().includes('hűség wallet'))continue;if(p.financial_movement_id)continue;
+  const accountId=String(mappings?.[method]||defaultAccount||'').trim();if(!accountId)throw new Error(`A(z) ${method} fizetéshez nincs pénzügyi számla/pénztár rendelve.`);
+  const account=(await c.query(`SELECT * FROM financial_accounts WHERE id=$1::uuid AND active=true FOR UPDATE`,[accountId])).rows[0];if(!account)throw new Error(`A pénzügyi számla nem található: ${accountId}`);
+  const movement=(await c.query(`INSERT INTO financial_movements(location_id,account_id,direction,amount,occurred_at,reference_type,reference_id,counterparty,note,created_by) VALUES($1,$2::uuid,'income',$3,COALESCE($4,now()),'work_order_payment',$5,$6,$7,$8) RETURNING id`,[wo.location_id||account.location_id,accountId,money(p.amount),p.paid_at||null,String(p.id),wo.client_name||null,`Munkalap ${wo.work_order_number||wo.id} · ${method}`,actor(req)])).rows[0];
+  await c.query(`UPDATE work_order_payments SET financial_account_id=$2::uuid,financial_movement_id=$3::uuid WHERE id=$1`,[p.id,accountId,movement.id]);
+ }
+
+ await consumeStock(c,wo);
+ const commissionBase=Math.max(0,money(Number(wo.amount_due||0)-Number(wo.tip_amount||0)));
+ if(wo.employee_id&&commissionBase>0){await c.query(`INSERT INTO work_order_commission_events(work_order_id,employee_id,base_amount,tip_amount,source_type,status,note,created_by) VALUES($1,$2,$3,$4,'work_order_finalization','open',$5,$6) ON CONFLICT(work_order_id,employee_id,source_type) DO UPDATE SET base_amount=EXCLUDED.base_amount,tip_amount=EXCLUDED.tip_amount,note=EXCLUDED.note`,[wo.id,wo.employee_id,commissionBase,money(wo.tip_amount),`Jutalékalap a(z) ${wo.work_order_number||wo.id} végleges lezárásából`,actor(req)])}
+
+ const updated=(await c.query(`UPDATE work_orders SET stock_consumed_at=COALESCE(stock_consumed_at,now()),status='completed',completed_at=COALESCE(completed_at,now()),status_updated_at=now(),updated_at=now() WHERE id=$1 RETURNING *`,[wo.id])).rows[0];
+ await c.query(`UPDATE loyalty_checkout_settlements SET finalized_at=COALESCE(finalized_at,now()),finalization_payload=$2::jsonb WHERE work_order_id=$1`,[wo.id,JSON.stringify({financial_account_id:defaultAccount||null,payment_accounts:mappings,finalized_by:actor(req)})]);
+ await c.query('COMMIT');
+ const archive=(await db.query(`SELECT work_order_number,archived_at,terminal_status,snapshot_hash FROM work_order_archive WHERE work_order_id=$1`,[wo.id])).rows[0]||null;
+ res.json({work_order:updated,archive,finalized:true});
+ }catch(e:any){await c.query('ROLLBACK').catch(()=>undefined);const m=String(e?.message||'A munkalap végleges lezárása nem sikerült.');if(/pénztári|kifizetett|pénzügyi|készlet|számla|fizetéshez/i.test(m))return res.status(409).json({message:m});next(e)}finally{c.release()}});
+
+export default router;
