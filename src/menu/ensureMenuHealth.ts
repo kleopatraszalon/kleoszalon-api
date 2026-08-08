@@ -5,6 +5,15 @@ async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)
 export async function ensureMenuHealth(){
   await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);
 
+  // Regresszió-helyreállítás: a dashboard és a fő navigáció kanonikus elemei
+  // legyenek újra aktívak. Ez nem hoz létre duplikátumot és nem nulláz menükódot.
+  await safe(`UPDATE menus SET is_active=true WHERE code IN(
+    'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash',
+    'team','team.schedule','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
+  )`);
+  await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
+  await safe(`UPDATE menus SET route='/workorders',is_active=true WHERE code='appointments.workorders'`);
+
   // A két kritikus főmenü legyen biztosan jelen, akkor is, ha egy korábbi menümigráció kimaradt.
   await pool.query(`DO $$ DECLARE p bigint; BEGIN
     SELECT id INTO p FROM menus WHERE code='appointments' OR (parent_id IS NULL AND lower(name) LIKE 'időpont%') ORDER BY CASE WHEN code='appointments' THEN 0 ELSE 1 END,id LIMIT 1;
