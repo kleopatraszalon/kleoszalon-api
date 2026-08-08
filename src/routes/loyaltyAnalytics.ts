@@ -46,4 +46,13 @@ router.get('/trend',async(req,res,next)=>{try{
   res.json(rows);
 }catch(err){next(err)}});
 
+router.get('/transactions',async(req,res,next)=>{try{
+  const q=String(req.query.q||'').trim();
+  const {rows}=await db.query(`SELECT t.*,a.customer_id,a.card_identifier FROM loyalty_transactions t JOIN loyalty_accounts a ON a.id=t.account_id WHERE ($1='' OR a.customer_id ILIKE '%'||$1||'%' OR COALESCE(t.note,'') ILIKE '%'||$1||'%' OR t.transaction_type ILIKE '%'||$1||'%') ORDER BY t.created_at DESC LIMIT 300`,[q]);
+  res.json(rows);
+}catch(err){next(err)}});
+
+router.get('/points-rules',async(_req,res,next)=>{try{const{rows}=await db.query(`SELECT * FROM loyalty_points_rules ORDER BY active DESC,created_at DESC`);res.json(rows)}catch(err){next(err)}});
+router.post('/points-rules',async(req,res,next)=>{try{const{rows}=await db.query(`INSERT INTO loyalty_points_rules(name,spend_amount,points_earned,point_value,valid_from,valid_until,active) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.body?.name||'Hűségpont szabály',Number(req.body?.spend_amount||100),Number(req.body?.points_earned||1),Number(req.body?.point_value||1),req.body?.valid_from||null,req.body?.valid_until||null,req.body?.active!==false]);res.status(201).json(rows[0])}catch(err){next(err)}});
+
 export default router;
