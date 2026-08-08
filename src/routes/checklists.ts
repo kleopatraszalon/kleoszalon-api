@@ -27,8 +27,17 @@ function isAdmin(req: AuthRequest) {
   return roles(req.user?.role).some(r => ["admin", "administrator", "rendszergazda", "superadmin", "super_admin"].includes(r));
 }
 
+function isManagement(req: AuthRequest) {
+  return roles(req.user?.role).some(r => ["admin", "administrator", "rendszergazda", "superadmin", "super_admin", "manager", "vezető", "vezeto"].includes(r));
+}
+
 function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
   if (!isAdmin(req)) return res.status(403).json({ error: "A check listák adminisztrálásához admin jogosultság szükséges." });
+  return next();
+}
+
+function requireManagement(req: AuthRequest, res: Response, next: NextFunction) {
+  if (!isManagement(req)) return res.status(403).json({ error: "A check lista állapotok megtekintéséhez vezetői jogosultság szükséges." });
   return next();
 }
 
@@ -353,12 +362,24 @@ router.delete("/admin/items/:id", requireAdmin, asyncRoute(async (req,res)=>{
   res.json({ok:true});
 }));
 
-router.get("/admin/status", requireAdmin, asyncRoute(async (_req,res)=>{
+async function managementStatus(req: AuthRequest, res: Response) {
+  const admin = isAdmin(req);
+  const requestedLocation = String(req.query.location_id ?? "").trim();
+  const effectiveLocation = admin ? requestedLocation : String(req.user?.location_id ?? "").trim();
   const {rows}=await pool.query(
-    `SELECT e.id AS employee_id,e.full_name,p.name AS position_name,i.frequency,
+    `SELECT e.id AS employee_id,e.full_name,e.location_id,l.name AS location_name,p.name AS position_name,i.frequency,
             COUNT(*) FILTER (WHERE i.is_required=true)::int AS total,
-            COUNT(cc.id) FILTER (WHERE i.is_required=true AND cc.completed=true)::int AS completed
+            COUNT(cc.id) FILTER (WHERE i.is_required=true AND cc.completed=true)::int AS completed,
+            BOOL_OR(
+              CASE i.frequency
+                WHEN 'daily' THEN (now() AT TIME ZONE 'Europe/Budapest')::time >= c.daily_warning_time
+                WHEN 'weekly' THEN EXTRACT(ISODOW FROM now() AT TIME ZONE 'Europe/Budapest') >= c.weekly_warning_weekday
+                WHEN 'monthly' THEN (((date_trunc('month',now() AT TIME ZONE 'Europe/Budapest') + interval '1 month - 1 day')::date - (now() AT TIME ZONE 'Europe/Budapest')::date) <= c.monthly_warning_days)
+                ELSE false
+              END
+            ) FILTER (WHERE i.is_required=true AND COALESCE(cc.completed,false)=false) AS warning_active
        FROM employees e
+       LEFT JOIN locations l ON l.id=e.location_id
        JOIN hr_positions p ON p.id=e.position_id
        JOIN vir_checklist_position_assignments a ON a.position_id=p.id AND a.is_active=true
        JOIN vir_checklists c ON c.id=a.checklist_id AND c.is_active=true
@@ -367,12 +388,29 @@ router.get("/admin/status", requireAdmin, asyncRoute(async (_req,res)=>{
          ON cc.checklist_item_id=i.id AND cc.employee_id=e.id
         AND cc.period_start=${periodStartSql("i")}
       WHERE COALESCE(e.active,true)=true
-      GROUP BY e.id,e.full_name,p.name,i.frequency
-      ORDER BY e.full_name,i.frequency`
+        AND ($1='' OR e.location_id::text=$1)
+      GROUP BY e.id,e.full_name,e.location_id,l.name,p.name,i.frequency
+      ORDER BY e.full_name,CASE i.frequency WHEN 'daily' THEN 1 WHEN 'weekly' THEN 2 ELSE 3 END`,
+    [effectiveLocation]
   );
   const map=new Map<string,any>();
-  for(const row of rows){const id=String(row.employee_id);if(!map.has(id))map.set(id,{employee_id:id,full_name:row.full_name,position_name:row.position_name,daily:null,weekly:null,monthly:null});const total=Number(row.total||0),completed=Number(row.completed||0);map.get(id)[row.frequency]={total,completed,missing:Math.max(0,total-completed),percent:total?Math.round(completed/total*100):100};}
-  res.json(Array.from(map.values()));
-}));
+  for(const row of rows){
+    const id=String(row.employee_id);
+    if(!map.has(id))map.set(id,{employee_id:id,full_name:row.full_name,location_id:row.location_id,location_name:row.location_name,position_name:row.position_name,daily:null,weekly:null,monthly:null});
+    const total=Number(row.total||0),completed=Number(row.completed||0),missing=Math.max(0,total-completed),warning=missing>0&&row.warning_active===true;
+    map.get(id)[row.frequency]={total,completed,missing,percent:total?Math.round(completed/total*100):100,warning,state:missing===0?"green":warning?"red":"amber"};
+  }
+  const employees=Array.from(map.values());
+  const summary={
+    employees:employees.length,
+    red:employees.filter((e:any)=>[e.daily,e.weekly,e.monthly].some((s:any)=>s?.state==="red")).length,
+    amber:employees.filter((e:any)=>![e.daily,e.weekly,e.monthly].some((s:any)=>s?.state==="red")&&[e.daily,e.weekly,e.monthly].some((s:any)=>s?.state==="amber")).length,
+    green:employees.filter((e:any)=>[e.daily,e.weekly,e.monthly].every((s:any)=>!s||s.state==="green")).length,
+  };
+  res.json({summary,employees});
+}
+
+router.get("/management/status", requireManagement, asyncRoute(managementStatus));
+router.get("/admin/status", requireAdmin, asyncRoute(managementStatus));
 
 export default router;
