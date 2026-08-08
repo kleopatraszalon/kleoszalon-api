@@ -67,7 +67,7 @@ BEGIN
 END $$;
 
 INSERT INTO access_roles(role_key,name,description,level,is_system,is_active)
-VALUES('location_manager','Üzletvezető','Saját telephely teljes napi operatív irányítása',70,true,true)
+VALUES('location_manager','Üzletvezető','Saját telephely napi operatív irányítása',70,true,true)
 ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS role_feature_permissions (
@@ -82,33 +82,63 @@ CREATE TABLE IF NOT EXISTS role_feature_permissions (
 INSERT INTO role_feature_permissions(role_key,feature_key,can_use,scope_type,updated_at)
 SELECT 'location_manager',x,true,'own_location',now()
 FROM unnest(ARRAY[
-  'management_dashboard','appointments','customers','crm','hr','inventory','procurement','finance','checklists','staff_import'
+  'management_dashboard','appointments','customers','crm','hr','inventory','procurement','finance','checklists'
 ]) x
 ON CONFLICT(role_key,feature_key) DO UPDATE SET can_use=true,scope_type='own_location',updated_at=now();
 
+-- Először explicit tiltás minden aktív menüre. Ez azért szükséges, hogy a későbbi
+-- dinamikus menü-seedek se örökítsenek véletlenül szélesebb jogosultságot.
 INSERT INTO role_menu_permissions(
   role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,
   can_view_financial,can_manage_permissions,scope_type,updated_at
 )
-SELECT 'location_manager',m.id,true,true,true,false,false,true,true,false,'own_location',now()
+SELECT 'location_manager',m.id,false,false,false,false,false,false,false,false,'own_location',now()
+FROM menus m WHERE COALESCE(m.is_active,true)=true
+ON CONFLICT(role_key,menu_id) DO UPDATE SET
+  can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,
+  can_export=false,can_view_financial=false,can_manage_permissions=false,
+  scope_type='own_location',updated_at=now();
+
+-- A saját üzlet napi működéséhez szükséges menük.
+INSERT INTO role_menu_permissions(
+  role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,
+  can_view_financial,can_manage_permissions,scope_type,updated_at
+)
+SELECT 'location_manager',m.id,true,
+  CASE WHEN m.code IN ('appointments','appointments.calendar','customers','customers.clients','customers.crm','team.employees','team.schedule','finance.workorders','inventory.stock','procurement.orders')
+         OR m.route IN ('/appointments/calendar','/employees','/modules/clients','/modules/crm','/workorders/new') THEN true ELSE false END,
+  CASE WHEN m.code IN ('appointments','appointments.calendar','customers','customers.clients','customers.crm','team.employees','team.schedule','team.attendance','finance.workorders','inventory.stock','procurement.orders')
+         OR m.route IN ('/appointments/calendar','/employees','/modules/clients','/modules/crm','/workorders','/workorders/list') THEN true ELSE false END,
+  false,false,
+  CASE WHEN m.code IN ('dashboard','finance.workorders','inventory.stock','procurement.orders') OR m.route='/' THEN true ELSE false END,
+  CASE WHEN m.code IN ('dashboard','finance','finance.workorders') OR m.route IN ('/','/workorders','/workorders/list','/workorders/new') THEN true ELSE false END,
+  false,'own_location',now()
 FROM menus m
 WHERE COALESCE(m.is_active,true)=true AND (
-  m.code IN ('dashboard','analytics','analytics.main','appointments','customers','team','team.employees','team.schedule','team.attendance','team.vacations','finance','finance.workorders','inventory','procurement','knowledge','knowledge.checklists')
-  OR m.code LIKE 'appointments.%'
-  OR m.code LIKE 'customers.%'
-  OR m.code LIKE 'inventory.%'
-  OR m.code LIKE 'procurement.%'
-  OR m.route IN ('/','/appointments/calendar','/modules/team/timetable','/modules/team/attendance','/employees','/hr','/modules/clients','/modules/crm','/workorders','/workorders/list','/workorders/new','/warehouse','/warehouse/list','/warehouse/products','/knowledge-base/checklists')
+  m.code IN (
+    'dashboard',
+    'appointments','appointments.calendar','appointments.list',
+    'customers','customers.clients','customers.crm',
+    'team','team.employees','team.schedule','team.attendance','team.vacations',
+    'finance','finance.workorders',
+    'inventory','inventory.products','inventory.stock',
+    'procurement','procurement.dashboard','procurement.suggestions','procurement.orders',
+    'knowledge','knowledge.checklists'
+  )
+  OR m.route IN (
+    '/','/appointments/calendar','/modules/team/timetable','/modules/team/attendance',
+    '/employees','/hr','/modules/clients','/modules/crm','/modules/customers/clients','/modules/customers/crm',
+    '/workorders','/workorders/list','/workorders/new',
+    '/warehouse','/warehouse/list','/warehouse/products',
+    '/warehouse?view=procurement&section=dashboard','/warehouse?view=procurement&section=suggestions','/warehouse?view=procurement&section=orders',
+    '/knowledge-base/checklists'
+  )
 )
 ON CONFLICT(role_key,menu_id) DO UPDATE SET
-  can_view=true,can_create=true,can_edit=true,can_delete=false,can_approve=false,can_export=true,
-  can_view_financial=true,can_manage_permissions=false,scope_type='own_location',updated_at=now();
-
--- Érzékeny vagy rendszerszintű menük explicit tiltása.
-UPDATE role_menu_permissions p SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,can_view_financial=false,can_manage_permissions=false,scope_type='own_location',updated_at=now()
-FROM menus m WHERE p.role_key='location_manager' AND p.menu_id=m.id AND (
-  m.code LIKE 'settings.%' OR m.code='settings' OR m.code LIKE 'team.payroll%' OR m.code LIKE 'team.roles%' OR m.code LIKE 'audit%'
-);
+  can_view=EXCLUDED.can_view,can_create=EXCLUDED.can_create,can_edit=EXCLUDED.can_edit,
+  can_delete=false,can_approve=false,can_export=EXCLUDED.can_export,
+  can_view_financial=EXCLUDED.can_view_financial,can_manage_permissions=false,
+  scope_type='own_location',updated_at=now();
 
 INSERT INTO schema_migrations(version,description)
 VALUES('20260808_DEMO_ADMINS_LOCATION_MANAGER_V1','Két DEMO admin + telephelyre korlátozott üzletvezetői fiók és jogosultságok')
