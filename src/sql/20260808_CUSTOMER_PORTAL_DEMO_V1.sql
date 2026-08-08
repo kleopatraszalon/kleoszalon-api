@@ -128,8 +128,13 @@ BEGIN
   END IF;
 END $$;
 
-INSERT INTO schema_migrations(version,description)
-VALUES('20260808_CUSTOMER_PORTAL_DEMO_V1','DEMO ügyfél belépés, hűségegyenleg, bérlet és kedvezmények')
-ON CONFLICT(version) DO NOTHING;
+DO $$
+BEGIN
+  IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+    INSERT INTO schema_migrations(version,description)
+    VALUES('20260808_CUSTOMER_PORTAL_DEMO_V1','DEMO ügyfél belépés, hűségegyenleg, bérlet és kedvezmények')
+    ON CONFLICT(version) DO NOTHING;
+  END IF;
+END $$;
 
 COMMIT;
