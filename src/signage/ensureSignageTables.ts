@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 
 const DEFAULT_APPEARANCE = {
-  template: "classic",
+  template: "neon",
   colors: { background: "#09070a", surface: "#171219", surfaceAlt: "#211720", text: "#fffaf5", muted: "#cfc4c8", gold: "#b69861", accent: "#ec008c", success: "#41d67c" },
   effects: { glow: 32, blur: 18, radius: 26, contrast: 1, motion: "medium", ambient: true, scanlines: false },
   popup: { enabled: true, intervalSec: 180, durationSec: 12, initialDelaySec: 45, source: "flash_then_deal", animation: "impact", showPrice: true }
@@ -87,6 +87,18 @@ export async function ensureSignageTables(pool: Pool) {
      VALUES('appearance_config',$1)
      ON CONFLICT(key) DO NOTHING`, [JSON.stringify(DEFAULT_APPEARANCE)]
   );
+
+  // Egyszeri vizuális migráció: az új extrémebb Neon Pulse indul el, a Klasszikus sablon továbbra is választható.
+  try {
+    const applied = (await pool.query(`SELECT value FROM public.signage_settings WHERE key='appearance_extreme_v1_applied' LIMIT 1`)).rows[0]?.value;
+    if (!applied) {
+      const row = (await pool.query(`SELECT value FROM public.signage_settings WHERE key='appearance_config' LIMIT 1`)).rows[0];
+      let current:any={}; try { current=JSON.parse(String(row?.value||'{}')); } catch {}
+      const next={...DEFAULT_APPEARANCE,...current,template:'neon',colors:{...DEFAULT_APPEARANCE.colors,...(current.colors||{})},effects:{...DEFAULT_APPEARANCE.effects,...(current.effects||{})},popup:{...DEFAULT_APPEARANCE.popup,...(current.popup||{})}};
+      await pool.query(`UPDATE public.signage_settings SET value=$1,updated_at=now() WHERE key='appearance_config'`,[JSON.stringify(next)]);
+      await pool.query(`INSERT INTO public.signage_settings(key,value,updated_at) VALUES('appearance_extreme_v1_applied','1',now()) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=now()`);
+    }
+  } catch (e) { console.warn('Signage neon migration skipped:', e); }
 
   // VIR menü: a meglévő Kijelző admin megmarad, mellé külön kinézet-szerkesztő kerül.
   try {
