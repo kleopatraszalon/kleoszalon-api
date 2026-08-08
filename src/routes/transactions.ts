@@ -61,7 +61,7 @@ router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),re
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
-router.use("/system-health",systemHealthRouter);
+router.use("/system-health",ensureFinanceReady,systemHealthRouter);
 router.use("/uat",uatTestCenterRouter);
 router.use("/uat-issues",uatIssuesRouter);
 router.use("/cashier/management-summary",ensureFinanceReady,requireFeature("management_dashboard"),requireMenuPermission("finance","can_view_financial"),managementSummaryRouter);
