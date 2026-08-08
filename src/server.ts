@@ -42,6 +42,7 @@ import productCategoriesRouter from "./routes/productCategories";
 import path from "path";
 import publicWebshopRouter from "./routes/publicWebshop";
 import adminWebshopRouter from "./routes/adminWebshop";
+import onlineBookingRouter from "./routes/onlineBooking";
 import authRoutes from "./routes/auth";
 import signagePublic from "./routes/signagePublic";
 import signageAdmin from "./routes/signageAdmin";
@@ -52,6 +53,7 @@ import { ensureHrV2 } from "./hr/ensureHrV2";
 import { ensureVirSpecModules } from "./virSpec/ensureVirSpecModules";
 import { ensureCustomerPortal } from "./customerPortal/ensureCustomerPortal";
 import { ensureWebsiteCms } from "./website/ensureWebsiteCms";
+import { ensureOnlineBooking } from "./booking/ensureOnlineBooking";
 import virRouter from "./routes/vir";
 import virDrilldownRouter from "./routes/virDrilldown";
 import checklistsRouter from "./routes/checklists";
@@ -68,11 +70,11 @@ const corsOptions:cors.CorsOptions={origin:(origin,cb)=>{if(!origin)return cb(nu
 app.use(cors(corsOptions));app.options("*",cors(corsOptions));
 const dbState={ok:false,last_ok_at:null as string|null,last_err_at:null as string|null,last_error:""};
 async function tryDbPing(label:string){try{await pool.query("SELECT 1");dbState.ok=true;dbState.last_ok_at=new Date().toISOString();dbState.last_error="";console.log(`DB OK (${label})`);return true}catch(e:any){dbState.ok=false;dbState.last_err_at=new Date().toISOString();dbState.last_error=e?.message??String(e);console.error(`DB FAIL (${label})`,dbState.last_error);return false}}
-async function initDbDependentThings(){const ok=await tryDbPing("startup");if(ok){ensureSignageTables(pool).catch(console.error);ensureHrV2().catch(console.error);ensureVirSpecModules().catch(console.error);ensureCustomerPortal().catch(console.error);ensureWebsiteCms().catch(console.error)}else setTimeout(()=>initDbDependentThings().catch(()=>{}),15000)}initDbDependentThings().catch(()=>{});
+async function initDbDependentThings(){const ok=await tryDbPing("startup");if(ok){ensureSignageTables(pool).catch(console.error);ensureHrV2().catch(console.error);ensureVirSpecModules().catch(console.error);ensureCustomerPortal().catch(console.error);ensureWebsiteCms().catch(console.error);ensureOnlineBooking().catch(console.error)}else setTimeout(()=>initDbDependentThings().catch(()=>{}),15000)}initDbDependentThings().catch(()=>{});
 app.set("trust proxy",1);app.use((_,res,next)=>{res.header("Vary","Origin");res.header("X-Kleo-CORS","corsfix-2026-02-04");res.header("X-Kleo-HR","modern-hr-v4");next()});app.use(express.json({limit:"1mb"}));app.use(cookieParser());
 app.use("/api/vir-drilldown",virDrilldownRouter);
 app.use("/api",(req:Request,res:Response,next:NextFunction)=>{if(req.method==="OPTIONS"||req.path==="/health"||req.path==="/health/db"||req.path.startsWith("/signage/nameday")||req.path.startsWith("/signage/flash"))return next();if(!dbState.ok)return res.status(503).json({ok:false,error:"db_unreachable",message:"A szerver adatbázisa jelenleg nem elérhető (connection timeout).",last_err_at:dbState.last_err_at});next()});
-app.use("/api/signage",signagePublic);app.use("/api/admin/signage",signageAdmin);app.use("/api/kiosk",kioskRouter);app.use("/api/admin/kiosk",kioskAdmin);app.use("/api",authRoutes);app.use("/uploads",express.static(path.join(__dirname,"..","uploads")));app.use("/api/public/webshop",publicWebshopRouter);app.use("/api/admin/webshop",adminWebshopRouter);app.use("/api",websiteCmsRouter);app.use("/api/products",productsRouter);app.use("/api/product-groups",productGroupsRouter);app.use("/api/product-categories",productCategoriesRouter);
+app.use("/api/signage",signagePublic);app.use("/api/admin/signage",signageAdmin);app.use("/api/kiosk",kioskRouter);app.use("/api/admin/kiosk",kioskAdmin);app.use("/api",authRoutes);app.use("/uploads",express.static(path.join(__dirname,"..","uploads")));app.use("/api/public/webshop",publicWebshopRouter);app.use("/api/public/booking",onlineBookingRouter);app.use("/api/admin/webshop",adminWebshopRouter);app.use("/api",websiteCmsRouter);app.use("/api/products",productsRouter);app.use("/api/product-groups",productGroupsRouter);app.use("/api/product-categories",productCategoriesRouter);
 
 const JWT_SECRET=process.env.JWT_SECRET||"dev_secret_change_me";const AUTH_ACCEPT_PLAINTEXT_DEV=process.env.AUTH_ACCEPT_PLAINTEXT_DEV==="1";const DEBUG_AUTH=process.env.DEBUG_AUTH==="1";
 function signToken(payload:object){return jwt.sign(payload as any,JWT_SECRET,{expiresIn:"8h"})}function extractBearer(req:Request):string|null{const h=(req.headers["authorization"]||req.headers["Authorization"]) as string|undefined;return h&&/^Bearer\s+/i.test(h)?h.replace(/^Bearer\s+/i,""):null}function extractTokenFromReq(req:Request):string|null{return extractBearer(req)||(req as any).cookies?.token||(req.query?.token as string)||(req.body?.token as string)||null}
