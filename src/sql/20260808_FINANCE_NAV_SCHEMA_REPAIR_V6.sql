@@ -1,7 +1,6 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- A belső számlatervezet és a NAV modul közös, idempotens kiegészítései.
 CREATE TABLE IF NOT EXISTS invoice_number_counters(
   year integer PRIMARY KEY,
   last_value bigint NOT NULL DEFAULT 0,
@@ -25,7 +24,14 @@ ALTER TABLE finance_invoices
   ADD COLUMN IF NOT EXISTS emailed_at timestamptz,
   ADD COLUMN IF NOT EXISTS emailed_to text,
   ADD COLUMN IF NOT EXISTS accounting_posted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS journal_entry_id uuid,
   ADD COLUMN IF NOT EXISTS accounting_entry_id uuid;
+
+-- A régi munkalap-számlázási ág accounting_entry_id mezőjét átvezetjük
+-- a pénzügyi modul által használt kanonikus journal_entry_id mezőbe.
+UPDATE finance_invoices
+SET journal_entry_id=accounting_entry_id
+WHERE journal_entry_id IS NULL AND accounting_entry_id IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS finance_invoices_work_order_outgoing_uq
 ON finance_invoices(work_order_id) WHERE direction='outgoing' AND work_order_id IS NOT NULL;
@@ -44,7 +50,6 @@ CREATE TABLE IF NOT EXISTS invoice_delivery_log(
 CREATE INDEX IF NOT EXISTS invoice_delivery_log_invoice_idx ON invoice_delivery_log(invoice_id,created_at DESC);
 
 -- A főkönyv kanonikus sémája a payrollAccounting.ts által használt oszlopkészlet.
--- Régi/kísérleti telepítésekben ezek hiányozhatnak; csak kiegészítjük, adatot nem törlünk.
 ALTER TABLE accounting_journal_entries
   ADD COLUMN IF NOT EXISTS document_no text,
   ADD COLUMN IF NOT EXISTS source_type text,
@@ -66,9 +71,8 @@ ALTER TABLE accounting_journal_lines
   ADD COLUMN IF NOT EXISTS note text,
   ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
 
--- Egy korábbi V3 kísérleti séma ugyanezeket a táblákat eltérő, NOT NULL
--- oszlopnevekkel hozta létre. Ha az futott le előbb, a kanonikus INSERT-ek
--- 500-zal elhasaltak. A régi adatokat megtartjuk, csak a kötelező jelleget oldjuk.
+-- Korábbi kísérleti sémák kötelező, eltérő nevű mezői blokkolhatják a kanonikus INSERT-et.
+-- Az adatokat megtartjuk; csak a NOT NULL követelményt oldjuk fel.
 DO $$
 BEGIN
   IF EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='accounting_journal_entries' AND column_name='entry_no') THEN
