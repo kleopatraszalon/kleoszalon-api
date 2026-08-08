@@ -58,6 +58,16 @@ CREATE TABLE IF NOT EXISTS loyalty_commission_events (
   UNIQUE(employee_id,source_type,source_id,work_order_id)
 );
 
+-- Az ajándékutalvány eladása bevétel, de nem dolgozói szolgáltatási jutalékalap.
+-- A dolgozói jutalékalap az utalvány későbbi beváltásakor kerül a loyalty_commission_events táblába.
+CREATE OR REPLACE FUNCTION loyalty_normalize_sale_commission() RETURNS trigger AS $$
+BEGIN
+  IF NEW.sale_type='voucher' THEN NEW.commission_base:=0; END IF;
+  RETURN NEW;
+END; $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_loyalty_normalize_sale_commission ON loyalty_sales;
+CREATE TRIGGER trg_loyalty_normalize_sale_commission BEFORE INSERT OR UPDATE ON loyalty_sales FOR EACH ROW EXECUTE FUNCTION loyalty_normalize_sale_commission();
+
 DO $$
 DECLARE p bigint;
 BEGIN
