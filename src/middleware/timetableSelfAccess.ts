@@ -5,10 +5,10 @@ import { requireAuth,type AuthRequest } from "./auth";
 function roles(raw:unknown):string[]{
   if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());
   const value=String(raw??"");
-  try{const parsed=JSON.parse(value);if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}
+  try{const parsed=JSON.parse(value);if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase());if(parsed!=null)return[String(parsed).toLowerCase()]}catch{}
   return value.split(",").map(x=>x.replace(/[\[\]"]/g,"").trim().toLowerCase()).filter(Boolean);
 }
-function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto"].includes(r));}
+function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto","location_manager","üzletvezető","uzletvezeto","store_manager","branch_manager"].includes(r));}
 
 async function resolveEmployee(req:AuthRequest){
   const id=String(req.user?.id??"").trim();const email=String(req.user?.email??"").trim();
