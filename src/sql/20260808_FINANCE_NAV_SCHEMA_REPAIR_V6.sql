@@ -27,13 +27,13 @@ ALTER TABLE finance_invoices
   ADD COLUMN IF NOT EXISTS journal_entry_id uuid,
   ADD COLUMN IF NOT EXISTS accounting_entry_id uuid;
 
--- A régi munkalap-számlázási ág accounting_entry_id mezőjét átvezetjük
--- a pénzügyi modul által használt kanonikus journal_entry_id mezőbe.
 UPDATE finance_invoices
 SET journal_entry_id=accounting_entry_id
 WHERE journal_entry_id IS NULL AND accounting_entry_id IS NOT NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS finance_invoices_work_order_outgoing_uq
+-- Legacy adatbázisban lehet korábbról több számlarekord ugyanarra a munkalapra.
+-- Az önjavítás emiatt nem bukhat el egy UNIQUE index létrehozásán.
+CREATE INDEX IF NOT EXISTS finance_invoices_work_order_outgoing_idx
 ON finance_invoices(work_order_id) WHERE direction='outgoing' AND work_order_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS invoice_delivery_log(
@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS invoice_delivery_log(
 );
 CREATE INDEX IF NOT EXISTS invoice_delivery_log_invoice_idx ON invoice_delivery_log(invoice_id,created_at DESC);
 
--- A főkönyv kanonikus sémája a payrollAccounting.ts által használt oszlopkészlet.
 ALTER TABLE accounting_journal_entries
   ADD COLUMN IF NOT EXISTS document_no text,
   ADD COLUMN IF NOT EXISTS source_type text,
@@ -71,8 +70,6 @@ ALTER TABLE accounting_journal_lines
   ADD COLUMN IF NOT EXISTS note text,
   ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
 
--- Korábbi kísérleti sémák kötelező, eltérő nevű mezői blokkolhatják a kanonikus INSERT-et.
--- Az adatokat megtartjuk; csak a NOT NULL követelményt oldjuk fel.
 DO $$
 BEGIN
   IF EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='accounting_journal_entries' AND column_name='entry_no') THEN
