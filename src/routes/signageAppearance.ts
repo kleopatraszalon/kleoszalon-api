@@ -38,7 +38,21 @@ const BASE_APPEARANCE = {
 };
 
 export const DEFAULT_SIGNAGE_APPEARANCE = { ...BASE_APPEARANCE, template: "neon" };
-export const CLASSIC_SIGNAGE_APPEARANCE = { ...BASE_APPEARANCE, template: "classic", effects: { ...BASE_APPEARANCE.effects, ambient: false, scanlines: false, glow: 0, blur: 0, radius: 18 } };
+export const CLASSIC_SIGNAGE_APPEARANCE = {
+  ...BASE_APPEARANCE,
+  template: "classic",
+  colors: {
+    background: "#fbfaf8",
+    surface: "#ffffff",
+    surfaceAlt: "#f3eee7",
+    text: "#120c08",
+    muted: "#5d5a55",
+    gold: "#b69861",
+    accent: "#ec008c",
+    success: "#41a86f"
+  },
+  effects: { ...BASE_APPEARANCE.effects, ambient: false, scanlines: false, glow: 0, blur: 0, radius: 18 }
+};
 
 async function ensure() {
   await pool.query(`
@@ -75,21 +89,31 @@ async function readConfig() {
   return { config: mergeConfig(parsed), updated_at: row?.updated_at || null };
 }
 
+function noCache(res: any) {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
+}
+
 signageAppearancePublicRouter.get("/appearance", async (_req, res) => {
+  noCache(res);
   try {
     const data = await readConfig();
-    res.json({ ok: true, ...data });
+    res.json({ ok: true, ...data, server_time: new Date().toISOString() });
   } catch (e: any) {
-    res.json({ ok: true, config: DEFAULT_SIGNAGE_APPEARANCE, updated_at: null, warning: e?.message || String(e) });
+    res.json({ ok: true, config: DEFAULT_SIGNAGE_APPEARANCE, updated_at: null, warning: e?.message || String(e), server_time: new Date().toISOString() });
   }
 });
 
 signageAppearanceAdminRouter.get("/", async (_req, res) => {
+  noCache(res);
   try { res.json({ ok: true, ...(await readConfig()) }); }
   catch (e: any) { res.status(500).json({ ok: false, error: e?.message || "appearance_read_failed" }); }
 });
 
 signageAppearanceAdminRouter.put("/", async (req, res) => {
+  noCache(res);
   try {
     await ensure();
     const config = mergeConfig(req.body?.config ?? req.body ?? {});
@@ -114,6 +138,7 @@ signageAppearanceAdminRouter.put("/", async (req, res) => {
 });
 
 signageAppearanceAdminRouter.post("/reset", async (_req, res) => {
+  noCache(res);
   try {
     await ensure();
     const row = (await pool.query(
