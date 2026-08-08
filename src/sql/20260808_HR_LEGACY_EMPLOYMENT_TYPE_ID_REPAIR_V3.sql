@@ -66,7 +66,11 @@ BEGIN
        SELECT 1 FROM information_schema.columns
        WHERE table_schema='public' AND table_name='employment_contracts' AND column_name='employment_type_id'
      ) THEN
-    ALTER TABLE employment_contracts ALTER COLUMN employment_type_id SET NOT NULL;
+    -- Régi adatbázisban a szerződés típusa lehetett NULL. Ettől a javítás ne
+    -- álljon meg; NOT NULL csak akkor kerül vissza, ha a történeti adatok ezt engedik.
+    IF NOT EXISTS (SELECT 1 FROM employment_contracts WHERE employment_type_id IS NULL) THEN
+      ALTER TABLE employment_contracts ALTER COLUMN employment_type_id SET NOT NULL;
+    END IF;
     ALTER TABLE employment_contracts
       ADD CONSTRAINT employment_contracts_employment_type_id_fkey
       FOREIGN KEY(employment_type_id) REFERENCES employment_types(id)
