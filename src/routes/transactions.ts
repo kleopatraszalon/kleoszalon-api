@@ -21,6 +21,7 @@ import workOrderFinalizationRouter from "./workOrderFinalization";
 import workOrderInvoiceChainRouter from "./workOrderInvoiceChain";
 import navOnlineInvoiceRouter from "./navOnlineInvoice";
 import navOnlineInvoiceStatusRouter from "./navOnlineInvoiceStatus";
+import navInvoiceLifecycleRouter from "./navInvoiceLifecycle";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -56,6 +57,7 @@ router.use("/workorder-finalization",requireFeature("finance"),requireMenuPermis
 router.use("/workorder-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
 router.use("/nav-online-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
+router.use("/nav-online-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
 router.use("/system-health",systemHealthRouter);
 router.use("/uat",uatTestCenterRouter);
