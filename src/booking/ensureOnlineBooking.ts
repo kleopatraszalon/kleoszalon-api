@@ -92,9 +92,6 @@ export async function ensureOnlineBooking() {
     SELECT id FROM locations ON CONFLICT(location_id) DO NOTHING
   `);
 
-  // Az online foglalás ugyanabban a tranzakcióban kap hivatalos munkalapot.
-  // A trigger csak online/online_voice forrásra fut, ezért a belső időpontlétrehozás
-  // meglévő munkalap-generálását nem duplikálja.
   await pool.query(`
     CREATE OR REPLACE FUNCTION kleo_online_booking_workorder_trigger()
     RETURNS trigger LANGUAGE plpgsql AS $$
@@ -129,16 +126,15 @@ export async function ensureOnlineBooking() {
       END IF;
 
       IF NOT EXISTS (
-        SELECT 1 FROM work_order_items
-        WHERE work_order_id=wo_id AND service_id=NEW.service_id AND sort_order=NEW.sort_order
+        SELECT 1 FROM work_order_items WHERE work_order_id=wo_id AND service_id=NEW.service_id
       ) THEN
         INSERT INTO work_order_items(
-          work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes,sort_order
+          work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes
         )
         SELECT wo_id,'service',s.id,s.name,1,NEW.price,
           ROUND(NEW.price*COALESCE(NEW.discount_percent,0)/100,2),
           NEW.price-ROUND(NEW.price*COALESCE(NEW.discount_percent,0)/100,2),
-          NEW.duration_minutes,NEW.sort_order
+          NEW.duration_minutes
         FROM services s WHERE s.id=NEW.service_id;
       END IF;
 
