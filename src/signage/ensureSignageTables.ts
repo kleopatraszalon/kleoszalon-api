@@ -1,5 +1,12 @@
 import type { Pool } from "pg";
 
+const DEFAULT_APPEARANCE = {
+  template: "classic",
+  colors: { background: "#09070a", surface: "#171219", surfaceAlt: "#211720", text: "#fffaf5", muted: "#cfc4c8", gold: "#b69861", accent: "#ec008c", success: "#41d67c" },
+  effects: { glow: 32, blur: 18, radius: 26, contrast: 1, motion: "medium", ambient: true, scanlines: false },
+  popup: { enabled: true, intervalSec: 180, durationSec: 12, initialDelaySec: 45, source: "flash_then_deal", animation: "impact", showPrice: true }
+};
+
 export async function ensureSignageTables(pool: Pool) {
   try { await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`); } catch {}
 
@@ -15,46 +22,26 @@ export async function ensureSignageTables(pool: Pool) {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_services (
-      ${idCol},
-      name text NOT NULL,
-      category text DEFAULT '',
-      duration_min int,
-      price_text text DEFAULT '',
-      show boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, name text NOT NULL, category text DEFAULT '', duration_min int, price_text text DEFAULT '',
+      show boolean NOT NULL DEFAULT true, priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
   try { await pool.query(`ALTER TABLE public.signage_services ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`); } catch {}
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_deals (
-      ${idCol},
-      title text NOT NULL,
-      subtitle text DEFAULT '',
-      price_text text DEFAULT '',
-      valid_from date,
-      valid_to date,
-      active boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, title text NOT NULL, subtitle text DEFAULT '', price_text text DEFAULT '', valid_from date, valid_to date,
+      active boolean NOT NULL DEFAULT true, priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_professionals (
-      ${idCol},
-      name text NOT NULL,
-      title text DEFAULT '',
-      note text DEFAULT '',
-      photo_url text DEFAULT '',
-      show boolean NOT NULL DEFAULT true,
-      is_free boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, name text NOT NULL, title text DEFAULT '', note text DEFAULT '', photo_url text DEFAULT '',
+      show boolean NOT NULL DEFAULT true, is_free boolean NOT NULL DEFAULT true, priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
   try { await pool.query(`ALTER TABLE public.signage_professionals ADD COLUMN IF NOT EXISTS show boolean NOT NULL DEFAULT true;`); } catch {}
@@ -62,59 +49,67 @@ export async function ensureSignageTables(pool: Pool) {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_quotes (
-      ${idCol},
-      category text NOT NULL CHECK (category IN ('fitness','beauty','general')),
-      text text NOT NULL,
-      author text DEFAULT '',
-      active boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, category text NOT NULL CHECK (category IN ('fitness','beauty','general')), text text NOT NULL,
+      author text DEFAULT '', active boolean NOT NULL DEFAULT true, priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_videos (
-      ${idCol},
-      youtube_id text NOT NULL,
-      title text DEFAULT '',
-      enabled boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      duration_sec int NOT NULL DEFAULT 60,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, youtube_id text NOT NULL, title text DEFAULT '', enabled boolean NOT NULL DEFAULT true,
+      priority int NOT NULL DEFAULT 0, duration_sec int NOT NULL DEFAULT 60,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
-  // Villám akciók (felső sávban)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_flash_promos (
-      ${idCol},
-      title text NOT NULL,
-      body text NOT NULL DEFAULT '',
-      start_at timestamptz,
-      end_at timestamptz,
-      enabled boolean NOT NULL DEFAULT true,
-      priority int NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      ${idCol}, title text NOT NULL, body text NOT NULL DEFAULT '', start_at timestamptz, end_at timestamptz,
+      enabled boolean NOT NULL DEFAULT true, priority int NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
-  // Egyszerű kulcs-érték beállítások (pl. névnapos üzenet sablon)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS public.signage_settings (
-      key text PRIMARY KEY,
-      value text NOT NULL DEFAULT '',
-      updated_at timestamptz NOT NULL DEFAULT now()
+      key text PRIMARY KEY, value text NOT NULL DEFAULT '', updated_at timestamptz NOT NULL DEFAULT now()
     );
   `);
 
-  // alap névnap-sablon csak első létrehozáskor
   await pool.query(
     `INSERT INTO public.signage_settings(key, value)
      VALUES ('nameday_template', 'Ma a {names} nevű vendégeink 20% kedvezményben részesülnek!!!')
      ON CONFLICT (key) DO NOTHING;`
   );
+  await pool.query(
+    `INSERT INTO public.signage_settings(key,value)
+     VALUES('appearance_config',$1)
+     ON CONFLICT(key) DO NOTHING`, [JSON.stringify(DEFAULT_APPEARANCE)]
+  );
 
+  // VIR menü: a meglévő Kijelző admin megmarad, mellé külön kinézet-szerkesztő kerül.
+  try {
+    await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text`);
+    await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL`);
+    const parent = (await pool.query(`
+      SELECT id FROM menus
+      WHERE route='/signage' OR code IN ('signage','screens.signage') OR lower(name) LIKE '%kijelző%'
+      ORDER BY CASE WHEN route='/signage' THEN 0 ELSE 1 END,id LIMIT 1
+    `)).rows[0]?.id || null;
+    const menuId = (await pool.query(`
+      INSERT INTO menus(code,name,icon,route,order_index,parent_id,is_active)
+      VALUES('screens.signage.appearance','Kijelző kinézet','Palette','/signage/appearance',173,$1,true)
+      ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,is_active=true
+      RETURNING id`, [parent])).rows[0]?.id;
+    if (menuId) {
+      await pool.query(`
+        INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+        SELECT role_key,$1,true,true,true,false,false,false,false,false,scope_type,now()
+        FROM (VALUES ('admin','all_locations'),('manager','all_locations'),('location_manager','own_location'),('receptionist','own_location'),('salon_manager','own_location')) r(role_key,scope_type)
+        ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,scope_type=EXCLUDED.scope_type,updated_at=now()
+      `,[menuId]);
+    }
+  } catch (e) { console.warn('Signage appearance menu seed skipped:', e); }
 }
