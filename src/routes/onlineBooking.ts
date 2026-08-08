@@ -1,6 +1,7 @@
 import { Router } from "express";
 import crypto from "crypto";
 import db from "../db";
+import ensureOnlineBooking from "../booking/ensureOnlineBooking";
 
 const router = Router();
 const asUuidList = (value: unknown) => String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -9,6 +10,7 @@ const dayStart = (date: string) => new Date(`${date}T00:00:00`);
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
 
 async function settings(locationId: string) {
+  await ensureOnlineBooking();
   const { rows } = await db.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`, [locationId]);
   return rows[0] || {
     enabled: true,
@@ -28,10 +30,31 @@ const serviceLocationClause = `
     OR EXISTS (SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid)
   )`;
 
+router.get("/health", async (_req, res) => {
+  try {
+    await ensureOnlineBooking();
+    const [locations, services, employees] = await Promise.all([
+      db.query(`SELECT count(*)::int count FROM locations WHERE COALESCE(is_active,true)=true`),
+      db.query(`SELECT count(*)::int count FROM services WHERE COALESCE(is_active,true)=true AND COALESCE(online_bookable,true)=true`),
+      db.query(`SELECT count(*)::int count FROM employees WHERE COALESCE(active,true)=true`),
+    ]);
+    res.json({
+      ok: true,
+      database: true,
+      locations: locations.rows[0]?.count || 0,
+      services: services.rows[0]?.count || 0,
+      employees: employees.rows[0]?.count || 0,
+    });
+  } catch (error: any) {
+    res.status(500).json({ ok: false, database: false, error: error?.message || String(error) });
+  }
+});
+
 router.get("/catalog", async (req, res) => {
   try {
+    await ensureOnlineBooking();
     const locationId = String(req.query.location_id || "").trim();
-    const locations = await db.query(`SELECT id,name FROM locations ORDER BY name`);
+    const locations = await db.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name`);
     if (!locationId) return res.json({ locations: locations.rows, services: [], employees: [], settings: null });
 
     const [serviceRows, employeeRows, cfg] = await Promise.all([
@@ -44,11 +67,11 @@ router.get("/catalog", async (req, res) => {
          WHERE s.is_active=true AND COALESCE(s.online_bookable,true)=true
            AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id)
                 OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$1::uuid))
-         ORDER BY COALESCE(st.display_order,999999),st.name,s.name`,
+         ORDER BY st.name NULLS LAST,s.name`,
         [locationId]
       ),
       db.query(
-        `SELECT id,COALESCE(NULLIF(full_name,''),NULLIF(concat_ws(' ',last_name,first_name),''),'Munkatárs') full_name,photo_url,color
+        `SELECT id,COALESCE(NULLIF(full_name,''),NULLIF(concat_ws(' ',last_name,first_name),''),'Munkatárs') full_name,photo_url
          FROM employees
          WHERE active=true AND (location_id=$1::uuid OR location_id IS NULL)
          ORDER BY COALESCE(NULLIF(full_name,''),last_name,first_name,'')`,
@@ -65,6 +88,7 @@ router.get("/catalog", async (req, res) => {
 
 router.get("/availability", async (req, res) => {
   try {
+    await ensureOnlineBooking();
     const locationId = String(req.query.location_id || "").trim();
     const date = String(req.query.date || "").trim();
     const serviceIds = asUuidList(req.query.service_ids);
@@ -167,6 +191,7 @@ router.post("/book", async (req, res) => {
 
   const cx = await db.connect();
   try {
+    await ensureOnlineBooking();
     await cx.query("BEGIN");
     const cfgResult = await cx.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`, [locationId]);
     const cfg = cfgResult.rows[0] || { enabled: true, online_discount_percent: 5, require_staff_confirmation: true };
@@ -284,6 +309,7 @@ router.post("/book", async (req, res) => {
 
 router.post("/waitlist", async (req, res) => {
   try {
+    await ensureOnlineBooking();
     const locationId = String(req.body?.location_id || "").trim();
     const name = String(req.body?.client_name || "").trim();
     const serviceIds = Array.isArray(req.body?.service_ids) ? req.body.service_ids.map(String).filter(Boolean) : [];
@@ -302,6 +328,7 @@ router.post("/waitlist", async (req, res) => {
 
 router.post("/cancel/:token", async (req, res) => {
   try {
+    await ensureOnlineBooking();
     const reason = String(req.body?.reason || "Online lemondás").trim();
     const { rows } = await db.query(
       `UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=now(),updated_at=now()
