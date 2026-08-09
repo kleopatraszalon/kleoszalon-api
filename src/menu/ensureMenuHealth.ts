@@ -5,8 +5,6 @@ async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)
 export async function ensureMenuHealth(){
   await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);
 
-  // Regresszió-helyreállítás: a dashboard és a fő navigáció kanonikus elemei
-  // legyenek újra aktívak. Ez nem hoz létre duplikátumot és nem nulláz menükódot.
   await safe(`UPDATE menus SET is_active=true WHERE code IN(
     'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash',
     'team','team.schedule','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
@@ -14,7 +12,17 @@ export async function ensureMenuHealth(){
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
   await safe(`UPDATE menus SET route='/workorders',is_active=true WHERE code='appointments.workorders'`);
 
-  // A két kritikus főmenü legyen biztosan jelen, akkor is, ha egy korábbi menümigráció kimaradt.
+  // Régi és vegyes útvonalak kanonizálása. Ezek a route-ok korábban a frontend wildcardjára
+  // estek és bejelentkezett felhasználónál visszairányítottak az irányítópultra.
+  await safe(`UPDATE menus SET route='/warehouse/products',is_active=true WHERE route IN('/products','/masterdata/products','/inventory/products')`);
+  await safe(`UPDATE menus SET route='/appointments/calendar',is_active=true WHERE route='/appointments'`);
+  await safe(`UPDATE menus SET route='/warehouse',is_active=true WHERE route='/inventory'`);
+  await safe(`UPDATE menus SET route='/warehouse?view=procurement&section=dashboard',is_active=true WHERE route IN('/procurement','/warehouse/procurement')`);
+  await safe(`UPDATE menus SET route='/modules/customers/clients',is_active=true WHERE route='/clients'`);
+  await safe(`UPDATE menus SET route='/modules/customers/crm',is_active=true WHERE route='/crm'`);
+  await safe(`UPDATE menus SET route='/employees',is_active=true WHERE route IN('/team','/staff')`);
+  await safe(`UPDATE menus SET route='/masterdata/services',is_active=true WHERE route='/masterdata/services/'`);
+
   await pool.query(`DO $$ DECLARE p bigint; BEGIN
     SELECT id INTO p FROM menus WHERE code='appointments' OR (parent_id IS NULL AND lower(name) LIKE 'időpont%') ORDER BY CASE WHEN code='appointments' THEN 0 ELSE 1 END,id LIMIT 1;
     IF p IS NULL THEN INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active) VALUES('appointments','Időpontok és jelenlét','CalendarDays',NULL,20,NULL,'appointments',true) RETURNING id INTO p;
@@ -45,6 +53,12 @@ export async function ensureMenuHealth(){
     UPDATE menus SET is_active=false WHERE route='/finance/nav-online-invoice' AND COALESCE(code,'')<>'finance.nav_online_invoice';
   END $$;`);
 
+  // 10. etap: központi ellátás stabil menüpont a Beszerzés alatt.
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='procurement' LIMIT 1)
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    SELECT 'procurement.central_supply','Központi ellátás',NULL,'/warehouse/central-supply',45,p.id,'inventory',true FROM p
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='inventory',is_active=true`);
+
   await safe(`UPDATE menus SET route='/webshop/admin',is_active=true WHERE code='commerce.webshop'`);
   await safe(`UPDATE menus SET route='/signage',is_active=true WHERE code='screens.signage'`);
   await safe(`UPDATE menus SET route='/kiosk',is_active=true WHERE code='screens.kiosk'`);
@@ -70,7 +84,7 @@ export async function ensureMenuHealth(){
   )`);
 
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
-    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now() FROM menus m WHERE m.code IN('appointments.workorders','finance.nav_online_invoice')
+    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now() FROM menus m WHERE m.code IN('appointments.workorders','finance.nav_online_invoice','procurement.central_supply')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,can_view_financial=true,can_manage_permissions=true,scope_type='all_locations',updated_at=now()`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT r.role_key,m.id,true,true,true,false,false,true,false,false,'own_location',now()
@@ -83,4 +97,8 @@ export async function ensureMenuHealth(){
     SELECT r.role_key,m.id,false,false,false,false,false,false,false,false,'own_location',now()
     FROM (VALUES('receptionist'),('location_manager'),('salon_manager'),('employee'),('customer')) r(role_key) CROSS JOIN menus m WHERE m.code='finance.nav_online_invoice'
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,can_view_financial=false,can_manage_permissions=false,updated_at=now()`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,true,false,false,false,false,false,false,false,'own_location',now()
+    FROM (VALUES('location_manager'),('salon_manager'),('receptionist')) r(role_key) CROSS JOIN menus m WHERE m.code='procurement.central_supply'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,scope_type='own_location',updated_at=now()`);
 }
