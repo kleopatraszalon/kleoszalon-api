@@ -20,6 +20,15 @@ const workflowRules: Rule[] = [
   { test:(m,p)=>m==="GET" && /\/orders\/[^/]+\/document\.pdf$/.test(p), code:"procurement.orders", action:"can_export" },
   { test:(m,p)=>m==="GET" && p==="/supplier-performance", code:"procurement.performance", action:"can_view" },
   { test:(m,p)=>m==="GET" && p==="/alerts", code:"procurement.deviations", action:"can_view" },
+
+  // 10. etap – központi ellátás. A lekérdezés a beszerzési rendelés nézethez,
+  // az igény létrehozása/szerkesztése és az átadások végrehajtása külön joghoz kötött.
+  { test:(m,p)=>m==="GET" && (p==="/requests" || p==="/transfers" || p==="/discrepancies"), code:"procurement.orders", action:"can_view" },
+  { test:(m,p)=>m==="POST" && p==="/requests", code:"procurement.orders", action:"can_create" },
+  { test:(m,p)=>m==="POST" && /\/requests\/[^/]+\/approve$/.test(p), code:"procurement.approvals", action:"can_approve" },
+  { test:(m,p)=>m==="POST" && /\/requests\/[^/]+\/(allocate|procure)$/.test(p), code:"procurement.orders", action:"can_edit" },
+  { test:(m,p)=>m==="POST" && /\/transfers\/[^/]+\/(dispatch|receive)$/.test(p), code:"procurement.orders", action:"can_edit" },
+  { test:(m,p)=>m==="POST" && /\/discrepancies\/[^/]+\/resolve$/.test(p), code:"procurement.deviations", action:"can_edit" },
 ];
 
 function enforce(rules: Rule[]) {
