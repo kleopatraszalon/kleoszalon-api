@@ -3,6 +3,7 @@ import path from 'path';
 import pool from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
 import {ensureMenuHealth} from '../menu/ensureMenuHealth';
+import {ensureWorkOrderWorkflow} from '../workorders/ensureWorkOrderWorkflow';
 
 let ensurePromise:Promise<void>|null=null;
 
@@ -15,6 +16,10 @@ export function ensureFinanceNav(){
   if(!ensurePromise){
     ensurePromise=(async()=>{
       await ensureHrV2();
+      // A munkalap a foglalás, készlet és pénzügy közös tranzakciós magja,
+      // ezért a hozzá tartozó additív workflow-sémát a pénzügyi bootstrap
+      // előtt biztosítjuk. A művelet idempotens és nem töröl meglévő adatot.
+      await ensureWorkOrderWorkflow(pool);
       for(const file of [
         '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
@@ -24,9 +29,6 @@ export function ensureFinanceNav(){
         '20260808_NAV_ONLINE_INVOICE_V4.sql',
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
       ]) await runSql(file);
-      // A pénzügyi/NAV séma után a kapcsolódó menük és jogosultságok is
-      // automatikusan kerüljenek konzisztens állapotba. Így a NAV menüpont
-      // nem függ attól, hogy valaki előbb megnyitotta-e a menü API-t.
       await ensureMenuHealth();
     })().catch(err=>{ensurePromise=null;throw err});
   }
