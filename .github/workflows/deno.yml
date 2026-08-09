@@ -26,5 +26,8 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Work order regression tests
+        run: npm run test:workorders
+
       - name: Build API
         run: npm run build
