@@ -24,7 +24,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --include=dev --no-audit --no-fund
 
       - name: Work order regression tests
         run: npm run test:workorders
