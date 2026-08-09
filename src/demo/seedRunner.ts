@@ -7,7 +7,7 @@ dotenv.config();
 ensureWorkOrderDemoData()
   .then(async () => { await db.end(); process.exit(0); })
   .catch(async (error) => {
-    console.error("DEMO seed runner hiba:", error);
+    console.error("DEMO seed runner hiba, az API ettől még elindul:", error);
     await db.end().catch(() => undefined);
-    process.exit(1);
+    process.exit(0);
   });
