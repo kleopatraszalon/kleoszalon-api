@@ -66,12 +66,61 @@ export async function ensureWorkOrderDemoData() {
         }
       }
 
+      // Régi/valós munkatársaknál előfordulhat, hogy még nincs employee_service_overrides rekord.
+      // Csak a teljesen üres hozzárendelésű munkatársakat töltjük fel a saját szalonjuk aktív szolgáltatásaival;
+      // meglévő kézi hozzárendelést soha nem írunk felül.
+      await cx.query(`INSERT INTO employee_service_overrides(employee_id,service_id,custom_duration_minutes)
+        SELECT e.id, s.id, COALESCE(s.duration_minutes,30)::int
+          FROM employees e
+          JOIN service_locations sl ON sl.location_id=e.location_id
+          JOIN services s ON s.id=sl.service_id AND COALESCE(s.is_active,true)=true
+         WHERE e.location_id=$1::uuid
+           AND COALESCE(e.active,true)=true
+           AND NOT EXISTS(
+             SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id::text=e.id::text
+           )
+        ON CONFLICT(employee_id,service_id) DO NOTHING`, [location.id]);
+
+      // Tesztelhető termékválasztáshoz csak az inicializálatlan (mozgás nélküli) szalonkészlet kap DEMO nyitókészletet.
+      // Már használt/mozgatott készletet nem módosítunk.
+      await cx.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity,min_quantity,unit_cost,updated_at)
+        SELECT p.id,$1::uuid,25,5,0,now()
+          FROM products p
+         WHERE COALESCE(p.is_active,true)=true
+           AND NOT EXISTS(
+             SELECT 1 FROM product_stock_balances b
+              WHERE b.product_id=p.id AND b.location_id=$1::uuid
+           )
+        ON CONFLICT DO NOTHING`, [location.id]);
+      await cx.query(`UPDATE product_stock_balances b
+         SET quantity=25,
+             min_quantity=CASE WHEN COALESCE(b.min_quantity,0)<=0 THEN 5 ELSE b.min_quantity END,
+             updated_at=now()
+       WHERE b.location_id=$1::uuid
+         AND COALESCE(b.quantity,0)=0
+         AND NOT EXISTS(
+           SELECT 1 FROM inventory_movements m
+            WHERE m.product_id=b.product_id AND m.location_id=b.location_id
+         )`, [location.id]);
+      await cx.query(`INSERT INTO inventory_movements
+        (product_id,location_id,movement_type,quantity,balance_after,unit_cost,stock_value_after,note,created_by)
+        SELECT b.product_id,b.location_id,'opening',b.quantity,b.quantity,
+               COALESCE(b.unit_cost,0),b.quantity*COALESCE(b.unit_cost,0),
+               'DEMO-WORKORDER-STOCK','demo-workorder-seed'
+          FROM product_stock_balances b
+         WHERE b.location_id=$1::uuid
+           AND COALESCE(b.quantity,0)>0
+           AND NOT EXISTS(
+             SELECT 1 FROM inventory_movements m
+              WHERE m.product_id=b.product_id AND m.location_id=b.location_id
+           )`, [location.id]);
+
       for (let p = 0; p < providers.length; p++) {
         const employee = providers[p];
         const assigned = (await cx.query(`SELECT s.id,s.name,COALESCE(eo.custom_duration_minutes,s.duration_minutes,30)::int duration_minutes,
             COALESCE(eo.custom_price,s.promo_price,s.list_price,s.base_price,0)::numeric price
           FROM employee_service_overrides eo JOIN services s ON s.id=eo.service_id
-          WHERE eo.employee_id=$1 ORDER BY s.name`, [String(employee.id)])).rows;
+          WHERE eo.employee_id::text=$1 ORDER BY s.name`, [String(employee.id)])).rows;
         if (!assigned.length) continue;
         for (let day = 0; day < 14; day++) {
           const dow = (new Date(Date.now() + day * 86400000)).getDay();
@@ -96,7 +145,7 @@ export async function ensureWorkOrderDemoData() {
       }
     }
     await cx.query("COMMIT");
-    console.log(`DEMO workorder seed kész: ${locations.length} szalon, ${providerProfiles.length + 1} munkatárs/szalon, 14 napos foglalási minta.`);
+    console.log(`DEMO workorder seed kész: ${locations.length} szalon, ${providerProfiles.length + 1} munkatárs/szalon, 14 napos foglalási minta, munkatárs-szolgáltatás fallback és DEMO nyitókészlet.`);
   } catch (error) {
     await cx.query("ROLLBACK").catch(() => undefined);
     console.error("DEMO workorder seed hiba:", error);
