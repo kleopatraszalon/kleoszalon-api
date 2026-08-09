@@ -20,6 +20,7 @@ import loyaltyAutomationRouter from "./loyaltyAutomation";
 import workOrderFinalizationRouter from "./workOrderFinalization";
 import workOrderInvoiceChainRouter from "./workOrderInvoiceChain";
 import workOrderEditorRouter from "./workOrderEditor";
+import workOrderMaterialsRouter from "./workOrderMaterials";
 import navOnlineInvoiceRouter from "./navOnlineInvoice";
 import navOnlineInvoiceStatusRouter from "./navOnlineInvoiceStatus";
 import navInvoiceLifecycleRouter from "./navInvoiceLifecycle";
@@ -49,6 +50,7 @@ router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMet
 router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
 router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
+router.use("/workorder-materials",workOrderMaterialsRouter);
 router.use("/cashier",workOrderFinanceScope,guardSettlementLifecycle,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
 router.use("/finance-linking",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeLinkingRouter);
