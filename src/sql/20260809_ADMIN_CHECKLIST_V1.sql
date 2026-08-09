@@ -2,9 +2,11 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-INSERT INTO hr_positions(code,name,description,department_name,management_level,is_active)
-VALUES('ADMIN','Adminisztrátor','VIR rendszerszintű adminisztráció és napi működési kontroll.','Vezetés',100,true)
-ON CONFLICT DO NOTHING;
+INSERT INTO hr_positions(code,name,description,management_level,is_active)
+SELECT 'ADMIN','Adminisztrátor','VIR rendszerszintű adminisztráció és napi működési kontroll.',100,true
+WHERE NOT EXISTS (
+  SELECT 1 FROM hr_positions WHERE lower(COALESCE(code,''))='admin'
+);
 
 WITH p AS (
   SELECT id FROM hr_positions WHERE lower(COALESCE(code,''))='admin' ORDER BY created_at LIMIT 1
@@ -59,7 +61,7 @@ ON CONFLICT(checklist_id,item_key) DO UPDATE SET
   description=EXCLUDED.description,sort_order=EXCLUDED.sort_order,is_required=true,is_active=true,updated_at=now();
 
 WITH c AS (SELECT id FROM vir_checklists WHERE code='admin-core-v1'),
-     p AS (SELECT id FROM hr_positions WHERE lower(COALESCE(code,''))='admin')
+     p AS (SELECT id FROM hr_positions WHERE lower(COALESCE(code,''))='admin' ORDER BY created_at LIMIT 1)
 INSERT INTO vir_checklist_position_assignments(checklist_id,position_id,is_active)
 SELECT c.id,p.id,true FROM c CROSS JOIN p
 ON CONFLICT(checklist_id,position_id) DO UPDATE SET is_active=true,updated_at=now();
