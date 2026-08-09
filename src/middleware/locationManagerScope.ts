@@ -48,6 +48,33 @@ function transformJson(res:Response,transform:(body:any)=>any){
   (res as any).json=(body:any)=>original(transform(body));
 }
 
+function softenChecklistMy(req:AuthRequest,res:Response,kind:LocationScopeKind){
+  const parts=pathParts(req);
+  if(kind!=="checklists"||req.method!=="GET"||parts.length!==1||parts[0]!=="my") return;
+  const originalStatus=res.status.bind(res);
+  const originalJson=res.json.bind(res);
+  let requestedStatus=200;
+  (res as any).status=(code:number)=>{requestedStatus=code;return res;};
+  (res as any).json=(body:any)=>{
+    if(requestedStatus===404||requestedStatus===409){
+      originalStatus(200);
+      return originalJson({
+        employee:null,
+        checklists:[],
+        summary:{
+          daily:{frequency:"daily",total:0,completed:0,missing:0,percent:100,warning:false,state:"green"},
+          weekly:{frequency:"weekly",total:0,completed:0,missing:0,percent:100,warning:false,state:"green"},
+          monthly:{frequency:"monthly",total:0,completed:0,missing:0,percent:100,warning:false,state:"green"}
+        },
+        unassigned:true,
+        message:body?.error||"A belépett felhasználóhoz nincs kiosztott check lista."
+      });
+    }
+    originalStatus(requestedStatus);
+    return originalJson(body);
+  };
+}
+
 async function entityInLocation(table:string,id:string,locationId:string){
   const allowed=new Set(["employees","clients","appointments","work_orders","product_stock_balances","purchase_orders"]);
   if(!allowed.has(table)) return false;
@@ -75,6 +102,7 @@ function sanitizeCreatedEmployee(req:AuthRequest,locationId:string){
 
 async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:LocationScopeKind){
   try{
+    softenChecklistMy(req,res,kind);
     if(!isLocationManager(req)) return next();
     const locationId=ownLocation(req);
     if(!locationId) return res.status(403).json({error:"Az üzletvezetői fiókhoz nincs telephely rendelve."});
@@ -144,8 +172,6 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:Locatio
     }
 
     if(kind==="checklists"){
-      // A checklist modul régi vezetői ellenőrzése a "manager" kulcsot ismeri.
-      // A telephely-korlátozás ezen a ponton már érvényesült, ezért biztonságosan aliasolható.
       if(req.user) req.user.role="manager";
     }
 

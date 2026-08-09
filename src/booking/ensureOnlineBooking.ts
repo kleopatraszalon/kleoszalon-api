@@ -27,6 +27,17 @@ export async function ensureOnlineBooking() {
       ADD COLUMN IF NOT EXISTS confirmed_at timestamptz,
       ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
+    -- A korábbi phase3 constraint nem tartalmazta az arrived/in_progress állapotokat,
+    -- ezért a naptár "Megérkezett" művelete 23514 hibával elszállt. A régi sorokat
+    -- nem kényszerítjük át migrációkor, de minden új módosításnál a teljes, jelenleg
+    -- használt életciklust engedjük.
+    ALTER TABLE appointments DROP CONSTRAINT IF EXISTS chk_appointments_status_phase3;
+    ALTER TABLE appointments ADD CONSTRAINT chk_appointments_status_phase3
+      CHECK (status IN (
+        'waiting','pending','booked','confirmed','arrived','in_progress',
+        'completed','paid','cancelled','canceled','no_show','rescheduled'
+      )) NOT VALID;
+
     CREATE UNIQUE INDEX IF NOT EXISTS appointments_cancellation_token_uq
       ON appointments(cancellation_token) WHERE cancellation_token IS NOT NULL;
     CREATE INDEX IF NOT EXISTS appointments_employee_time_idx
