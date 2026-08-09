@@ -12,7 +12,7 @@ WITH p AS (
   SELECT id FROM hr_positions WHERE lower(COALESCE(code,''))='admin' ORDER BY created_at LIMIT 1
 )
 UPDATE employees e
-SET position_id=COALESCE(e.position_id,p.id),active=true,updated_at=now()
+SET position_id=p.id,active=true,updated_at=now()
 FROM users u,p
 WHERE lower(COALESCE(e.email,''))=lower(COALESCE(u.email,''))
   AND lower(COALESCE(u.role::text,'')) LIKE '%admin%';
