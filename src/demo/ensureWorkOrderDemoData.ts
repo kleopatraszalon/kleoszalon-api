@@ -7,6 +7,7 @@ const providerProfiles = [
   { suffix: "kormos", label: "DEMO Körmös", qualification: "Kéz- és lábápoló", role: ["employee"] },
   { suffix: "masszor", label: "DEMO Masszőr", qualification: "Masszőr", role: ["employee"] },
 ];
+const demoDuration = (value: unknown) => Math.min(90, Math.max(30, Number(value || 30)));
 
 export async function ensureWorkOrderDemoData() {
   const cx = await db.connect();
@@ -27,7 +28,7 @@ export async function ensureWorkOrderDemoData() {
 
     const locations = (await cx.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name`)).rows;
     const services = (await cx.query(`SELECT id,name,COALESCE(duration_minutes,30)::int duration_minutes,COALESCE(promo_price,list_price,base_price,0)::numeric price FROM services WHERE COALESCE(is_active,true)=true ORDER BY name LIMIT 80`)).rows;
-    const clients = (await cx.query(`SELECT id FROM clients ORDER BY created_at NULLS LAST,id LIMIT 80`)).rows;
+    const clients = (await cx.query(`SELECT id FROM clients ORDER BY id LIMIT 80`)).rows;
     if (!locations.length || !services.length || !clients.length) {
       await cx.query("ROLLBACK");
       console.warn("DEMO seed kihagyva: locations/services/clients törzs hiányos.");
@@ -61,7 +62,7 @@ export async function ensureWorkOrderDemoData() {
         for (const service of fallback) {
           await cx.query(`INSERT INTO employee_service_overrides(employee_id,service_id,custom_duration_minutes)
             VALUES($1,$2::uuid,$3) ON CONFLICT(employee_id,service_id) DO NOTHING`,
-            [String(employee.id), service.id, Number(service.duration_minutes || 30)]);
+            [String(employee.id), service.id, demoDuration(service.duration_minutes)]);
         }
       }
 
@@ -78,6 +79,7 @@ export async function ensureWorkOrderDemoData() {
           const slots = [9, 12, 15, 17];
           for (let slot = 0; slot < slots.length; slot++) {
             const service = assigned[(day + slot) % assigned.length];
+            const duration = demoDuration(service.duration_minutes);
             const client = clients[(p * 17 + day * 4 + slot) % clients.length];
             const marker = `DEMO-WORKORDER:${locKey}:${String(employee.id).slice(0,8)}:${day}:${slot}`;
             const exists = await cx.query(`SELECT id FROM appointments WHERE notes=$1 AND start_time::date >= CURRENT_DATE LIMIT 1`, [marker]);
@@ -86,9 +88,9 @@ export async function ensureWorkOrderDemoData() {
             const startExpr = `(CURRENT_DATE + $6::int + make_time($7::int,0,0)) AT TIME ZONE 'Europe/Budapest'`;
             const ap = await cx.query(`INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes)
               VALUES($1::uuid,$2::uuid,$3::uuid,$4,${startExpr},${startExpr} + ($5::int || ' minutes')::interval,$8,$9)
-              RETURNING id`, [employee.id, client.id, location.id, service.name, Number(service.duration_minutes || 30), day + 1, slots[slot], status, marker]);
+              RETURNING id`, [employee.id, client.id, location.id, service.name, duration, day + 1, slots[slot], status, marker]);
             await cx.query(`INSERT INTO appointment_services(appointment_id,service_id,duration_minutes,price,discount_percent,sort_order)
-              VALUES($1::uuid,$2::uuid,$3,$4,0,0)`, [ap.rows[0].id, service.id, Number(service.duration_minutes || 30), Number(service.price || 0)]);
+              VALUES($1::uuid,$2::uuid,$3,$4,0,0)`, [ap.rows[0].id, service.id, duration, Number(service.price || 0)]);
           }
         }
       }
