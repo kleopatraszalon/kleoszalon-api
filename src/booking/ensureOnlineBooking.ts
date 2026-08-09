@@ -1,14 +1,17 @@
 import pool from "../db";
 import ensureWorkOrderDemoData from "../demo/ensureWorkOrderDemoData";
+import ensureStage10DemoData from "../demo/ensureStage10DemoData";
 
 let demoSeedPromise: Promise<void> | null = null;
 
 function ensureDemoSeedOnce() {
   if (!demoSeedPromise) {
-    demoSeedPromise = ensureWorkOrderDemoData().catch((error) => {
-      console.error("DEMO workorder seed startup hiba:", error);
-      demoSeedPromise = null;
-    });
+    demoSeedPromise = ensureWorkOrderDemoData()
+      .then(() => ensureStage10DemoData())
+      .catch((error) => {
+        console.error("DEMO seed startup hiba:", error);
+        demoSeedPromise = null;
+      });
   }
   return demoSeedPromise;
 }
@@ -27,10 +30,6 @@ export async function ensureOnlineBooking() {
       ADD COLUMN IF NOT EXISTS confirmed_at timestamptz,
       ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
-    -- A korábbi phase3 constraint nem tartalmazta az arrived/in_progress állapotokat,
-    -- ezért a naptár "Megérkezett" művelete 23514 hibával elszállt. A régi sorokat
-    -- nem kényszerítjük át migrációkor, de minden új módosításnál a teljes, jelenleg
-    -- használt életciklust engedjük.
     ALTER TABLE appointments DROP CONSTRAINT IF EXISTS chk_appointments_status_phase3;
     ALTER TABLE appointments ADD CONSTRAINT chk_appointments_status_phase3
       CHECK (status IN (
