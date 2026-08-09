@@ -1,8 +1,9 @@
 import type { Pool } from 'pg';
 
 /**
- * Idempotens, kizárólag additív munkalap workflow bootstrap.
- * Nem töröl kulcsot/táblát, ezért biztonságosan futhat deploy után.
+ * Idempotens munkalap workflow bootstrap.
+ * A felhasználói audit-azonosítók szövegesek, mert a rendszer e-mailt,
+ * numerikus user ID-t vagy külső principal azonosítót is tárolhat.
  */
 export async function ensureWorkOrderWorkflow(pool: Pool) {
   await pool.query(`
@@ -12,8 +13,8 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS work_started_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS work_finished_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS closed_at timestamptz;
-    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS closed_by uuid;
-    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancelled_by uuid;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS closed_by text;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancelled_by text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancellation_reason text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancellation_note text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS base_discount_percent numeric(7,3) NOT NULL DEFAULT 0;
@@ -22,6 +23,24 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_gross numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paid_total numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS amount_due numeric(14,2);
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='work_orders'
+          AND column_name='closed_by' AND data_type <> 'text'
+      ) THEN
+        ALTER TABLE work_orders ALTER COLUMN closed_by TYPE text USING closed_by::text;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='work_orders'
+          AND column_name='cancelled_by' AND data_type <> 'text'
+      ) THEN
+        ALTER TABLE work_orders ALTER COLUMN cancelled_by TYPE text USING cancelled_by::text;
+      END IF;
+    END $$;
 
     UPDATE work_orders
     SET document_status = CASE
@@ -45,11 +64,23 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
       from_status text,
       to_status text NOT NULL,
       changed_at timestamptz NOT NULL DEFAULT now(),
-      changed_by uuid,
+      changed_by text,
       reason text,
       note text,
       metadata jsonb NOT NULL DEFAULT '{}'::jsonb
     );
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='work_order_status_history'
+          AND column_name='changed_by' AND data_type <> 'text'
+      ) THEN
+        ALTER TABLE work_order_status_history ALTER COLUMN changed_by TYPE text USING changed_by::text;
+      END IF;
+    END $$;
+
     CREATE INDEX IF NOT EXISTS work_order_status_history_workorder_idx
       ON work_order_status_history(work_order_id, changed_at DESC);
   `);
