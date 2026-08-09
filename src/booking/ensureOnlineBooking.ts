@@ -1,4 +1,17 @@
 import pool from "../db";
+import ensureWorkOrderDemoData from "../demo/ensureWorkOrderDemoData";
+
+let demoSeedPromise: Promise<void> | null = null;
+
+function ensureDemoSeedOnce() {
+  if (!demoSeedPromise) {
+    demoSeedPromise = ensureWorkOrderDemoData().catch((error) => {
+      console.error("DEMO workorder seed startup hiba:", error);
+      demoSeedPromise = null;
+    });
+  }
+  return demoSeedPromise;
+}
 
 export async function ensureOnlineBooking() {
   await pool.query(`
@@ -149,6 +162,8 @@ export async function ensureOnlineBooking() {
       AFTER INSERT ON appointment_services
       FOR EACH ROW EXECUTE FUNCTION kleo_online_booking_workorder_trigger();
   `);
+
+  await ensureDemoSeedOnce();
 }
 
 export default ensureOnlineBooking;
