@@ -84,7 +84,7 @@ export async function ensureWorkOrderDemoData() {
             const marker = `DEMO-WORKORDER:${locKey}:${String(employee.id).slice(0,8)}:${day}:${slot}`;
             const exists = await cx.query(`SELECT id FROM appointments WHERE notes=$1 AND start_time::date >= CURRENT_DATE LIMIT 1`, [marker]);
             if (exists.rowCount) continue;
-            const status = day === 0 && slot === 0 ? "arrived" : (slot % 3 === 0 ? "waiting" : "confirmed");
+            const status = day === 0 && slot === 0 ? "arrived" : "confirmed";
             const startExpr = `(CURRENT_DATE + $6::int + make_time($7::int,0,0)) AT TIME ZONE 'Europe/Budapest'`;
             const ap = await cx.query(`INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes)
               VALUES($1::uuid,$2::uuid,$3::uuid,$4,${startExpr},${startExpr} + ($5::int || ' minutes')::interval,$8,$9)
