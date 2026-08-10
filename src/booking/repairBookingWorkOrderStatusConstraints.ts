@@ -126,6 +126,41 @@ export async function repairBookingWorkOrderStatusConstraints(c:any){
       END IF;
     END $$;
   `);
+
+  // A legacy work_order_items séma kötelező line_no mezőt használ. Az új workflow
+  // a tételeket sorrendben hozza létre, ezért BEFORE INSERT triggerrel munkalaponként
+  // 1..N sorszámot adunk. Az advisory lock megakadályozza a párhuzamos sorszámütközést.
+  await c.query(`
+    DO $$
+    BEGIN
+      IF to_regclass('public.work_order_items') IS NOT NULL
+         AND EXISTS(
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='work_order_items' AND column_name='line_no'
+         ) THEN
+        CREATE OR REPLACE FUNCTION fill_work_order_item_line_no()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $line$
+        BEGIN
+          IF NEW.line_no IS NULL THEN
+            PERFORM pg_advisory_xact_lock(hashtext('work-order-lines:' || COALESCE(NEW.work_order_id::text,'')));
+            SELECT COALESCE(MAX(line_no),0)+1
+              INTO NEW.line_no
+              FROM work_order_items
+             WHERE work_order_id=NEW.work_order_id;
+          END IF;
+          RETURN NEW;
+        END
+        $line$;
+
+        DROP TRIGGER IF EXISTS trg_fill_work_order_item_line_no ON work_order_items;
+        CREATE TRIGGER trg_fill_work_order_item_line_no
+          BEFORE INSERT ON work_order_items
+          FOR EACH ROW EXECUTE FUNCTION fill_work_order_item_line_no();
+      END IF;
+    END $$;
+  `);
 }
 
 export default repairBookingWorkOrderStatusConstraints;
