@@ -21,7 +21,7 @@ function bridgeError(res:Response,error:any,stage:string,next:NextFunction){
   const code=String(error?.code||error?.publicCode||'');
   if(code==='22P02')return res.status(400).json({message:'Érvénytelen foglalásazonosító.',error_code:code,stage});
   if(error?.httpStatus)return res.status(error.httpStatus).json({message:error.message,error_code:error.publicCode||code||undefined,stage});
-  if(['42P01','42703','42804','42830','42883','23514','25P02'].includes(code)){
+  if(['42P01','42703','42804','42830','42883'].includes(code)||['23514','25P02'].includes(code)){
     console.error(`[booking-workorder] ${stage} schema/lifecycle error`,code,error?.message||error);
     return res.status(503).json({message:'A foglalás–munkalap életciklus adatbázis-szabálya nem konzisztens. A javítás automatikusan lefut; frissítse az oldalt és próbálja újra.',error_code:code,stage});
   }
