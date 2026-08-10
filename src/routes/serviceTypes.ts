@@ -1,8 +1,10 @@
 // src/routes/serviceTypes.ts
 import { Router, Request, Response } from "express";
 import pool from "../db";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
+router.use(requireAuth);
 
 /**
  * GET /api/service-types
