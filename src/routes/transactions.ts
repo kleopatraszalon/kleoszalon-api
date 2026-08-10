@@ -35,6 +35,7 @@ import centralSupplyRouter from "./centralSupply";
 import bookingOperationsRouter from "./bookingOperations";
 import bookingCommunicationsRouter from "./bookingCommunications";
 import appointmentLifecycleRouter from "./appointmentLifecycle";
+import bookingWorkOrderBridgeRouter from "./bookingWorkOrderBridge";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
 import db from "../db";
 import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
@@ -51,7 +52,7 @@ router.use("/procurement-workflow",requireProcurementWorkflowAccess,procurementW
 router.use("/central-supply",requireProcurementWorkflowAccess,centralSupplyRouter);
 router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMethod("procurement.suppliers"),suppliersRouter);
 router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
-router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);
+router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 router.use("/cashier",workOrderFinanceScope,guardSettlementLifecycle,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
