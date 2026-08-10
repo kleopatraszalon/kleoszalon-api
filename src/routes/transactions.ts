@@ -1,5 +1,6 @@
 import express,{NextFunction,Request,Response} from "express";
 import inventoryRouter from "./inventory";
+import inventoryControlRouter from "./inventoryControl";
 import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
@@ -48,6 +49,7 @@ const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{tr
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT work_order_number,status,locked_at,archived_at,financial_closed_at FROM work_orders WHERE id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(Boolean((req as any).body?.close_financially)&&String(wo.status||'')!=='in_progress')return res.status(409).json({message:'Végleges pénzügyi zárás csak Folyamatban állapotú munkalapon végezhető.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
 router.get("/",(_req,res)=>res.json([{id:1,type:"income",amount:10000}]));
 router.use("/inventory",requireFeature("inventory"),requireMenuPermissionByMethod("inventory"),inventoryRouter);
+router.use("/inventory-control",requireFeature("inventory"),requireMenuPermissionByMethod("inventory"),inventoryControlRouter);
 router.use("/procurement",requirePurchaseOrderAccess,purchaseOrdersRouter);
 router.use("/procurement-workflow",requireProcurementWorkflowAccess,procurementWorkflowRouter);
 router.use("/central-supply",requireProcurementWorkflowAccess,centralSupplyRouter);
