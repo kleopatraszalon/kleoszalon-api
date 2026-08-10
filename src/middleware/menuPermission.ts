@@ -1,6 +1,8 @@
 import type { Response, NextFunction } from "express";
 import db from "../db";
 import { requireAuth, type AuthRequest } from "./auth";
+import { parseRoleKeys } from "../security/roles";
+import { isRbacFailClosed } from "../security/rbacMode";
 
 export type MenuAction =
   | "can_view"
@@ -12,28 +14,6 @@ export type MenuAction =
   | "can_view_financial"
   | "can_manage_permissions";
 
-function normalizeRole(value: string): string {
-  const role = value.trim().toLowerCase();
-  if (["administrator", "rendszergazda", "superadmin", "super_admin"].includes(role)) return "admin";
-  if (["vezető", "vezeto"].includes(role)) return "manager";
-  return role;
-}
-
-function roleKeys(req: AuthRequest): string[] {
-  const raw: any = req.user?.role;
-  if (Array.isArray(raw)) return raw.map(String).map(normalizeRole).filter(Boolean);
-  const value = String(raw || "");
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed.map(String).map(normalizeRole).filter(Boolean);
-  } catch {}
-  return value
-    .split(",")
-    .map(x => x.replace(/[\[\]"]/g, ""))
-    .map(normalizeRole)
-    .filter(Boolean);
-}
-
 async function checkMenuPermission(
   menuCode: string,
   action: MenuAction,
@@ -41,28 +21,47 @@ async function checkMenuPermission(
   res: Response,
   next: NextFunction
 ) {
+  let strict = false;
   try {
-    const roles = roleKeys(req);
+    const roles = parseRoleKeys(req.user?.role);
     if (roles.includes("admin")) {
       req.accessScope = "all_locations";
       return next();
     }
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
 
-    // Az is_active kizárólag a navigáció láthatóságát szabályozza. Egy rejtett
-    // menü mögötti API jogosultságát továbbra is ellenőrizni kell; különben egy
-    // menüpont elrejtése véletlen jogosultság-bypass-t okozna.
-    const menu = await db.query(`SELECT id FROM menus WHERE code=$1 ORDER BY COALESCE(is_active,true) DESC,id LIMIT 1`, [menuCode]);
-    if (!menu.rows[0]) return next();
+    strict = await isRbacFailClosed();
+    const menu = await db.query(
+      `SELECT id FROM menus WHERE code=$1 ORDER BY COALESCE(is_active,true) DESC,id LIMIT 1`,
+      [menuCode]
+    );
+    if (!menu.rows[0]) {
+      if (!strict) return next();
+      return res.status(403).json({
+        error: "A kért funkcióhoz nincs konfigurált menüjogosultság.",
+        menu_code: menuCode,
+        permission: action,
+        reason: "menu_not_configured",
+      });
+    }
 
     const rows = await db.query(
       `SELECT role_key, ${action} AS allowed, scope_type
        FROM role_menu_permissions
-       WHERE role_key = ANY($1::text[]) AND menu_id=$2`,
+       WHERE lower(role_key)=ANY($1::text[]) AND menu_id=$2`,
       [roles, menu.rows[0].id]
     );
 
-    if (!rows.rowCount) return next();
+    if (!rows.rowCount) {
+      if (!strict) return next();
+      return res.status(403).json({
+        error: "Ehhez a művelethez nincs explicit jogosultság beállítva.",
+        menu_code: menuCode,
+        permission: action,
+        reason: "permission_not_configured",
+      });
+    }
+
     const allowed = rows.rows.filter((r: any) => r.allowed === true);
     if (!allowed.length) {
       return res.status(403).json({
@@ -78,7 +77,13 @@ async function checkMenuPermission(
       .sort((a: string, b: string) => (rank[b] ?? 0) - (rank[a] ?? 0))[0] || "own_location";
     return next();
   } catch (error: any) {
-    if (["42P01", "42703"].includes(String(error?.code || ""))) return next();
+    if (["42P01", "42703"].includes(String(error?.code || ""))) {
+      if (!strict) return next();
+      return res.status(503).json({
+        error: "A jogosultsági rendszer sémája hiányos. A hozzáférés biztonsági okból megtagadva.",
+        code: "rbac_schema_unavailable",
+      });
+    }
     return next(error);
   }
 }
@@ -94,7 +99,6 @@ export function requireMenuPermission(menuCode: string, action: MenuAction = "ca
   };
 }
 
-/** Egységes CRUD-védelem egy teljes routerre. */
 export function requireMenuPermissionByMethod(menuCode: string) {
   return (req: AuthRequest & { accessScope?: string }, res: Response, next: NextFunction) => {
     let action: MenuAction = "can_view";
