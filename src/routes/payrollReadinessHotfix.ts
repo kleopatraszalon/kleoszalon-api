@@ -67,7 +67,7 @@ router.get("/readiness",async(req:AuthRequest,res:Response,next)=>{
           SELECT id FROM employee_compensation_assignments a
            WHERE a.employee_id=e.id AND COALESCE(a.is_active,true) LIMIT 1
         ) ca ON true
-       WHERE COALESCE(e.active,true) AND ($3='' OR e.location_id::text=$3)`,params,
+       WHERE COALESCE(e.active,true) AND ($3::text='' OR e.location_id::text=$3::text)`,params,
       {active_employees:0,missing_contract:0,missing_compensation:0},warnings);
 
     const attendance=await safeOne("attendance",`
@@ -75,7 +75,7 @@ router.get("/readiness",async(req:AuthRequest,res:Response,next)=>{
              COUNT(*) FILTER(WHERE t.status='approved')::int approved_timesheets,
              COALESCE(SUM(COALESCE(t.overtime_minutes,0)) FILTER(WHERE t.status='approved'),0)::int approved_overtime_minutes
         FROM timesheets t
-       WHERE t.work_date BETWEEN $1::date AND $2::date AND ($3='' OR t.location_id::text=$3)`,params,
+       WHERE t.work_date BETWEEN $1::date AND $2::date AND ($3::text='' OR t.location_id::text=$3::text)`,params,
       {unapproved_timesheets:0,approved_timesheets:0,approved_overtime_minutes:0},warnings);
 
     const leave=await safeOne("leave",`
@@ -84,7 +84,7 @@ router.get("/readiness",async(req:AuthRequest,res:Response,next)=>{
         FROM leave_requests r
         JOIN leave_types lt ON lt.id=r.leave_type_id
         JOIN employees e ON e.id=r.employee_id
-       WHERE r.date_from<=$2::date AND r.date_to>=$1::date AND ($3='' OR e.location_id::text=$3)`,params,
+       WHERE r.date_from<=$2::date AND r.date_to>=$1::date AND ($3::text='' OR e.location_id::text=$3::text)`,params,
       {pending_leave:0,approved_paid_leave:0},warnings);
 
     const commission=await safeOne("commission",`
@@ -95,7 +95,7 @@ router.get("/readiness",async(req:AuthRequest,res:Response,next)=>{
              COALESCE(SUM(COALESCE(ce.tip_amount,0)) FILTER(WHERE ce.status='open'),0)::numeric open_tips
         FROM work_order_commission_events ce
         JOIN work_orders w ON w.id=ce.work_order_id
-       WHERE ce.created_at::date BETWEEN $1::date AND $2::date AND ($3='' OR w.location_id::text=$3)`,params,
+       WHERE ce.created_at::date BETWEEN $1::date AND $2::date AND ($3::text='' OR w.location_id::text=$3::text)`,params,
       {open_commissions:0,included_commissions:0,paid_commissions:0,open_commission_base:0,open_tips:0},warnings);
 
     const data={...staff,...attendance,...leave,...commission};
