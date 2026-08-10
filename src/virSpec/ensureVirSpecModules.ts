@@ -10,10 +10,30 @@ async function runSqlFile(fileName: string) {
   await pool.query(await readFile(sqlPath, "utf8"));
 }
 
+async function repairLegacyMenuCodes() {
+  const exists = (await pool.query(`SELECT to_regclass('public.menus') IS NOT NULL ok`)).rows[0]?.ok;
+  if (!exists) return;
+
+  // A régi menürekordok egy részénél a code mező NULL maradt. A VIR modul-bootstrap
+  // ebből képezi a kötelező module_key-t, ezért stabil, determinisztikus kódot adunk
+  // minden route-tal rendelkező ilyen rekordnak. Az id utótag garantálja az egyediséget.
+  await pool.query(`
+    UPDATE menus
+       SET code = 'legacy.' ||
+                  COALESCE(
+                    NULLIF(trim(both '.' from regexp_replace(lower(COALESCE(route,'')), '[^a-z0-9]+', '.', 'g')), ''),
+                    'menu'
+                  ) || '.' || id::text
+     WHERE code IS NULL
+       AND route IS NOT NULL
+  `);
+}
+
 export function ensureVirSpecModules() {
   if (!migrationPromise) {
     migrationPromise = (async () => {
       await ensureHrV2();
+      await repairLegacyMenuCodes();
       await runSqlFile("20260806_VIR_SPEC_MODULES_V1.sql");
       await runSqlFile("20260807_MASTERDATA_SERVICES_MENU.sql");
       await runSqlFile("20260808_CHECKLIST_MENU_V1.sql");
