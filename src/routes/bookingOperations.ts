@@ -2,6 +2,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { ensureBookingWorkOrder, ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 
 const router = Router();
 router.use(requireAuth);
@@ -102,6 +103,7 @@ router.post("/appointments/:id/repeat", async (req:AuthRequest,res)=>{
   const count=Math.min(24,Math.max(1,Number(req.body?.count||1))); const intervalWeeks=Math.min(12,Math.max(1,Number(req.body?.interval_weeks||1)));
   const cx=await db.connect();
   try{
+    await ensureBookingWorkOrderSchema(cx);
     await cx.query('BEGIN');
     const source=await cx.query(`SELECT * FROM appointments WHERE id=$1::uuid`,[req.params.id]); if(!source.rows[0]){await cx.query('ROLLBACK');return res.status(404).json({error:'A foglalás nem található.'});}
     const services=await cx.query(`SELECT * FROM appointment_services WHERE appointment_id=$1::uuid ORDER BY sort_order`,[req.params.id]);
@@ -113,9 +115,11 @@ router.post("/appointments/:id/repeat", async (req:AuthRequest,res)=>{
       if(conflict.rowCount)continue;
       const r=await cx.query(`INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes,booking_source,recurring_group_id,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::uuid,now()) RETURNING id`,[source.rows[0].employee_id,source.rows[0].client_id,source.rows[0].location_id,source.rows[0].title,start,end,source.rows[0].status,source.rows[0].notes,source.rows[0].booking_source||'internal',group]);
       for(const s of services.rows)await cx.query(`INSERT INTO appointment_services(appointment_id,service_id,duration_minutes,price,discount_percent,sort_order) VALUES($1,$2,$3,$4,$5,$6)`,[r.rows[0].id,s.service_id,s.duration_minutes,s.price,s.discount_percent,s.sort_order]);
-      await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1::uuid,'recurring_created',$2,$3)`,[r.rows[0].id,actor(req),`Ismétlődő sorozat: ${group}`]); created.push(r.rows[0].id);
+      await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1::uuid,'recurring_created',$2,$3)`,[r.rows[0].id,actor(req),`Ismétlődő sorozat: ${group}`]);
+      const workOrder=await ensureBookingWorkOrder(cx,String(r.rows[0].id),actor(req));
+      created.push({appointment_id:r.rows[0].id,work_order_id:workOrder.work_order_id,work_order_number:workOrder.work_order_number});
     }
-    await cx.query('COMMIT');res.status(201).json({recurring_group_id:group,created_ids:created,skipped:count-created.length});
+    await cx.query('COMMIT');res.status(201).json({recurring_group_id:group,created,created_ids:created.map(x=>x.appointment_id),skipped:count-created.length});
   }catch(error:any){await cx.query('ROLLBACK').catch(()=>undefined);res.status(500).json({error:'Az ismétlődő foglalások létrehozása sikertelen.',detail:error?.message||String(error)});}finally{cx.release();}
 });
 
