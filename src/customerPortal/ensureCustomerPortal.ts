@@ -18,6 +18,7 @@ export function ensureCustomerPortal() {
         "20260808_CUSTOMER_PORTAL_DEMO_V1.sql",
         "20260807_BOOKING_COMMUNICATIONS_V1.sql",
         "20260810_CUSTOMER_PORTAL_STAGE1C.sql",
+        "20260810_BOOKING_COMMUNICATIONS_RETRY_V1.sql",
       ]) {
         const sqlPath = path.join(__dirname, "..", "sql", file);
         const sql = await readFile(sqlPath, "utf8");

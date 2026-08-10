@@ -4,6 +4,8 @@ import { sendSms } from "../sms";
 
 const fmtDate=(value:any)=>new Date(value).toLocaleDateString("hu-HU",{year:"numeric",month:"long",day:"numeric",timeZone:"Europe/Budapest"});
 const fmtTime=(value:any)=>new Date(value).toLocaleTimeString("hu-HU",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Budapest"});
+const MAX_SEND_ATTEMPTS=3;
+const retryDelayMinutes=(attempt:number)=>Math.min(60,5*Math.pow(2,Math.max(0,attempt-1)));
 
 type AppointmentEvent="created"|"confirmed"|"cancelled"|"rescheduled"|"completed";
 type Channel="email"|"sms";
@@ -102,28 +104,41 @@ export async function queueAppointmentCommunications(appointmentId:string,event:
 
 export async function processDueBookingCommunications(limit=50){
   const cx=await db.connect();
+  const summary={processed:0,sent:0,suppressed:0,retry_scheduled:0,failed:0};
   try{
     await cx.query("BEGIN");
     const {rows}=await cx.query(`SELECT * FROM booking_communication_queue
       WHERE status='pending' AND scheduled_at<=now()
       ORDER BY scheduled_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,[limit]);
+    summary.processed=rows.length;
     for(const item of rows){
-      await cx.query(`UPDATE booking_communication_queue SET status='processing',attempt_count=attempt_count+1,updated_at=now() WHERE id=$1`,[item.id]);
+      const attempt=Number(item.attempt_count||0)+1;
+      await cx.query(`UPDATE booking_communication_queue SET status='processing',attempt_count=$2,updated_at=now() WHERE id=$1`,[item.id,attempt]);
       try{
         let result:any;
         if(item.channel==="email")result=await sendEmail({to:item.recipient,subject:item.subject,text:item.body_text,html:item.body_html||undefined});
         else if(item.channel==="sms")result=await sendSms({to:item.recipient,text:item.body_text});
         else throw new Error(`A ${item.channel} csatorna még nincs konfigurálva.`);
         if(result?.logged){
-          await cx.query(`UPDATE booking_communication_queue SET status='pending',error_text=$2,updated_at=now() WHERE id=$1`,[item.id,`${item.channel} küldés letiltva vagy nincs konfigurálva.`]);
+          summary.suppressed+=1;
+          await cx.query(`UPDATE booking_communication_queue SET status='suppressed',failed_at=NULL,error_text=$2,updated_at=now() WHERE id=$1`,[item.id,`${item.channel} küldés szándékosan kihagyva: a szolgáltató letiltott vagy log-only módban van.`]);
         }else{
-          await cx.query(`UPDATE booking_communication_queue SET status='sent',sent_at=now(),error_text=NULL,updated_at=now() WHERE id=$1`,[item.id]);
+          summary.sent+=1;
+          await cx.query(`UPDATE booking_communication_queue SET status='sent',sent_at=now(),failed_at=NULL,error_text=NULL,updated_at=now() WHERE id=$1`,[item.id]);
         }
       }catch(error:any){
-        await cx.query(`UPDATE booking_communication_queue SET status='failed',failed_at=now(),error_text=$2,updated_at=now() WHERE id=$1`,[item.id,error?.message||String(error)]);
+        const message=error?.message||String(error);
+        if(attempt<MAX_SEND_ATTEMPTS){
+          summary.retry_scheduled+=1;
+          const nextRetry=new Date(Date.now()+retryDelayMinutes(attempt)*60_000).toISOString();
+          await cx.query(`UPDATE booking_communication_queue SET status='pending',scheduled_at=$2::timestamptz,failed_at=NULL,error_text=$3,updated_at=now() WHERE id=$1`,[item.id,nextRetry,`Küldési hiba, újrapróbálás ${attempt}/${MAX_SEND_ATTEMPTS}: ${message}`]);
+        }else{
+          summary.failed+=1;
+          await cx.query(`UPDATE booking_communication_queue SET status='failed',failed_at=now(),error_text=$2,updated_at=now() WHERE id=$1`,[item.id,`Végleges küldési hiba ${attempt}/${MAX_SEND_ATTEMPTS}: ${message}`]);
+        }
       }
     }
     await cx.query("COMMIT");
-    return{processed:rows.length};
+    return summary;
   }catch(error){await cx.query("ROLLBACK").catch(()=>undefined);throw error}finally{cx.release()}
 }
