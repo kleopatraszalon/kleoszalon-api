@@ -1,7 +1,7 @@
 let schemaReady=false;
 let savepointCounter=0;
 
-export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|null;work_order_number:string|null;created:boolean;status:string;skipped?:boolean;error_code?:string;error_message?:string};
+export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|null;work_order_number:string|null;created:boolean;status:string;skipped?:boolean;error_code?:string;error_message?:string;error_column?:string;error_table?:string};
 const ACTIVE_APPOINTMENT_STATUSES=new Set(['pending','confirmed','booked','waiting','arrived','in_progress']);
 const TERMINAL_APPOINTMENT_STATUSES=new Set(['cancelled','canceled','no_show','completed']);
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -11,7 +11,7 @@ async function tableExists(c:any,name:string){return Boolean((await c.query(`SEL
 async function safeDDL(c:any,sql:string,label:string){
   try{await c.query(sql)}catch(error:any){
     const code=String(error?.code||'');
-    if(['23505','42P01','42703','42804','42830'].includes(code)){
+    if(['23505','23514','22P02','42P01','42703','42804','42830'].includes(code)){
       console.warn(`[booking-workorder] ${label} skipped:`,error?.message||error);return false;
     }
     throw error;
@@ -91,6 +91,35 @@ export async function ensureBookingWorkOrderSchema(c:any){
   ];
   for(const sql of appointmentAlters)await safeDDL(c,sql,'appointments column');
   for(const sql of workOrderAlters)await safeDDL(c,sql,'work_orders column');
+
+  // A live adatbázisban a work_orders tábla több korábbi generáció mezőit is őrzi.
+  // ADD COLUMN IF NOT EXISTS nem javítja egy már létező oszlop defaultját, ezért
+  // a modern és a legacy NOT NULL oszlopokhoz idempotensen visszaállítjuk a biztonságos defaultokat.
+  const workOrderDefaultRepairs=[
+    `ALTER TABLE work_orders ALTER COLUMN status SET DEFAULT 'waiting'`,
+    `ALTER TABLE work_orders ALTER COLUMN created_at SET DEFAULT now()`,
+    `ALTER TABLE work_orders ALTER COLUMN updated_at SET DEFAULT now()`,
+    `ALTER TABLE work_orders ALTER COLUMN status_updated_at SET DEFAULT now()`,
+    `ALTER TABLE work_orders ALTER COLUMN fully_paid SET DEFAULT false`,
+    `ALTER TABLE work_orders ALTER COLUMN note_for_another_visitor SET DEFAULT false`,
+    `ALTER TABLE work_orders ALTER COLUMN client_name SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN client_phone SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN client_email SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN visit_status SET DEFAULT 'várakozik'`,
+    `ALTER TABLE work_orders ALTER COLUMN record_note SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN client_first_name SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN client_last_name SET DEFAULT ''`,
+    `ALTER TABLE work_orders ALTER COLUMN total_price SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN gross_total SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN discount_amount SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN tip_amount SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN amount_due SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN amount_paid SET DEFAULT 0`,
+    `ALTER TABLE work_orders ALTER COLUMN payment_status SET DEFAULT 'unpaid'`,
+    `ALTER TABLE work_orders ALTER COLUMN invoice_status SET DEFAULT 'not_requested'`,
+    `ALTER TABLE work_orders ALTER COLUMN document_status SET DEFAULT 'draft'`
+  ];
+  for(const sql of workOrderDefaultRepairs)await safeDDL(c,sql,'work_orders default repair');
 
   await c.query(`CREATE TABLE IF NOT EXISTS work_order_number_sequences(year integer PRIMARY KEY,last_value bigint NOT NULL DEFAULT 0,updated_at timestamptz NOT NULL DEFAULT now())`);
 
@@ -188,7 +217,7 @@ export async function ensureBookingWorkOrder(c:any,appointmentId:string,createdB
   const sourceSnapshot={created_from:'appointment',booking_source:ap.booking_source||'internal',appointment:{id:ap.id,location_id:ap.location_id,employee_id:ap.employee_id,client_id:ap.client_id,title:ap.title,start_time:ap.start_time,end_time:ap.end_time,status:ap.status,notes:ap.notes},reference_health:{employee_id:employeeId,client_id:clientId,location_id:locationId},services};
   let wo:any;
   try{
-    wo=(await c.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,$11,now(),$12,COALESCE($13::timestamptz,now()),$14::jsonb) RETURNING id::text,work_order_number,status`,[title,ap.notes||null,woStatus,employeeId,clientId,ap.client_name_resolved||null,ap.client_phone_resolved||null,ap.client_email_resolved||null,locationId,ap.id,createdBy,number,ap.created_at||null,JSON.stringify(sourceSnapshot)])).rows[0];
+    wo=(await c.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,$11,now(),$12,COALESCE($13::timestamptz,now()),$14::jsonb) RETURNING id::text,work_order_number,status`,[title,ap.notes||null,woStatus,employeeId,clientId,ap.client_name_resolved||'',ap.client_phone_resolved||'',ap.client_email_resolved||'',locationId,ap.id,createdBy,number,ap.created_at||null,JSON.stringify(sourceSnapshot)])).rows[0];
   }catch(error:any){
     if(error?.code!=='23505')throw error;
     wo=(await c.query(`SELECT id::text,work_order_number,status FROM work_orders WHERE appointment_id::text=$1 LIMIT 1`,[String(ap.id)])).rows[0];
