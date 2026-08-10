@@ -30,6 +30,11 @@ CREATE INDEX IF NOT EXISTS booking_voice_events_intent_idx
 CREATE INDEX IF NOT EXISTS booking_voice_events_recognized_idx
   ON booking_voice_events(recognized,created_at DESC);
 
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL;
+
 INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
 VALUES('appointments','Időpontok és jelenlét','CalendarDays',NULL,20,NULL,'appointments',true)
 ON CONFLICT(code) DO UPDATE SET
