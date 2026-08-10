@@ -1,8 +1,10 @@
 import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
+import { parseRoleKeys } from "../security/roles";
 
 const router = Router();
+router.use(requireAuth);
 
 type VirQueryParams = {
   from?: string;
@@ -27,23 +29,36 @@ function toErrorMessage(error: unknown): string {
   return "unknown_error";
 }
 
-function getScopedLocationId(req: AuthRequest): string | null {
+/**
+ * VIR adatscope:
+ * - admin: kérhet egy konkrét telephelyet vagy locationId nélkül összesítést;
+ * - minden más szerepkör: kizárólag a tokenben rögzített saját telephely.
+ *
+ * A kliens által küldött locationId soha nem lehet fallback egy nem admin
+ * felhasználónál, mert azzal másik szalon adatai közvetlen API-hívással
+ * lekérdezhetők lennének.
+ */
+function getScopedLocationId(req: AuthRequest, res: Response): string | null | undefined {
   const query = (req.query || {}) as VirQueryParams;
-  const requestedLocationId = query.locationId || null;
+  const requestedLocationId = query.locationId ? String(query.locationId).trim() : null;
+  const roles = parseRoleKeys(req.user?.role);
 
-  if ((req.user?.role || "").toLowerCase() === "admin") {
-    return requestedLocationId;
-  }
+  if (roles.includes("admin")) return requestedLocationId || null;
 
   const userLocationId =
     req.user?.location_id !== undefined && req.user?.location_id !== null
-      ? String(req.user.location_id)
-      : null;
+      ? String(req.user.location_id).trim()
+      : "";
 
-  return userLocationId || requestedLocationId || null;
+  if (!userLocationId) {
+    res.status(403).json({ ok: false, error: "A felhasználóhoz nincs telephely rendelve." });
+    return undefined;
+  }
+
+  return userLocationId;
 }
 
-router.get("/dashboard", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/dashboard", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const today = new Date();
@@ -52,7 +67,8 @@ router.get("/dashboard", requireAuth, async (req: AuthRequest, res: Response) =>
 
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
 
     const { rows } = await pool.query(
       `SELECT * FROM public.vir_dashboard_summary($1::date, $2::date, $3::uuid)`,
@@ -78,7 +94,7 @@ router.get("/dashboard", requireAuth, async (req: AuthRequest, res: Response) =>
   }
 });
 
-router.get("/revenue-series", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/revenue-series", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const today = new Date();
@@ -87,7 +103,8 @@ router.get("/revenue-series", requireAuth, async (req: AuthRequest, res: Respons
 
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
 
     const { rows } = await pool.query(
       `SELECT * FROM public.vir_revenue_series($1::date, $2::date, $3::uuid) ORDER BY day`,
@@ -99,31 +116,70 @@ router.get("/revenue-series", requireAuth, async (req: AuthRequest, res: Respons
   }
 });
 
-router.get("/top-services", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/top-services", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const limit = parseLimit(query.limit, 10, 50);
-    const { rows } = await pool.query(`SELECT * FROM public.vir_top_services($1::integer)`, [limit]);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
+
+    // A régi vir_top_services(limit) függvény nem kapott telephelyet, ezért
+    // nem admin felhasználónál hálózati összesítést szivárogtatott. A lekérdezés
+    // most közvetlenül a foglalások location_id mezőjével scope-ol.
+    const { rows } = await pool.query(
+      `SELECT
+         s.id AS service_id,
+         s.name AS service_name,
+         COUNT(DISTINCT a.id)::int AS bookings_count,
+         COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total
+       FROM appointment_services aps
+       JOIN appointments a ON a.id=aps.appointment_id
+       JOIN services s ON s.id=aps.service_id
+       WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid)
+       GROUP BY s.id,s.name
+       ORDER BY revenue_total DESC,bookings_count DESC,s.name
+       LIMIT $2::integer`,
+      [locationId, limit]
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
   }
 });
 
-router.get("/top-staff", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/top-staff", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const limit = parseLimit(query.limit, 10, 50);
-    const { rows } = await pool.query(`SELECT * FROM public.vir_top_staff($1::integer)`, [limit]);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
+
+    const { rows } = await pool.query(
+      `SELECT
+         e.id AS employee_id,
+         e.full_name,
+         e.short_name,
+         COUNT(DISTINCT a.id)::int AS appointments_count,
+         COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total
+       FROM appointments a
+       JOIN employees e ON e.id=a.employee_id
+       LEFT JOIN appointment_services aps ON aps.appointment_id=a.id
+       WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid)
+       GROUP BY e.id,e.full_name,e.short_name
+       ORDER BY revenue_total DESC,appointments_count DESC,e.full_name
+       LIMIT $2::integer`,
+      [locationId, limit]
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
   }
 });
 
-router.get("/source-performance", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/source-performance", async (req: AuthRequest, res: Response) => {
   try {
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
     const { rows } = await pool.query(
       `SELECT source_channel, location_id, appointments_count, completed_count, cancelled_count, no_show_count, revenue_total, paid_total
        FROM public.vw_vir_source_performance
@@ -137,7 +193,7 @@ router.get("/source-performance", requireAuth, async (req: AuthRequest, res: Res
   }
 });
 
-router.get("/cancellation-stats", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/cancellation-stats", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const today = new Date();
@@ -146,7 +202,8 @@ router.get("/cancellation-stats", requireAuth, async (req: AuthRequest, res: Res
 
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
 
     const { rows } = await pool.query(
       `SELECT day, location_id, total_appointments, cancelled_count, no_show_count, cancellation_rate_percent, no_show_rate_percent
@@ -162,7 +219,7 @@ router.get("/cancellation-stats", requireAuth, async (req: AuthRequest, res: Res
   }
 });
 
-router.get("/kiosk-conversion", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/kiosk-conversion", async (req: AuthRequest, res: Response) => {
   try {
     const query = (req.query || {}) as VirQueryParams;
     const today = new Date();
@@ -171,7 +228,8 @@ router.get("/kiosk-conversion", requireAuth, async (req: AuthRequest, res: Respo
 
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
 
     const { rows } = await pool.query(
       `SELECT day, location_id, kiosk_appointments, kiosk_completed, kiosk_revenue
@@ -187,9 +245,10 @@ router.get("/kiosk-conversion", requireAuth, async (req: AuthRequest, res: Respo
   }
 });
 
-router.get("/signage-impact", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/signage-impact", async (req: AuthRequest, res: Response) => {
   try {
-    const locationId = getScopedLocationId(req);
+    const locationId = getScopedLocationId(req, res);
+    if (locationId === undefined) return;
     const { rows } = await pool.query(
       `SELECT deal_id, title, location_id, active_from, active_to, appointments_during_campaign, revenue_during_campaign
        FROM public.vw_vir_signage_campaign_impact
