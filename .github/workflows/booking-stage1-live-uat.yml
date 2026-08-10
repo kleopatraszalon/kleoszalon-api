@@ -1,0 +1,31 @@
+name: Booking stage1 live UAT
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/booking-stage1-live.mjs'
+      - '.github/workflows/booking-stage1-live-uat.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: booking-stage1-live-uat
+  cancel-in-progress: false
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run production-safe live UAT with cleanup
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_CUSTOMER_IDENTIFIER: ugyfel1
+          UAT_CUSTOMER_PASSWORD: Teszt1234!
+        run: node scripts/uat/booking-stage1-live.mjs
