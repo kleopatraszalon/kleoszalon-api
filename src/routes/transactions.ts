@@ -36,6 +36,7 @@ import procurementWorkflowRouter from "./procurementWorkflow";
 import centralSupplyRouter from "./centralSupply";
 import bookingOperationsRouter from "./bookingOperations";
 import bookingCommunicationsRouter from "./bookingCommunications";
+import bookingVoiceStatsRouter from "./bookingVoiceStats";
 import appointmentLifecycleRouter from "./appointmentLifecycle";
 import bookingWorkOrderBridgeRouter from "./bookingWorkOrderBridge";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
@@ -46,8 +47,10 @@ import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "..
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
 import {ensureFinanceNav} from "../finance/ensureFinanceNav";
+import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
 const router=express.Router();
 const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureFinanceNav();next()}catch(error:any){console.error('Finance/NAV schema bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'finance_schema_unavailable',message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
+const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT work_order_number,status,locked_at,archived_at,financial_closed_at FROM work_orders WHERE id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(Boolean((req as any).body?.close_financially)&&String(wo.status||'')!=='in_progress')return res.status(409).json({message:'Végleges pénzügyi zárás csak Folyamatban állapotú munkalapon végezhető.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
 
 // A /api/transactions névtér kizárólag belső VIR műveleteket tartalmaz.
@@ -63,7 +66,7 @@ router.use("/procurement-workflow",requireProcurementWorkflowAccess,procurementW
 router.use("/central-supply",requireProcurementWorkflowAccess,centralSupplyRouter);
 router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMethod("procurement.suppliers"),suppliersRouter);
 router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
-router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
+router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/booking-voice-stats",ensureVoiceStatsReady,requireMenuPermission("appointments.voice_stats","can_view"),bookingVoiceStatsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 router.use("/cashier",workOrderFinanceScope,guardSettlementLifecycle,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
