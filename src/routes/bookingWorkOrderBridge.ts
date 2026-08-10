@@ -9,23 +9,37 @@ router.use(requireAuth);
 const ADMIN=['admin','administrator','rendszergazda','superadmin','super_admin'];
 const RECEPTION=['receptionist','recepciós','recepcios','reception'];
 const BUSINESS=['location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager'];
+const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let auditSavepointCounter=0;
 const roleList=(raw:any):string[]=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||''));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
 const hasAny=(roles:string[],allowed:string[])=>roles.some(role=>allowed.includes(role));
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'system');
+const actorUuid=(req:AuthRequest)=>{const value=String(req.user?.id||'').trim();return UUID_RE.test(value)?value:null};
 type Scope={isAdmin:boolean;locationId:string|null};
 function resolveScope(req:AuthRequest):Scope|null{const roles=roleList(req.user?.role);if(hasAny(roles,ADMIN))return{isAdmin:true,locationId:null};if(hasAny(roles,[...RECEPTION,...BUSINESS]))return{isAdmin:false,locationId:req.user?.location_id?String(req.user.location_id):null};return null}
 function requireBridgeAccess(req:AuthRequest,res:Response,next:NextFunction){const scope=resolveScope(req);if(!scope)return res.status(403).json({message:'A foglalás–munkalap kapcsolatot csak adminisztrátor, recepciós vagy üzletvezető kezelheti.'});if(!scope.isAdmin&&!scope.locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});(req as any).bookingWorkOrderScope=scope;next()}
 router.use(requireBridgeAccess);
 async function assertVisible(c:any,id:string,scope:Scope){const ap=(await c.query(`SELECT id::text,to_jsonb(appointments)->>'location_id' location_id FROM appointments WHERE id::text=$1`,[id])).rows[0];if(!ap){const e:any=new Error('A foglalás nem található.');e.httpStatus=404;throw e}if(!scope.isAdmin&&String(ap.location_id||'')!==String(scope.locationId||'')){const e:any=new Error('A foglalás nem található ezen a szalonon.');e.httpStatus=404;throw e}}
+
+async function optionalAudit(c:any,label:string,fn:()=>Promise<any>){
+  const sp=`bw_audit_${++auditSavepointCounter}`;
+  await c.query(`SAVEPOINT ${sp}`);
+  try{await fn();await c.query(`RELEASE SAVEPOINT ${sp}`)}catch(error:any){
+    await c.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(()=>undefined);
+    await c.query(`RELEASE SAVEPOINT ${sp}`).catch(()=>undefined);
+    console.warn(`[booking-workorder] ${label} skipped:`,error?.code||'',error?.message||error);
+  }
+}
+
 function bridgeError(res:Response,error:any,stage:string,next:NextFunction){
   const code=String(error?.code||error?.publicCode||'');
-  if(code==='22P02')return res.status(400).json({message:'Érvénytelen foglalásazonosító.',error_code:code,stage});
+  if(code==='22P02'&&(stage==='scope'||stage.endsWith(':scope')))return res.status(400).json({message:'Érvénytelen foglalásazonosító.',error_code:code,stage});
   if(error?.httpStatus)return res.status(error.httpStatus).json({message:error.message,error_code:error.publicCode||code||undefined,stage});
-  if(['42P01','42703','42804','42830','42883'].includes(code)||['23514','25P02'].includes(code)){
-    console.error(`[booking-workorder] ${stage} schema/lifecycle error`,code,error?.message||error);
-    return res.status(503).json({message:'A foglalás–munkalap életciklus adatbázis-szabálya nem konzisztens. A javítás automatikusan lefut; frissítse az oldalt és próbálja újra.',error_code:code,stage});
+  if(['42P01','42703','42804','42830','42883','22P02','23502','23503','23514','25P02','55000'].includes(code)){
+    console.error(`[booking-workorder] ${stage} schema/data error`,code,error?.constraint||'',error?.message||error);
+    return res.status(503).json({message:'A foglalás–munkalap live adatainak vagy adatbázis-sémájának kompatibilitási hibája van.',error_code:code,stage,constraint:error?.constraint||undefined});
   }
-  console.error(`[booking-workorder] ${stage} error`,code,error?.message||error);
+  console.error(`[booking-workorder] ${stage} error`,code,error?.constraint||'',error?.message||error);
   return next(error);
 }
 
@@ -45,7 +59,22 @@ router.post('/ensure',async(req:AuthRequest,res,next)=>{
     stage='transaction';await c.query('BEGIN');
     const scope=(req as any).bookingWorkOrderScope as Scope;
     const items:BookingWorkOrderResult[]=[];
-    for(const id of ids){stage=`appointment:${id}:scope`;await assertVisible(c,id,scope);stage=`appointment:${id}:workorder`;items.push(await ensureBookingWorkOrder(c,id,actor(req)))}
+    for(let index=0;index<ids.length;index++){
+      const id=ids[index];
+      const sp=`bw_ensure_${index}`;
+      await c.query(`SAVEPOINT ${sp}`);
+      try{
+        stage=`appointment:${id}:scope`;await assertVisible(c,id,scope);
+        stage=`appointment:${id}:workorder`;items.push(await ensureBookingWorkOrder(c,id,actor(req)));
+        await c.query(`RELEASE SAVEPOINT ${sp}`);
+      }catch(error:any){
+        await c.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(()=>undefined);
+        await c.query(`RELEASE SAVEPOINT ${sp}`).catch(()=>undefined);
+        const code=String(error?.code||error?.publicCode||'booking_workorder_failed');
+        console.error(`[booking-workorder] appointment:${id} isolated error`,code,error?.constraint||'',error?.message||error);
+        items.push({appointment_id:id,work_order_id:null,work_order_number:null,created:false,status:'error',skipped:true,error_code:code,error_message:String(error?.message||'Munkalap létrehozási hiba')});
+      }
+    }
     stage='commit';await c.query('COMMIT');res.json({items});
   }catch(error:any){await c.query('ROLLBACK').catch(()=>undefined);return bridgeError(res,error,stage,next)}finally{c.release()}
 });
@@ -70,12 +99,11 @@ router.post('/appointments/:id/arrive',async(req:AuthRequest,res,next)=>{
       stage='workorder-arrive';await c.query(`UPDATE work_orders SET status='arrived',status_updated_at=now(),updated_at=now() WHERE id::text=$1`,[wo.id]);
       const hasHistory=(await c.query(`SELECT to_regclass('public.work_order_status_history') IS NOT NULL ok`)).rows[0]?.ok;
       if(hasHistory){
-        stage='workorder-history';
-        await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata) VALUES($1,'service',$2,'arrived',$3,'APPOINTMENT_ARRIVAL',$4,$5::jsonb)`,[wo.id,wo.status||'waiting',actor(req),'Vendég érkeztetése a foglalási naptárból',JSON.stringify({appointment_id:req.params.id})]);
+        await optionalAudit(c,'workorder-history',()=>c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata) VALUES($1,'service',$2,'arrived',$3,'APPOINTMENT_ARRIVAL',$4,$5::jsonb)`,[wo.id,wo.status||'waiting',actorUuid(req),'Vendég érkeztetése a foglalási naptárból',JSON.stringify({appointment_id:req.params.id,actor:actor(req)})]));
       }
     }
     const hasLog=(await c.query(`SELECT to_regclass('public.appointment_change_log') IS NOT NULL ok`)).rows[0]?.ok;
-    if(hasLog){stage='appointment-history';await c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1,'arrived',$2,$3)`,[req.params.id,actor(req),`Kapcsolt munkalap: ${wo.work_order_number||wo.id}`]);}
+    if(hasLog)await optionalAudit(c,'appointment-history',()=>c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1,'arrived',$2,$3)`,[req.params.id,actor(req),`Kapcsolt munkalap: ${wo.work_order_number||wo.id}`]));
     stage='commit';await c.query('COMMIT');res.json({ok:true,appointment_id:req.params.id,appointment_status:apStatus==='in_progress'?'in_progress':'arrived',work_order_id:wo.id,work_order_number:wo.work_order_number,created:ensured.created});
   }catch(error:any){await c.query('ROLLBACK').catch(()=>undefined);return bridgeError(res,error,stage,next)}finally{c.release()}
 });
