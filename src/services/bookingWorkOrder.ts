@@ -1,8 +1,11 @@
 let schemaReady=false;
+let savepointCounter=0;
 
-export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|null;work_order_number:string|null;created:boolean;status:string;skipped?:boolean};
+export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|null;work_order_number:string|null;created:boolean;status:string;skipped?:boolean;error_code?:string;error_message?:string};
 const ACTIVE_APPOINTMENT_STATUSES=new Set(['pending','confirmed','booked','waiting','arrived','in_progress']);
 const TERMINAL_APPOINTMENT_STATUSES=new Set(['cancelled','canceled','no_show','completed']);
+const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_REFERENCE_TABLES=new Set(['employees','clients','locations','services']);
 
 async function tableExists(c:any,name:string){return Boolean((await c.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${name}`])).rows[0]?.ok)}
 async function safeDDL(c:any,sql:string,label:string){
@@ -16,6 +19,35 @@ async function safeDDL(c:any,sql:string,label:string){
   return true;
 }
 async function safeIndex(c:any,sql:string,label:string){return safeDDL(c,sql,`${label} index`)}
+
+async function bestEffort<T>(c:any,label:string,fn:()=>Promise<T>):Promise<T|null>{
+  const sp=`bw_optional_${++savepointCounter}`;
+  let hasSavepoint=true;
+  try{await c.query(`SAVEPOINT ${sp}`)}catch(error:any){if(String(error?.code||'')==='25P01')hasSavepoint=false;else throw error}
+  try{
+    const result=await fn();
+    if(hasSavepoint)await c.query(`RELEASE SAVEPOINT ${sp}`);
+    return result;
+  }catch(error:any){
+    if(hasSavepoint){await c.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(()=>undefined);await c.query(`RELEASE SAVEPOINT ${sp}`).catch(()=>undefined)}
+    console.warn(`[booking-workorder] ${label} skipped:`,error?.code||'',error?.message||error);
+    return null;
+  }
+}
+
+async function safeReferenceId(c:any,table:string,value:any):Promise<string|null>{
+  const raw=String(value??'').trim();
+  if(!raw)return null;
+  if(!SAFE_REFERENCE_TABLES.has(table))throw new Error(`Unsupported reference table: ${table}`);
+  if(!await tableExists(c,table))return UUID_RE.test(raw)?raw:null;
+  try{
+    const row=(await c.query(`SELECT id::text id FROM ${table} WHERE id::text=$1 LIMIT 1`,[raw])).rows[0];
+    return row?.id?String(row.id):null;
+  }catch(error:any){
+    if(['42P01','42703','42804'].includes(String(error?.code||'')))return null;
+    throw error;
+  }
+}
 
 export async function ensureBookingWorkOrderSchema(c:any){
   if(schemaReady)return;
@@ -150,10 +182,13 @@ export async function ensureBookingWorkOrder(c:any,appointmentId:string,createdB
   const title=String(ap.title||'').trim()||services.map((s:any)=>s.name).filter(Boolean).join(', ')||String(ap.client_name_resolved||'').trim()||'Foglalás';
   const woStatus=apStatus==='in_progress'?'in_progress':apStatus==='arrived'?'arrived':'waiting';
   const number=(await c.query(`SELECT next_official_work_order_number(COALESCE($1::timestamptz,now())) work_order_number`,[ap.created_at||null])).rows[0].work_order_number;
-  const sourceSnapshot={created_from:'appointment',booking_source:ap.booking_source||'internal',appointment:{id:ap.id,location_id:ap.location_id,employee_id:ap.employee_id,client_id:ap.client_id,title:ap.title,start_time:ap.start_time,end_time:ap.end_time,status:ap.status,notes:ap.notes},services};
+  const employeeId=await safeReferenceId(c,'employees',ap.employee_id);
+  const clientId=await safeReferenceId(c,'clients',ap.client_id);
+  const locationId=await safeReferenceId(c,'locations',ap.location_id);
+  const sourceSnapshot={created_from:'appointment',booking_source:ap.booking_source||'internal',appointment:{id:ap.id,location_id:ap.location_id,employee_id:ap.employee_id,client_id:ap.client_id,title:ap.title,start_time:ap.start_time,end_time:ap.end_time,status:ap.status,notes:ap.notes},reference_health:{employee_id:employeeId,client_id:clientId,location_id:locationId},services};
   let wo:any;
   try{
-    wo=(await c.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,$11,now(),$12,COALESCE($13::timestamptz,now()),$14::jsonb) RETURNING id::text,work_order_number,status`,[title,ap.notes||null,woStatus,ap.employee_id||null,ap.client_id||null,ap.client_name_resolved||null,ap.client_phone_resolved||null,ap.client_email_resolved||null,ap.location_id||null,ap.id,createdBy,number,ap.created_at||null,JSON.stringify(sourceSnapshot)])).rows[0];
+    wo=(await c.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,appointment_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,$11,now(),$12,COALESCE($13::timestamptz,now()),$14::jsonb) RETURNING id::text,work_order_number,status`,[title,ap.notes||null,woStatus,employeeId,clientId,ap.client_name_resolved||null,ap.client_phone_resolved||null,ap.client_email_resolved||null,locationId,ap.id,createdBy,number,ap.created_at||null,JSON.stringify(sourceSnapshot)])).rows[0];
   }catch(error:any){
     if(error?.code!=='23505')throw error;
     wo=(await c.query(`SELECT id::text,work_order_number,status FROM work_orders WHERE appointment_id::text=$1 LIMIT 1`,[String(ap.id)])).rows[0];
@@ -164,13 +199,14 @@ export async function ensureBookingWorkOrder(c:any,appointmentId:string,createdB
     if(existingItems===0){
       for(const s of services){
         const price=Number(s.price||0),discountPercent=Math.max(0,Math.min(100,Number(s.discount_percent||0))),discountAmount=Math.round(price*discountPercent)/100,lineTotal=Math.max(0,Math.round((price-discountAmount)*100)/100);
-        await c.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,1,$4,$5,$6,$7)`,[wo.id,s.service_id||null,s.name,price,discountAmount,lineTotal,s.duration_minutes||null]);
+        const serviceId=await safeReferenceId(c,'services',s.service_id);
+        await c.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,1,$4,$5,$6,$7)`,[wo.id,serviceId,s.name,price,discountAmount,lineTotal,s.duration_minutes||null]);
       }
     }
     const recalc=(await c.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;
-    if(recalc)await c.query(`SELECT recalc_work_order_totals($1::uuid)`,[wo.id]).catch((e:any)=>console.warn('[booking-workorder] recalc skipped:',e?.message||e));
+    if(recalc)await bestEffort(c,'recalc_work_order_totals',()=>c.query(`SELECT recalc_work_order_totals($1::uuid)`,[wo.id]));
   }
   await c.query(`UPDATE appointments SET work_order_id=$2,work_order_number=$3,updated_at=now() WHERE id::text=$1`,[String(ap.id),wo.id,wo.work_order_number]);
-  if(await tableExists(c,'appointment_change_log'))await c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note) VALUES($1,'workorder_linked',$2,$3::jsonb,$4)`,[ap.id,createdBy,JSON.stringify({work_order_id:wo.id,work_order_number:wo.work_order_number}),`Automatikus munkalap: ${wo.work_order_number}`]).catch(()=>undefined);
+  if(await tableExists(c,'appointment_change_log'))await bestEffort(c,'appointment_change_log workorder_linked',()=>c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note) VALUES($1,'workorder_linked',$2,$3::jsonb,$4)`,[ap.id,createdBy,JSON.stringify({work_order_id:wo.id,work_order_number:wo.work_order_number}),`Automatikus munkalap: ${wo.work_order_number}`]));
   return{appointment_id:String(ap.id),work_order_id:String(wo.id),work_order_number:wo.work_order_number,created:true,status:apStatus};
 }
