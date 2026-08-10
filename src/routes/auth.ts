@@ -4,9 +4,9 @@ import express, { Request, Response } from "express";
 import db from "../db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import JWT_SECRET from "../security/jwtSecret";
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
 function setAuthCookie(res: Response, token: string) {
   res.cookie("token", token, {
