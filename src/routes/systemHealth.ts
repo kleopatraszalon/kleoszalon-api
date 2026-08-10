@@ -1,6 +1,8 @@
 import { Router } from "express";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { parseRoleKeys } from "../security/roles";
+import { RBAC_FAIL_CLOSED_VERSION } from "../security/rbacMode";
 
 const router = Router();
 router.use(requireAuth);
@@ -8,8 +10,7 @@ router.use(requireAuth);
 type Status = "ok" | "warning" | "error";
 type Result = { key:string; group:string; label:string; status:Status; count?:number|null; latency_ms?:number; message:string };
 
-function roles(req:AuthRequest){const raw:any=req.user?.role;const arr=Array.isArray(raw)?raw:String(raw||"").replace(/[\[\]"]/g,"").split(",");return arr.map((x:any)=>String(x).trim().toLowerCase()).filter(Boolean);}
-function canUse(req:AuthRequest){const r=roles(req);return r.includes("admin")||r.includes("manager");}
+function canUse(req:AuthRequest){const r=parseRoleKeys(req.user?.role);return r.includes("admin")||r.includes("manager");}
 async function exists(table:string){const {rows}=await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${table}`]);return Boolean(rows[0]?.ok)}
 async function count(sql:string,params:any[]=[]){const {rows}=await db.query(sql,params);return Number(Object.values(rows[0]||{})[0]||0)}
 
@@ -22,7 +23,7 @@ router.get("/",async(req:AuthRequest,res,next)=>{
   catch(e:any){add({key:"database",group:"Alaprendszer",label:"PostgreSQL kapcsolat",status:"error",message:e?.message||String(e)});return res.json({generated_at:new Date().toISOString(),status:"error",duration_ms:Date.now()-startedAll,summary:{total:1,ok:0,warnings:0,errors:1},checks:results});}
 
   const required:[string,string,string][]=[
-   ["menus","Adatbázis-séma","Menürendszer"],["role_menu_permissions","Adatbázis-séma","Menüjogosultságok"],
+   ["menus","Adatbázis-séma","Menürendszer"],["role_menu_permissions","Adatbázis-séma","Menüjogosultságok"],["role_feature_permissions","Adatbázis-séma","Funkciójogosultságok"],["schema_migrations","Adatbázis-séma","Migrációs napló"],
    ["locations","Alapadatok","Telephelyek"],["employees","HR","Munkatársak"],["services","Foglalás","Szolgáltatások"],
    ["appointments","Foglalás","Időpontok"],["work_orders","Munkalap","Munkalapok"],
    ["financial_accounts","Pénzügy","Pénztárak / bankszámlák"],["finance_invoices","Pénzügy","Bejövő/kimenő számlák"],
@@ -44,7 +45,14 @@ router.get("/",async(req:AuthRequest,res,next)=>{
    const workorders=await count(`SELECT COUNT(*) FROM menus WHERE COALESCE(is_active,true) AND code='appointments.workorders' AND route='/workorders'`);add({key:"menu.workorders",group:"Menü és jogosultság",label:"Munkalapok menü",status:workorders?"ok":"error",count:workorders,message:workorders?"A Munkalapok menüpont aktív és jó route-ra mutat.":"A Munkalapok menüpont hiányzik vagy hibás route-ra mutat."});
    const nav=await count(`SELECT COUNT(*) FROM menus WHERE COALESCE(is_active,true) AND code='finance.nav_online_invoice' AND route='/finance/nav-online-invoice'`);add({key:"menu.nav",group:"NAV Online Számla",label:"NAV Online Számla menü",status:nav?"ok":"error",count:nav,message:nav?"A NAV Online Számla menüpont aktív.":"A NAV Online Számla menüpont hiányzik vagy hibás route-ra mutat."});
   }
-  if(tableMap.get("menus")&&tableMap.get("role_menu_permissions")){const c=await count(`SELECT COUNT(*) FROM menus m LEFT JOIN role_menu_permissions p ON p.menu_id=m.id WHERE COALESCE(m.is_active,true) AND p.menu_id IS NULL`);add({key:"menu.coverage",group:"Menü és jogosultság",label:"Jogosultsági lefedettség",status:c?"warning":"ok",count:c,message:c?`${c} aktív menüpontnak nincs szerepkör-hozzárendelése.`:"Minden aktív menüponthoz tartozik jogosultsági rekord."});}
+  if(tableMap.get("menus")&&tableMap.get("role_menu_permissions")){
+   const c=await count(`WITH r(role_key) AS (VALUES ('admin'),('manager'),('location_manager'),('salon_manager'),('receptionist'),('employee'),('customer')) SELECT COUNT(*) FROM r CROSS JOIN menus m LEFT JOIN role_menu_permissions p ON lower(p.role_key)=r.role_key AND p.menu_id=m.id WHERE COALESCE(m.is_active,true) AND p.menu_id IS NULL`);
+   add({key:"rbac.menu_coverage",group:"Biztonság",label:"RBAC menülefedettség",status:c?"error":"ok",count:c,message:c?`${c} szerepkör–menü kombinációhoz nincs explicit permission sor.`:"Minden aktív menü minden kanonikus szerepkörre explicit engedélyezett vagy tiltott."});
+  }
+  if(tableMap.get("schema_migrations")){
+   const active=await count(`SELECT COUNT(*) FROM schema_migrations WHERE version=$1`,[RBAC_FAIL_CLOSED_VERSION]);
+   add({key:"rbac.fail_closed",group:"Biztonság",label:"Fail-closed RBAC",status:active?"ok":"error",count:active,message:active?"A teljes RBAC mátrix aktív; hiányzó szabály esetén a hozzáférés tiltott.":`A ${RBAC_FAIL_CLOSED_VERSION} migráció még nincs aktiválva.`});
+  }
 
   if(tableMap.get("nav_online_invoice_settings")){
    const cfg=await count(`SELECT COUNT(*) FROM nav_online_invoice_settings WHERE active=true`);add({key:"nav.config",group:"NAV Online Számla",label:"Aktív NAV konfiguráció",status:cfg?"ok":"warning",count:cfg,message:cfg?`${cfg} aktív NAV konfiguráció található.`:"A NAV modul technikailag rendelkezésre áll, de még nincs aktív technikai felhasználói konfiguráció."});
