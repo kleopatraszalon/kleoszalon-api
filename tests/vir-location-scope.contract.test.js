@@ -4,6 +4,9 @@ const fs=require('node:fs');
 const path=require('node:path');
 
 const read=(file)=>fs.readFileSync(path.join(process.cwd(),file),'utf8');
+const withoutComments=(src)=>src
+  .replace(/\/\*[\s\S]*?\*\//g,'')
+  .replace(/\/\/.*$/gm,'');
 
 test('VIR analytics never trusts requested location for non-admin fallback',()=>{
   const src=read('src/routes/vir.ts');
@@ -15,10 +18,11 @@ test('VIR analytics never trusts requested location for non-admin fallback',()=>
 
 test('top VIR rankings are location-scoped instead of calling unscoped legacy functions',()=>{
   const src=read('src/routes/vir.ts');
-  assert.doesNotMatch(src,/vir_top_services\s*\(/);
-  assert.doesNotMatch(src,/vir_top_staff\s*\(/);
-  assert.match(src,/appointment_services/);
-  assert.match(src,/a\.location_id=\$1::uuid/);
+  const code=withoutComments(src);
+  assert.doesNotMatch(code,/vir_top_services\s*\(/);
+  assert.doesNotMatch(code,/vir_top_staff\s*\(/);
+  assert.match(code,/appointment_services/);
+  assert.match(code,/a\.location_id=\$1::uuid/);
 });
 
 test('VIR drilldowns fail closed without an assigned salon',()=>{
@@ -30,8 +34,9 @@ test('VIR drilldowns fail closed without an assigned salon',()=>{
 
 test('emailed VIR rankings are constrained by both report period and salon',()=>{
   const src=read('src/services/virReportMailer.ts');
-  assert.doesNotMatch(src,/vir_top_services\s*\(/);
-  assert.doesNotMatch(src,/vir_top_staff\s*\(/);
-  assert.match(src,/a\.start_time >= \$1::date/);
-  assert.match(src,/a\.location_id=\$3::uuid/);
+  const code=withoutComments(src);
+  assert.doesNotMatch(code,/vir_top_services\s*\(/);
+  assert.doesNotMatch(code,/vir_top_staff\s*\(/);
+  assert.match(code,/a\.start_time >= \$1::date/);
+  assert.match(code,/a\.location_id=\$3::uuid/);
 });
