@@ -15,7 +15,9 @@ export function ensureVirSpecModules() {
     migrationPromise = (async () => {
       await ensureHrV2();
       await runSqlFile("20260806_VIR_SPEC_MODULES_V1.sql");
+      await runSqlFile("20260807_PRODUCT_MASTERDATA_MENU.sql");
       await runSqlFile("20260807_MASTERDATA_SERVICES_MENU.sql");
+      await runSqlFile("20260810_MASTERDATA_RBAC_STAGE1.sql");
       await runSqlFile("20260808_CHECKLIST_MENU_V1.sql");
       await runSqlFile("20260808_EMPLOYEE_SELF_MENU_V1.sql");
     })().catch((error) => {
