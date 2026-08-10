@@ -36,10 +36,10 @@ function bridgeError(res:Response,error:any,stage:string,next:NextFunction){
   if(code==='22P02'&&(stage==='scope'||stage.endsWith(':scope')))return res.status(400).json({message:'Érvénytelen foglalásazonosító.',error_code:code,stage});
   if(error?.httpStatus)return res.status(error.httpStatus).json({message:error.message,error_code:error.publicCode||code||undefined,stage});
   if(['42P01','42703','42804','42830','42883','22P02','23502','23503','23514','25P02','55000'].includes(code)){
-    console.error(`[booking-workorder] ${stage} schema/data error`,code,error?.constraint||'',error?.message||error);
-    return res.status(503).json({message:'A foglalás–munkalap live adatainak vagy adatbázis-sémájának kompatibilitási hibája van.',error_code:code,stage,constraint:error?.constraint||undefined});
+    console.error(`[booking-workorder] ${stage} schema/data error`,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
+    return res.status(503).json({message:'A foglalás–munkalap live adatainak vagy adatbázis-sémájának kompatibilitási hibája van.',error_code:code,stage,table:error?.table||undefined,column:error?.column||undefined,constraint:error?.constraint||undefined});
   }
-  console.error(`[booking-workorder] ${stage} error`,code,error?.constraint||'',error?.message||error);
+  console.error(`[booking-workorder] ${stage} error`,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
   return next(error);
 }
 
@@ -71,8 +71,8 @@ router.post('/ensure',async(req:AuthRequest,res,next)=>{
         await c.query(`ROLLBACK TO SAVEPOINT ${sp}`).catch(()=>undefined);
         await c.query(`RELEASE SAVEPOINT ${sp}`).catch(()=>undefined);
         const code=String(error?.code||error?.publicCode||'booking_workorder_failed');
-        console.error(`[booking-workorder] appointment:${id} isolated error`,code,error?.constraint||'',error?.message||error);
-        items.push({appointment_id:id,work_order_id:null,work_order_number:null,created:false,status:'error',skipped:true,error_code:code,error_message:String(error?.message||'Munkalap létrehozási hiba')});
+        console.error(`[booking-workorder] appointment:${id} isolated error`,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
+        items.push({appointment_id:id,work_order_id:null,work_order_number:null,created:false,status:'error',skipped:true,error_code:code,error_message:String(error?.message||'Munkalap létrehozási hiba'),error_table:error?.table||undefined,error_column:error?.column||undefined});
       }
     }
     stage='commit';await c.query('COMMIT');res.json({items});
