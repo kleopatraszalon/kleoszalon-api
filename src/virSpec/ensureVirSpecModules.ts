@@ -7,7 +7,18 @@ let migrationPromise: Promise<void> | null = null;
 
 async function runSqlFile(fileName: string) {
   const sqlPath = path.join(__dirname, "..", "sql", fileName);
-  await pool.query(await readFile(sqlPath, "utf8"));
+  let sql = await readFile(sqlPath, "utf8");
+
+  // A VIR moduldefiníciók route-ja lower(route) szerint is egyedi.
+  // A menüből generált bootstrap ugyanazon INSERT forráshalmazán belül több,
+  // azonos route-ú rekordot is kaphat. Ilyenkor az ON CONFLICT(module_key)
+  // nem védi a route unique indexet, ezért ennél a legacy bootstrapnál minden
+  // egyedi konfliktust biztonságosan kihagyunk.
+  if (fileName === "20260806_VIR_SPEC_MODULES_V1.sql") {
+    sql = sql.replace(/ON CONFLICT\(module_key\) DO NOTHING;/g, "ON CONFLICT DO NOTHING;");
+  }
+
+  await pool.query(sql);
 }
 
 async function repairLegacyMenuCodes() {
