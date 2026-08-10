@@ -23,21 +23,28 @@ test('checklist runtime GET hotfix is mounted before legacy checklist router',()
   assert.ok(legacy>hotfix,'legacy checklist router must follow runtime hotfix');
 });
 
-test('booking bridge reports schema errors with actionable stage and code',()=>{
+test('booking bridge reports live schema and data errors with actionable stage and code',()=>{
   const src=read('src/routes/bookingWorkOrderBridge.ts');
   assert.match(src,/error_code/);
   assert.match(src,/stage/);
-  assert.match(src,/\['42P01','42703','42804','42830','42883'\]/);
+  for(const code of ['42P01','42703','42804','42830','42883','22P02','23502','23503','23514','25P02','55000'])assert.match(src,new RegExp(code));
   assert.match(src,/status\(503\)/);
+  assert.match(src,/SAVEPOINT \$\{sp\}/);
+  assert.match(src,/ROLLBACK TO SAVEPOINT/);
+  assert.match(src,/actorUuid/);
 });
 
-test('booking workorder runtime protects legacy schema and duplicate creation',()=>{
+test('booking workorder runtime protects legacy schema, references and transaction state',()=>{
   const src=read('src/services/bookingWorkOrder.ts');
   assert.match(src,/pg_advisory_xact_lock/);
   assert.match(src,/locked_at/);
   assert.match(src,/archived_at/);
   assert.match(src,/to_jsonb\(s\)->>'promo_price'/);
   assert.match(src,/CREATE TABLE work_order_items/);
+  assert.match(src,/safeReferenceId/);
+  assert.match(src,/bestEffort/);
+  assert.match(src,/ROLLBACK TO SAVEPOINT/);
+  assert.match(src,/reference_health/);
 });
 
 test('online booking bootstrap does not create demo data',()=>{
