@@ -1,8 +1,10 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
+import { requireAuth } from "../middleware/auth";
 import servicesImportRouter from "./servicesImportV2";
 
 const router = Router();
+router.use(requireAuth);
 router.use(servicesImportRouter);
 
 async function ensureAltegioColumns() {
