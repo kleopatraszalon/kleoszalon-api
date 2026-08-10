@@ -4,27 +4,76 @@ import pool from "../db";
 
 let migrationPromise: Promise<void> | null = null;
 
+const RUNTIME_FILES = [
+  "20260804_HR_V2.sql",
+  "20260804_PAYROLL_V1.sql",
+  "20260805_WORK_SCHEDULE_V1.sql",
+  "20260808_CHECKLISTS_V1.sql",
+  "20260808_EMPLOYEE_SELF_SERVICE_V1.sql",
+  "20260809_ADMIN_CHECKLIST_V1.sql",
+];
+
+async function ensureSafeHrCore() {
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version text PRIMARY KEY,
+      description text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hr_positions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      code text,
+      name text NOT NULL,
+      description text,
+      department_name text,
+      management_level integer NOT NULL DEFAULT 0,
+      is_active boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS code text`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS description text`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS department_name text`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS management_level integer NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+}
+
+async function alreadyApplied(version: string) {
+  try {
+    const { rows } = await pool.query(`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1) ok`, [version]);
+    return Boolean(rows[0]?.ok);
+  } catch {
+    return false;
+  }
+}
+
 export function ensureHrV2() {
   if (!migrationPromise) {
     migrationPromise = (async () => {
-      // A legacy employment_types PK-átépítés nem futhat automatikus request-bootstrapként:
-      // meglévő FK-k mellett destruktív DDL-be ütközhet. Ezt külön, kontrollált migrációként kell kezelni.
-      for (const file of [
-        "20260804_HR_V2.sql",
-        "20260804_PAYROLL_V1.sql",
-        "20260804_ACCESS_CONTROL_V1.sql",
-        "20260805_KLEO_DEMO_DATA.sql",
-        "20260805_WORK_SCHEDULE_V1.sql",
-        "20260808_CHECKLISTS_V1.sql",
-        "20260808_CHECKLIST_TEST_USERS_V1.sql",
-        "20260808_CHECKLIST_TEST_USERS_V2.sql",
-        "20260808_EMPLOYEE_SELF_SERVICE_V1.sql",
-        "20260808_DEMO_ADMINS_LOCATION_MANAGER_V1.sql",
-        "20260809_ADMIN_CHECKLIST_V1.sql",
-      ]) {
-        const sqlPath = path.join(__dirname, "..", "sql", file);
-        const sql = await readFile(sqlPath, "utf8");
-        await pool.query(sql);
+      await ensureSafeHrCore();
+
+      for (const file of RUNTIME_FILES) {
+        const version = file.replace(/\.sql$/i, "");
+        if (await alreadyApplied(version)) continue;
+        try {
+          const sqlPath = path.join(__dirname, "..", "sql", file);
+          const sql = await readFile(sqlPath, "utf8");
+          await pool.query(sql);
+        } catch (error: any) {
+          // Legacy telepítéseken egy régi HR migráció részben már jelen lehet,
+          // eltérő PK/FK típussal. Ez nem állíthatja le a teljes HR/checklist/payroll API-t.
+          // A célzott runtime bootstrapok a szükséges táblákat/mezőket külön biztosítják.
+          console.warn(`[HR runtime] ${file} kihagyva:`, error?.message || error);
+        }
       }
     })().catch((error) => {
       migrationPromise = null;
