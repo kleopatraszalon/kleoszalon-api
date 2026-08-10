@@ -1,10 +1,12 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
 import { requireAuth } from "../middleware/auth";
+import { requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import servicesImportRouter from "./servicesImportV2";
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireMenuPermissionByMethod("masterdata.services"));
 router.use(servicesImportRouter);
 
 async function ensureAltegioColumns() {
