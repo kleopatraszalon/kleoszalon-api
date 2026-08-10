@@ -2,24 +2,8 @@ import type { Response } from "express";
 import db from "../db";
 import type { AuthRequest } from "./auth";
 import type { MenuAction } from "./menuPermission";
-
-function normalizeRole(value: string): string {
-  const role = value.trim().toLowerCase();
-  if (["administrator", "rendszergazda", "superadmin", "super_admin"].includes(role)) return "admin";
-  if (["vezető", "vezeto"].includes(role)) return "manager";
-  return role;
-}
-
-function roleKeys(req: AuthRequest): string[] {
-  const raw: any = req.user?.role;
-  if (Array.isArray(raw)) return raw.map(String).map(normalizeRole).filter(Boolean);
-  const value = String(raw || "");
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed.map(String).map(normalizeRole).filter(Boolean);
-  } catch {}
-  return value.split(",").map(x => x.replace(/[\[\]"]/g, "")).map(normalizeRole).filter(Boolean);
-}
+import { parseRoleKeys } from "../security/roles";
+import { isRbacFailClosed } from "../security/rbacMode";
 
 function actionForMethod(method: string): MenuAction {
   switch (method.toUpperCase()) {
@@ -37,19 +21,14 @@ function strongest(values: string[]) { return values.sort((a,b)=>(rank[b]??0)-(r
 function moreRestrictive(a:string,b:string){ return (rank[a]??1) <= (rank[b]??1) ? a : b; }
 
 function ruleForPath(path: string): Rule | null {
-  // HR-en belül a bér/kompenzáció külön érzékeny jogosultságot kap.
   if (path === "/api/payroll" || path.startsWith("/api/payroll/")) return { feature: "hr", menu: "team.payroll" };
   if (path.startsWith("/api/hr/compensation-plans")) return { feature: "hr", menu: "team.payroll" };
   if (/^\/api\/hr\/employees\/[^/]+\/compensation(?:\/|$)/.test(path)) return { feature: "hr", menu: "team.payroll" };
   if (path === "/api/hr" || path.startsWith("/api/hr/")) return { feature: "hr", menu: "team" };
-
   if (path.startsWith("/api/transactions/inventory")) return { feature: "inventory", menu: "inventory" };
-
-  // Vezetői összesítők külön dashboard-jogosultságot kapnak, nem a napi pénztárjogot.
   if (path.startsWith("/api/transactions/cashier/management-summary") || path.startsWith("/api/transactions/management"))
     return { feature: "management_dashboard", menu: "analytics.main" };
   if (path.startsWith("/api/transactions/cashier")) return { feature: "finance", menu: "finance.checkout" };
-
   if (path.startsWith("/api/transactions/audit")) return { feature: "audit", menu: "settings.audit" };
   return null;
 }
@@ -75,7 +54,7 @@ async function enforceLocationScope(req:AuthRequest,res:Response,roles:string[],
     return true;
   }
   if(scope==="selected_locations"){
-    const allowed=(await db.query(`SELECT DISTINCT location_id FROM role_location_permissions WHERE role_key=ANY($1::text[]) AND can_access=true`,[roles])).rows.map((x:any)=>String(x.location_id));
+    const allowed=(await db.query(`SELECT DISTINCT location_id FROM role_location_permissions WHERE lower(role_key)=ANY($1::text[]) AND can_access=true`,[roles])).rows.map((x:any)=>String(x.location_id));
     if(!allowed.length){res.status(403).json({error:"A szerepkörhöz nincs kijelölt telephely.",scope_type:scope});return false;}
     if(requested){if(!allowed.includes(requested)){res.status(403).json({error:"A kiválasztott telephely nincs engedélyezve ehhez a szerepkörhöz.",scope_type:scope,location_id:requested});return false;}return true;}
     if(allowed.length===1){injectLocation(req,allowed[0]);return true;}
@@ -84,30 +63,39 @@ async function enforceLocationScope(req:AuthRequest,res:Response,roles:string[],
   return true;
 }
 
-/** Központi feature + művelet + telephely-hatókör védelem a fő üzleti API-kon. */
 export async function enforceKnownModuleAccess(req: AuthRequest, res: Response): Promise<boolean> {
   const rule = ruleForPath(String(req.originalUrl || req.url || "").split("?", 1)[0]);
   if (!rule) return true;
 
-  const roles = roleKeys(req);
+  const roles = parseRoleKeys(req.user?.role);
   if (roles.includes("admin")) return true;
   if (!roles.length) { res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." }); return false; }
 
+  let strict=false;
   try {
-    const featureRows = await db.query(`SELECT can_use,scope_type FROM role_feature_permissions WHERE role_key=ANY($1::text[]) AND feature_key=$2`,[roles,rule.feature]);
+    strict=await isRbacFailClosed();
+    const featureRows = await db.query(`SELECT can_use,scope_type FROM role_feature_permissions WHERE lower(role_key)=ANY($1::text[]) AND feature_key=$2`,[roles,rule.feature]);
+    if (!featureRows.rowCount && strict){res.status(403).json({error:"A funkcióhoz nincs explicit jogosultság.",feature_key:rule.feature,reason:"feature_not_configured"});return false;}
     if (featureRows.rowCount && !featureRows.rows.some((r:any)=>r.can_use===true)) {res.status(403).json({error:"Ehhez a funkcióhoz nincs jogosultsága.",feature_key:rule.feature});return false;}
     const featureScope=strongest(featureRows.rows.filter((r:any)=>r.can_use===true).map((r:any)=>String(r.scope_type||"own_location")));
 
     const menu = await db.query(`SELECT id FROM menus WHERE code=$1 AND COALESCE(is_active,true)=true LIMIT 1`, [rule.menu]);
-    if (!menu.rows[0]) return enforceLocationScope(req,res,roles,featureScope);
+    if (!menu.rows[0]) {
+      if(strict){res.status(403).json({error:"A művelethez nincs konfigurált menüjogosultság.",menu_code:rule.menu,reason:"menu_not_configured"});return false;}
+      return enforceLocationScope(req,res,roles,featureScope);
+    }
     const action = actionForMethod(req.method);
-    const permissions = await db.query(`SELECT ${action} AS allowed,scope_type FROM role_menu_permissions WHERE role_key=ANY($1::text[]) AND menu_id=$2`,[roles,menu.rows[0].id]);
+    const permissions = await db.query(`SELECT ${action} AS allowed,scope_type FROM role_menu_permissions WHERE lower(role_key)=ANY($1::text[]) AND menu_id=$2`,[roles,menu.rows[0].id]);
+    if (!permissions.rowCount && strict){res.status(403).json({error:"A művelethez nincs explicit jogosultság.",menu_code:rule.menu,permission:action,reason:"permission_not_configured"});return false;}
     if (permissions.rowCount && !permissions.rows.some((r:any)=>r.allowed===true)) {res.status(403).json({error:"Ehhez a művelethez nincs jogosultsága.",menu_code:rule.menu,permission:action});return false;}
     const menuScope=strongest(permissions.rows.filter((r:any)=>r.allowed===true).map((r:any)=>String(r.scope_type||"own_location")));
-    const effectiveScope=moreRestrictive(featureScope,menuScope);
-    return enforceLocationScope(req,res,roles,effectiveScope);
+    return enforceLocationScope(req,res,roles,moreRestrictive(featureScope,menuScope));
   } catch (error: any) {
-    if (["42P01", "42703"].includes(String(error?.code || ""))) return true;
+    if (["42P01", "42703"].includes(String(error?.code || ""))) {
+      if(!strict)return true;
+      res.status(503).json({error:"A jogosultsági rendszer sémája hiányos. A hozzáférés megtagadva.",code:"rbac_schema_unavailable"});
+      return false;
+    }
     throw error;
   }
 }
