@@ -4,11 +4,21 @@ export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|n
 const ACTIVE_APPOINTMENT_STATUSES=new Set(['pending','confirmed','booked','waiting','arrived','in_progress']);
 const TERMINAL_APPOINTMENT_STATUSES=new Set(['cancelled','canceled','no_show','completed']);
 
+async function safeIndex(c:any,sql:string,label:string){
+  try{await c.query(sql)}catch(error:any){
+    if(['23505','42P01','42703'].includes(String(error?.code||''))){console.warn(`[booking-workorder] ${label} index skipped:`,error?.message||error);return}
+    throw error;
+  }
+}
+
 export async function ensureBookingWorkOrderSchema(c:any){
   if(schemaReady)return;
+  await c.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await c.query(`
     ALTER TABLE appointments ADD COLUMN IF NOT EXISTS work_order_id uuid;
     ALTER TABLE appointments ADD COLUMN IF NOT EXISTS work_order_number text;
+    ALTER TABLE appointments ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS client_id uuid;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS client_name text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS client_phone text;
@@ -22,11 +32,60 @@ export async function ensureBookingWorkOrderSchema(c:any){
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS work_order_number text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source_created_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS source_snapshot jsonb;
-    CREATE TABLE IF NOT EXISTS work_order_number_sequences(year integer PRIMARY KEY,last_value bigint NOT NULL DEFAULT 0,updated_at timestamptz NOT NULL DEFAULT now());
-    CREATE UNIQUE INDEX IF NOT EXISTS work_orders_appointment_uq ON work_orders(appointment_id) WHERE appointment_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS work_orders_official_number_uq ON work_orders(work_order_number) WHERE work_order_number IS NOT NULL;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS locked_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS locked_reason text;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS archive_hash text;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+    CREATE TABLE IF NOT EXISTS work_order_number_sequences(
+      year integer PRIMARY KEY,
+      last_value bigint NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
+
+  const hasItems=(await c.query(`SELECT to_regclass('public.work_order_items') IS NOT NULL ok`)).rows[0]?.ok;
+  if(hasItems){
+    await c.query(`
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS discount_amount numeric(14,2) NOT NULL DEFAULT 0;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS line_total numeric(14,2) NOT NULL DEFAULT 0;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS duration_minutes integer;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS quantity numeric(12,3) NOT NULL DEFAULT 1;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS unit_price numeric(14,2) NOT NULL DEFAULT 0;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS item_name text;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS item_type text;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS service_id uuid;
+      ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS product_id uuid;
+    `);
+  }
+
+  const hasAppointmentServices=(await c.query(`SELECT to_regclass('public.appointment_services') IS NOT NULL ok`)).rows[0]?.ok;
+  if(hasAppointmentServices){
+    await c.query(`
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS duration_minutes integer;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS price numeric(14,2);
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS discount_percent numeric(7,4) NOT NULL DEFAULT 0;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 0;
+      ALTER TABLE appointment_services ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    `);
+  }
+
+  const hasClients=(await c.query(`SELECT to_regclass('public.clients') IS NOT NULL ok`)).rows[0]?.ok;
+  if(hasClients){
+    await c.query(`
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS full_name text;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS name text;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone text;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS email text;
+    `);
+  }
+
   await c.query(`CREATE OR REPLACE FUNCTION next_official_work_order_number(p_at timestamptz DEFAULT now()) RETURNS text LANGUAGE plpgsql AS $$ DECLARE y integer:=EXTRACT(YEAR FROM p_at)::integer;n bigint;BEGIN INSERT INTO work_order_number_sequences(year,last_value) VALUES(y,1) ON CONFLICT(year) DO UPDATE SET last_value=work_order_number_sequences.last_value+1,updated_at=now() RETURNING last_value INTO n;RETURN 'KLEO-ML-'||y::text||'-'||LPAD(n::text,6,'0');END $$;`);
+
+  await safeIndex(c,`CREATE UNIQUE INDEX IF NOT EXISTS work_orders_appointment_uq ON work_orders(appointment_id) WHERE appointment_id IS NOT NULL`,'appointment');
+  await safeIndex(c,`CREATE UNIQUE INDEX IF NOT EXISTS work_orders_official_number_uq ON work_orders(work_order_number) WHERE work_order_number IS NOT NULL`,'number');
+  await safeIndex(c,`CREATE INDEX IF NOT EXISTS appointments_work_order_idx ON appointments(work_order_id)`,'appointment-link');
   schemaReady=true;
 }
 
@@ -41,12 +100,18 @@ async function appointmentServices(c:any,appointmentId:string){
 }
 
 export async function ensureBookingWorkOrder(c:any,appointmentId:string,createdBy:string):Promise<BookingWorkOrderResult>{
+  await c.query(`SELECT pg_advisory_xact_lock(hashtext($1))`,[`booking-workorder:${appointmentId}`]);
   const ap=await appointmentRow(c,appointmentId);
   if(!ap){const error:any=new Error('A foglalás nem található.');error.httpStatus=404;throw error;}
   if(ap.work_order_id){
     const existing=(await c.query(`SELECT id::text,work_order_number FROM work_orders WHERE id=$1::uuid`,[ap.work_order_id])).rows[0]||null;
     if(existing)return{appointment_id:String(ap.id),work_order_id:String(existing.id),work_order_number:existing.work_order_number||ap.work_order_number||null,created:false,status:String(ap.status||'')};
-    await c.query(`UPDATE appointments SET work_order_id=NULL,work_order_number=NULL WHERE id=$1::uuid`,[ap.id]);
+    await c.query(`UPDATE appointments SET work_order_id=NULL,work_order_number=NULL,updated_at=now() WHERE id=$1::uuid`,[ap.id]);
+  }
+  const existingByAppointment=(await c.query(`SELECT id::text,work_order_number,status FROM work_orders WHERE appointment_id=$1::uuid ORDER BY created_at LIMIT 1`,[ap.id])).rows[0]||null;
+  if(existingByAppointment){
+    await c.query(`UPDATE appointments SET work_order_id=$2::uuid,work_order_number=$3,updated_at=now() WHERE id=$1::uuid`,[ap.id,existingByAppointment.id,existingByAppointment.work_order_number]);
+    return{appointment_id:String(ap.id),work_order_id:String(existingByAppointment.id),work_order_number:existingByAppointment.work_order_number||null,created:false,status:String(ap.status||'')};
   }
   const apStatus=String(ap.status||'confirmed').toLowerCase();
   if(TERMINAL_APPOINTMENT_STATUSES.has(apStatus)||!ACTIVE_APPOINTMENT_STATUSES.has(apStatus))return{appointment_id:String(ap.id),work_order_id:null,work_order_number:null,created:false,status:apStatus,skipped:true};
@@ -63,15 +128,18 @@ export async function ensureBookingWorkOrder(c:any,appointmentId:string,createdB
     wo=(await c.query(`SELECT id::text,work_order_number,status FROM work_orders WHERE appointment_id=$1::uuid LIMIT 1`,[ap.id])).rows[0];
     if(!wo)throw error;
   }
-  const existingItems=Number((await c.query(`SELECT COUNT(*)::int count FROM work_order_items WHERE work_order_id=$1::uuid`,[wo.id])).rows[0]?.count||0);
-  if(existingItems===0){
-    for(const s of services){
-      const price=Number(s.price||0),discountPercent=Math.max(0,Math.min(100,Number(s.discount_percent||0))),discountAmount=Math.round(price*discountPercent)/100,lineTotal=Math.max(0,Math.round((price-discountAmount)*100)/100);
-      await c.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1::uuid,'service',$2::uuid,$3,1,$4,$5,$6,$7)`,[wo.id,s.service_id,s.name,price,discountAmount,lineTotal,s.duration_minutes||null]);
+  const hasItemsNow=(await c.query(`SELECT to_regclass('public.work_order_items') IS NOT NULL ok`)).rows[0]?.ok;
+  if(hasItemsNow){
+    const existingItems=Number((await c.query(`SELECT COUNT(*)::int count FROM work_order_items WHERE work_order_id=$1::uuid`,[wo.id])).rows[0]?.count||0);
+    if(existingItems===0){
+      for(const s of services){
+        const price=Number(s.price||0),discountPercent=Math.max(0,Math.min(100,Number(s.discount_percent||0))),discountAmount=Math.round(price*discountPercent)/100,lineTotal=Math.max(0,Math.round((price-discountAmount)*100)/100);
+        await c.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1::uuid,'service',$2::uuid,$3,1,$4,$5,$6,$7)`,[wo.id,s.service_id,s.name,price,discountAmount,lineTotal,s.duration_minutes||null]);
+      }
     }
+    const recalc=(await c.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;
+    if(recalc)await c.query(`SELECT recalc_work_order_totals($1::uuid)`,[wo.id]);
   }
-  const recalc=(await c.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;
-  if(recalc)await c.query(`SELECT recalc_work_order_totals($1::uuid)`,[wo.id]);
   await c.query(`UPDATE appointments SET work_order_id=$2::uuid,work_order_number=$3,updated_at=now() WHERE id=$1::uuid`,[ap.id,wo.id,wo.work_order_number]);
   await c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note) VALUES($1::uuid,'workorder_linked',$2,$3::jsonb,$4)`,[ap.id,createdBy,JSON.stringify({work_order_id:wo.id,work_order_number:wo.work_order_number}),`Automatikus munkalap: ${wo.work_order_number}`]).catch(()=>undefined);
   return{appointment_id:String(ap.id),work_order_id:String(wo.id),work_order_number:wo.work_order_number,created:true,status:apStatus};
