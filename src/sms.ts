@@ -21,7 +21,7 @@ export async function sendSms(message: OutgoingSms) {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await axios.post(
+  const response: any = await axios.post(
     url,
     { to: message.to, text: message.text, sender },
     { headers, timeout: 15_000 }
