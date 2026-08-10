@@ -40,6 +40,8 @@ import appointmentLifecycleRouter from "./appointmentLifecycle";
 import bookingWorkOrderBridgeRouter from "./bookingWorkOrderBridge";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
 import db from "../db";
+import { requireAuth } from "../middleware/auth";
+import { requireManagement } from "../middleware/requireRoles";
 import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "../middleware/procurementAccess";
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
@@ -47,6 +49,12 @@ import {ensureFinanceNav} from "../finance/ensureFinanceNav";
 const router=express.Router();
 const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureFinanceNav();next()}catch(error:any){console.error('Finance/NAV schema bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'finance_schema_unavailable',message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT work_order_number,status,locked_at,archived_at,financial_closed_at FROM work_orders WHERE id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(Boolean((req as any).body?.close_financially)&&String(wo.status||'')!=='in_progress')return res.status(409).json({message:'Végleges pénzügyi zárás csak Folyamatban állapotú munkalapon végezhető.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
+
+// A /api/transactions névtér kizárólag belső VIR műveleteket tartalmaz.
+// Publikus webes/booking API-k külön /api/public névtérben futnak, ezért itt
+// minden végpont alapértelmezés szerint hitelesítést igényel.
+router.use(requireAuth);
+
 router.get("/",(_req,res)=>res.json([{id:1,type:"income",amount:10000}]));
 router.use("/inventory",requireFeature("inventory"),requireMenuPermissionByMethod("inventory"),inventoryRouter);
 router.use("/inventory-control",requireFeature("inventory"),requireMenuPermissionByMethod("inventory"),inventoryControlRouter);
@@ -76,9 +84,9 @@ router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),re
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
-router.use("/system-health",ensureFinanceReady,systemHealthRouter);
-router.use("/uat",uatTestCenterRouter);
-router.use("/uat-issues",uatIssuesRouter);
+router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
+router.use("/uat",requireManagement,uatTestCenterRouter);
+router.use("/uat-issues",requireManagement,uatIssuesRouter);
 router.use("/cashier/management-summary",ensureFinanceReady,requireFeature("management_dashboard"),requireMenuPermission("finance","can_view_financial"),managementSummaryRouter);
 router.use("/management",requireFeature("management_dashboard"),requireMenuPermission("analytics","can_view_financial"),managementSummaryRouter);
 router.use("/dashboard-settings",requireFeature("management_dashboard"),dashboardSettingsRouter);
