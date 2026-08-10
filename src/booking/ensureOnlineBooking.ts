@@ -92,6 +92,20 @@ export async function ensureOnlineBooking() {
       require_staff_confirmation boolean NOT NULL DEFAULT true,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+
+    -- A régi live adatbázisban a work_order_items/work_order_payments táblák
+    -- az archiváló trigger által használt időbélyeg nélkül is létezhetnek.
+    -- A lemondás terminális munkalapállapotot állít be, ezért ezeket még a
+    -- trigger futása előtt idempotensen helyre kell állítani.
+    DO $$
+    BEGIN
+      IF to_regclass('public.work_order_items') IS NOT NULL THEN
+        ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+      END IF;
+      IF to_regclass('public.work_order_payments') IS NOT NULL THEN
+        ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS paid_at timestamptz NOT NULL DEFAULT now();
+      END IF;
+    END $$;
   `);
 
   await pool.query(`
