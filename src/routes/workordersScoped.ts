@@ -212,7 +212,7 @@ router.post('/:id/items',requireEditor,async(req:AuthRequest,res,next)=>{
     await ensureWorkOrderItemsSchema();
     const kind=String(req.body?.item_type||'').toLowerCase(),itemId=String(req.body?.item_id||'').trim();
     const rawQuantity=Number(req.body?.quantity??1),rawDiscount=Number(req.body?.discount_amount??0);
-    const quantity=Number.isFinite(rawQuantity)?Math.max(1,Math.min(99,rawQuantity)):1,discount=Number.isFinite(rawDiscount)?Math.max(0,rawDiscount):0;
+    const quantity=Number.isFinite(rawQuantity)?(kind==='product'?Math.max(.01,Math.min(9999,rawQuantity)):Math.max(1,Math.min(99,rawQuantity))):1,discount=Number.isFinite(rawDiscount)?Math.max(0,rawDiscount):0;
     if(!['service','product'].includes(kind)||!itemId)return res.status(400).json({message:'Válasszon szolgáltatást vagy terméket.'});
     let row:any;
     if(kind==='service')row=(await db.query(`SELECT s.id,COALESCE(NULLIF(to_jsonb(s)->>'name',''),'Szolgáltatás') name,COALESCE(NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,NULLIF(to_jsonb(s)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration FROM services s WHERE s.id=$1::uuid AND COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true`,[itemId])).rows[0];
@@ -227,6 +227,30 @@ router.post('/:id/items',requireEditor,async(req:AuthRequest,res,next)=>{
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen tételazonosító.'});
     console.error('[workorders] item insert failed',e?.code||'',e?.message||e);next(e)
   }
+});
+
+router.patch('/:id/items/:itemId',requireEditor,async(req:AuthRequest,res,next)=>{
+  try{
+    const scope=(req as any).workOrderScope as Scope,check=await editableWorkOrder(req.params.id,scope);
+    if(check.error==='not_found')return res.status(404).json({message:'A munkalap nem található vagy másik szalonhoz tartozik.'});
+    if(check.error==='locked')return res.status(409).json({message:'A lezárt munkalap tételei nem módosíthatók.'});
+    if(check.row?.financial_closed_at)return res.status(409).json({message:'A pénzügyileg lezárt munkalap tételei már nem módosíthatók.'});
+    await ensureWorkOrderItemsSchema();
+    const current=(await db.query(`SELECT id,item_type,product_id,quantity,unit_price,discount_amount FROM work_order_items WHERE id=$1::uuid AND work_order_id=$2::uuid LIMIT 1`,[req.params.itemId,req.params.id])).rows[0];
+    if(!current)return res.status(404).json({message:'A munkalaptétel nem található.'});
+    const rq=Object.prototype.hasOwnProperty.call(req.body||{},'quantity')?Number(req.body.quantity):Number(current.quantity||1);
+    const rd=Object.prototype.hasOwnProperty.call(req.body||{},'discount_amount')?Number(req.body.discount_amount):Number(current.discount_amount||0);
+    if(!Number.isFinite(rq)||rq<=0)return res.status(400).json({message:'A mennyiségnek nullánál nagyobbnak kell lennie.'});
+    if(!Number.isFinite(rd)||rd<0)return res.status(400).json({message:'A kedvezmény nem lehet negatív.'});
+    const quantity=String(current.item_type)==='product'?Math.max(.01,Math.min(9999,rq)):Math.max(1,Math.min(99,rq));
+    const discount=Math.max(0,rd),unit=Number(current.unit_price||0),line=Math.max(0,quantity*unit-discount);
+    if(String(current.item_type)==='product'&&current.product_id&&await relationExists('product_stock_balances')){
+      const stock=(await db.query(`SELECT COALESCE(quantity,0)::numeric quantity FROM product_stock_balances WHERE product_id=$1::uuid AND location_id=$2::uuid LIMIT 1`,[current.product_id,check.row?.location_id])).rows[0];
+      if(stock&&quantity>Number(stock.quantity||0))return res.status(409).json({message:`Nincs elegendő készlet. Elérhető: ${Number(stock.quantity||0).toLocaleString('hu-HU')} db.`});
+    }
+    const q=await db.query(`UPDATE work_order_items SET quantity=$3,discount_amount=$4,line_total=$5 WHERE id=$1::uuid AND work_order_id=$2::uuid RETURNING *`,[req.params.itemId,req.params.id,quantity,discount,line]);
+    await recalc(req.params.id);res.json(q.rows[0])
+  }catch(e:any){if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen tételazonosító.'});next(e)}
 });
 
 router.delete('/:id/items/:itemId',requireEditor,async(req:AuthRequest,res,next)=>{
