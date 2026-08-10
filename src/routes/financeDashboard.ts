@@ -71,13 +71,18 @@ router.get('/',async(req:AuthRequest,res,next)=>{
       WHERE wp.paid_at::date=$1::date AND ${loc}
       GROUP BY wo.location_id,l.name ORDER BY revenue DESC`,params,[]);
 
-    const staffRows=await safeRows(`SELECT wo.employee_id::text employee_id,COALESCE(NULLIF(e.full_name,''),NULLIF(e.name,''),'Nincs munkatárs') employee_name,
-      COUNT(DISTINCT wo.id)::int workorders,COALESCE(SUM(wp.amount),0)::numeric revenue,
-      COALESCE(AVG(NULLIF(wo.amount_due,0)),0)::numeric avg_ticket,
-      COALESCE(SUM(DISTINCT CASE WHEN wo.financial_closed_at::date=$1::date THEN COALESCE(wo.tip_amount,0) ELSE 0 END),0)::numeric tips
-      FROM work_order_payments wp JOIN work_orders wo ON wo.id=wp.work_order_id LEFT JOIN employees e ON e.id=wo.employee_id
+    const staffRows=await safeRows(`WITH paid_workorders AS (
+      SELECT wo.id,wo.employee_id,wo.amount_due,wo.tip_amount,wo.financial_closed_at,COALESCE(SUM(wp.amount),0)::numeric revenue
+      FROM work_order_payments wp JOIN work_orders wo ON wo.id=wp.work_order_id
       WHERE wp.paid_at::date=$1::date AND ${loc}
-      GROUP BY wo.employee_id,e.full_name,e.name ORDER BY revenue DESC LIMIT 30`,params,[]);
+      GROUP BY wo.id,wo.employee_id,wo.amount_due,wo.tip_amount,wo.financial_closed_at
+    )
+    SELECT p.employee_id::text employee_id,COALESCE(NULLIF(e.full_name,''),NULLIF(e.name,''),'Nincs munkatárs') employee_name,
+      COUNT(*)::int workorders,COALESCE(SUM(p.revenue),0)::numeric revenue,
+      COALESCE(AVG(NULLIF(p.amount_due,0)),0)::numeric avg_ticket,
+      COALESCE(SUM(CASE WHEN p.financial_closed_at::date=$1::date THEN COALESCE(p.tip_amount,0) ELSE 0 END),0)::numeric tips
+      FROM paid_workorders p LEFT JOIN employees e ON e.id=p.employee_id
+      GROUP BY p.employee_id,e.full_name,e.name ORDER BY revenue DESC LIMIT 30`,params,[]);
 
     const commissionRows=await safeRows(`SELECT ce.employee_id::text employee_id,COALESCE(NULLIF(e.full_name,''),NULLIF(e.name,''),'Nincs munkatárs') employee_name,
       COUNT(*)::int event_count,COALESCE(SUM(ce.base_amount),0)::numeric base_amount,COALESCE(SUM(ce.tip_amount),0)::numeric tip_amount
