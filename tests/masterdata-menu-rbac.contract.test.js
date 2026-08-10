@@ -4,6 +4,8 @@ const fs=require('node:fs');
 const path=require('node:path');
 
 const read=(file)=>fs.readFileSync(path.join(process.cwd(),file),'utf8');
+const escapeRe=(value)=>String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const menuGuardRe=(menuCode)=>new RegExp(`requireMenuPermissionByMethod\\(\\s*['\"]${escapeRe(menuCode)}['\"]\\s*\\)`);
 
 const guardedRoutes=[
   ['src/routes/products.ts','masterdata.products'],
@@ -17,7 +19,7 @@ for(const [file,menuCode] of guardedRoutes){
   test(`${file} is protected by its configured menu permission`,()=>{
     const src=read(file);
     const auth=src.indexOf('router.use(requireAuth)');
-    const menu=src.indexOf(`requireMenuPermissionByMethod(${JSON.stringify(menuCode)})`);
+    const menu=src.search(menuGuardRe(menuCode));
     const firstRouteIndexes=[
       src.search(/router\.get\s*\(/),
       src.search(/router\.post\s*\(/),
@@ -38,11 +40,11 @@ test('product and service import subrouters cannot bypass menu RBAC',()=>{
   const services=read('src/routes/services.ts');
 
   assert.ok(
-    products.indexOf("requireMenuPermissionByMethod('masterdata.products')")<products.indexOf('router.use(productsImportRouter)'),
+    products.search(menuGuardRe('masterdata.products'))<products.indexOf('router.use(productsImportRouter)'),
     'product import router must be mounted after product menu guard'
   );
   assert.ok(
-    services.indexOf('requireMenuPermissionByMethod("masterdata.services")')<services.indexOf('router.use(servicesImportRouter)'),
+    services.search(menuGuardRe('masterdata.services'))<services.indexOf('router.use(servicesImportRouter)'),
     'service import router must be mounted after service menu guard'
   );
 });
