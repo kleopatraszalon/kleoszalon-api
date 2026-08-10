@@ -17,6 +17,8 @@ const BUSINESS_MANAGER=['location_manager','üzletvezető','uzletvezeto','store_
 const SALON_MANAGER=['szalonvezető','szalonvezeto','salon_manager'];
 const CUSTOMER=['customer','client','guest','ügyfél','ugyfel','vendég','vendeg'];
 const STAFF=['employee','staff','munkatárs','munkatars','professional','specialist'];
+const WORK_ORDER_STATUSES=new Set(['waiting','arrived','in_progress','completed','cancelled','no_show']);
+const WORK_ORDER_NEXT:Record<string,Set<string>>={waiting:new Set(['arrived','in_progress','cancelled','no_show']),arrived:new Set(['in_progress','cancelled','no_show']),in_progress:new Set(['cancelled']),completed:new Set(),cancelled:new Set(),no_show:new Set()};
 
 type Scope={kind:'all'|'location'|'employee'|'customer'|'none';locationId:string|null;employeeId:string|null;customerId:string|null;canEdit:boolean;roleLabel:string};
 
@@ -24,6 +26,14 @@ async function relationExists(name:string){
   const q=await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${name}`]);
   return Boolean(q.rows[0]?.ok)
 }
+async function tableColumns(name:string){
+  const q=await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[name]);
+  return new Set<string>(q.rows.map((r:any)=>String(r.column_name)))
+}
+const jsonText=(alias:string,key:string)=>`NULLIF(BTRIM(COALESCE(to_jsonb(${alias})->>'${key}','')),'')`;
+const safeNumeric=(alias:string,keys:string[],fallback='0')=>`COALESCE(${keys.map(key=>`CASE WHEN replace(${jsonText(alias,key)},',','.') ~ '^-?[0-9]+([.][0-9]+)?$' THEN replace(${jsonText(alias,key)},',','.')::numeric END`).join(',')},${fallback}::numeric)`;
+const safeInteger=(alias:string,key:string,fallback=30)=>`COALESCE(CASE WHEN ${jsonText(alias,key)} ~ '^-?[0-9]+$' THEN ${jsonText(alias,key)}::int END,${fallback})::int`;
+const activeExpr=(alias:string)=>`CASE lower(COALESCE(${jsonText(alias,'is_active')},'true')) WHEN 'false' THEN false WHEN '0' THEN false WHEN 'no' THEN false WHEN 'off' THEN false WHEN 'inactive' THEN false ELSE true END`;
 
 let workOrderItemsSchemaReady=false;
 async function ensureWorkOrderItemsSchema(){
@@ -101,22 +111,12 @@ async function requireEditor(req:AuthRequest,res:Response,next:NextFunction){
 }
 
 async function editableWorkOrder(id:string,scope:Scope){
-  try{
-    const q=await db.query(`SELECT id,work_order_number,location_id::text,employee_id::text,status,locked_at,archived_at,financial_closed_at FROM work_orders WHERE id=$1::uuid LIMIT 1`,[id]);
-    const row=q.rows[0];
-    if(!row)return{error:'not_found' as const,row:null};
-    if(scope.kind==='location'&&String(row.location_id||'')!==String(scope.locationId||''))return{error:'not_found' as const,row:null};
-    if(row.locked_at||row.archived_at)return{error:'locked' as const,row};
-    return{error:null,row}
-  }catch(e:any){
-    if(e?.code==='42703'){
-      const q=await db.query(`SELECT id,work_order_number,location_id::text,employee_id::text,status,NULL::timestamptz locked_at,NULL::timestamptz archived_at,NULL::timestamptz financial_closed_at FROM work_orders WHERE id=$1::uuid LIMIT 1`,[id]);
-      const row=q.rows[0];if(!row)return{error:'not_found' as const,row:null};
-      if(scope.kind==='location'&&String(row.location_id||'')!==String(scope.locationId||''))return{error:'not_found' as const,row:null};
-      return{error:null,row}
-    }
-    throw e
-  }
+  const q=await db.query(`SELECT w.id,COALESCE(${jsonText('w','work_order_number')},w.id::text) work_order_number,${jsonText('w','location_id')} location_id,${jsonText('w','employee_id')} employee_id,COALESCE(${jsonText('w','status')},'waiting') status,NULLIF(to_jsonb(w)->>'locked_at','')::timestamptz locked_at,NULLIF(to_jsonb(w)->>'archived_at','')::timestamptz archived_at,NULLIF(to_jsonb(w)->>'financial_closed_at','')::timestamptz financial_closed_at FROM work_orders w WHERE w.id=$1::uuid LIMIT 1`,[id]);
+  const row=q.rows[0];
+  if(!row)return{error:'not_found' as const,row:null};
+  if(scope.kind==='location'&&String(row.location_id||'')!==String(scope.locationId||''))return{error:'not_found' as const,row:null};
+  if(row.locked_at||row.archived_at)return{error:'locked' as const,row};
+  return{error:null,row}
 }
 
 async function recalc(workOrderId:string){
@@ -133,20 +133,10 @@ router.get('/dashboard/summary',async(req:AuthRequest,res,next)=>{
     const scope=await resolveScope(req),f=where(scope);
     const hasItems=await relationExists('work_order_items');
     const valueSql=hasItems?`COALESCE(SUM((SELECT COALESCE(SUM(i.line_total),0) FROM work_order_items i WHERE i.work_order_id=w.id)) FILTER(WHERE w.status='completed'),0)::numeric`:`0::numeric`;
-    const q=await db.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE w.status IN ('waiting','arrived','in_progress'))::int open,COUNT(*) FILTER(WHERE w.status='completed')::int completed,COUNT(*) FILTER(WHERE w.locked_at IS NOT NULL)::int archived,${valueSql} completed_value FROM work_orders w WHERE ${f.sql}`,f.params);
-    const recent=await db.query(`SELECT w.id,w.work_order_number,w.title,w.status,w.created_at,w.locked_at,w.location_id,l.name location_name,w.client_name,e.full_name employee_name FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY w.created_at DESC LIMIT 8`,f.params);
+    const q=await db.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE w.status IN ('waiting','arrived','in_progress'))::int open,COUNT(*) FILTER(WHERE w.status='completed')::int completed,COUNT(*) FILTER(WHERE NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL)::int archived,${valueSql} completed_value FROM work_orders w WHERE ${f.sql}`,f.params);
+    const recent=await db.query(`SELECT w.*,l.name location_name,e.full_name employee_name FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY w.created_at DESC LIMIT 8`,f.params);
     res.json({scope:{kind:scope.kind,role:scope.roleLabel,can_edit:scope.canEdit,location_id:scope.locationId},stats:q.rows[0],recent:recent.rows})
-  }catch(e:any){
-    if(e?.code==='42703'){
-      try{
-        const scope=await resolveScope(req),f=where(scope);
-        const q=await db.query(`SELECT COUNT(*)::int total,COUNT(*) FILTER(WHERE w.status IN ('waiting','arrived','in_progress'))::int open,COUNT(*) FILTER(WHERE w.status='completed')::int completed,0::int archived,0::numeric completed_value FROM work_orders w WHERE ${f.sql}`,f.params);
-        const recent=await db.query(`SELECT w.id,w.work_order_number,w.title,w.status,w.created_at,w.location_id,l.name location_name,w.client_name,e.full_name employee_name FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY w.created_at DESC LIMIT 8`,f.params);
-        return res.json({scope:{kind:scope.kind,role:scope.roleLabel,can_edit:scope.canEdit,location_id:scope.locationId},stats:q.rows[0],recent:recent.rows})
-      }catch(inner){return next(inner)}
-    }
-    next(e)
-  }
+  }catch(e){next(e)}
 });
 
 router.get('/',async(req:AuthRequest,res,next)=>{
@@ -154,7 +144,7 @@ router.get('/',async(req:AuthRequest,res,next)=>{
     const scope=await resolveScope(req),f=where(scope),hasView=await relationExists('v_work_orders_list');
     const params=[...f.params,scope.canEdit];
     const sql=hasView
-      ?`SELECT v.*,w.work_order_number,w.locked_at,w.archived_at,w.archive_hash,w.location_id,l.name location_name,w.client_name,e.full_name employee_name,$${f.params.length+1}::boolean can_edit FROM v_work_orders_list v JOIN work_orders w ON w.id=v.id LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY v.created_at DESC`
+      ?`SELECT v.*,COALESCE(${jsonText('w','work_order_number')},w.id::text) work_order_number,NULLIF(to_jsonb(w)->>'locked_at','')::timestamptz locked_at,NULLIF(to_jsonb(w)->>'archived_at','')::timestamptz archived_at,${jsonText('w','archive_hash')} archive_hash,w.location_id,l.name location_name,${jsonText('w','client_name')} client_name,e.full_name employee_name,$${f.params.length+1}::boolean can_edit FROM v_work_orders_list v JOIN work_orders w ON w.id=v.id LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY v.created_at DESC`
       :`SELECT w.*,l.name location_name,e.full_name employee_name,$${f.params.length+1}::boolean can_edit FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${f.sql} ORDER BY w.created_at DESC`;
     const result=await db.query(sql,params);res.json(result.rows)
   }catch(e){next(e)}
@@ -164,21 +154,27 @@ router.get('/:id/catalog',requireVisible,async(req:AuthRequest,res,next)=>{
   try{
     const wo=(await db.query(`SELECT location_id::text FROM work_orders WHERE id=$1::uuid`,[req.params.id])).rows[0];
     const locationId=String(wo?.location_id||'');
-    const hasServiceTypes=await relationExists('service_types'),hasServiceLocations=await relationExists('service_locations');
-    const serviceCategory=hasServiceTypes?`COALESCE((SELECT NULLIF(to_jsonb(st)->>'name','') FROM service_types st WHERE st.id::text=(to_jsonb(s)->>'service_type_id') LIMIT 1),'Egyéb')`:`'Egyéb'`;
-    const locationFilter=hasServiceLocations?` AND ($1='' OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id::text=s.id::text) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id::text=s.id::text AND sl.location_id::text=$1))`:``;
-    const serviceSql=`SELECT s.id::text id,COALESCE(NULLIF(to_jsonb(s)->>'name',''),'Szolgáltatás') name,COALESCE(NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,NULLIF(to_jsonb(s)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration_minutes,${serviceCategory} category_name FROM services s WHERE COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true${locationFilter} ORDER BY category_name,name`;
-    const productSql=`SELECT p.id::text id,COALESCE(NULLIF(to_jsonb(p)->>'name',''),'Termék') name,COALESCE(NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(p)->>'main_category',''),NULLIF(to_jsonb(p)->>'sub_category',''),NULLIF(to_jsonb(p)->>'category_name',''),'Termék') category_name FROM products p WHERE COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true ORDER BY category_name,name`;
-    const [services,products]=await Promise.all([db.query(serviceSql,hasServiceLocations?[locationId]:[]),db.query(productSql)]);
+    const [serviceCols,typeCols,serviceLocationCols]=await Promise.all([tableColumns('services'),tableColumns('service_types'),tableColumns('service_locations')]);
+    const hasServiceTypes=typeCols.has('id')&&typeCols.has('name')&&serviceCols.has('service_type_id');
+    const hasServiceLocations=serviceLocationCols.has('service_id')&&serviceLocationCols.has('location_id');
+    const serviceCategory=hasServiceTypes?`COALESCE((SELECT NULLIF(BTRIM(COALESCE(to_jsonb(st)->>'name','')),'') FROM service_types st WHERE st.id::text=(to_jsonb(s)->>'service_type_id') LIMIT 1),'Egyéb')`:`'Egyéb'`;
+    const locationFilter=hasServiceLocations?` AND ($1::text='' OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id::text=s.id::text) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id::text=s.id::text AND sl.location_id::text=$1::text))`:``;
+    const servicePrice=safeNumeric('s',['promo_price','list_price','base_price','price']);
+    const productPrice=safeNumeric('p',['sale_price','retail_price_gross','price']);
+    const serviceSql=`SELECT s.id::text id,COALESCE(${jsonText('s','name')},'Szolgáltatás') name,${servicePrice} price,${safeInteger('s','duration_minutes',30)} duration_minutes,${serviceCategory} category_name FROM services s WHERE ${activeExpr('s')}=true${locationFilter} ORDER BY category_name,name`;
+    const productSql=`SELECT p.id::text id,COALESCE(${jsonText('p','name')},'Termék') name,${productPrice} price,COALESCE(${jsonText('p','main_category')},${jsonText('p','sub_category')},${jsonText('p','category_name')},'Termék') category_name FROM products p WHERE ${activeExpr('p')}=true ORDER BY category_name,name`;
+    let services:any,products:any;
+    try{services=await db.query(serviceSql,hasServiceLocations?[locationId]:[])}catch(e:any){console.warn('[workorders] catalog services fallback',e?.code||'',e?.message||e);services=await db.query(`SELECT s.id::text id,COALESCE(${jsonText('s','name')},'Szolgáltatás') name,${servicePrice} price,${safeInteger('s','duration_minutes',30)} duration_minutes,'Egyéb'::text category_name FROM services s ORDER BY name`)}
+    try{products=await db.query(productSql)}catch(e:any){console.warn('[workorders] catalog products fallback',e?.code||'',e?.message||e);products=await db.query(`SELECT p.id::text id,COALESCE(${jsonText('p','name')},'Termék') name,${productPrice} price,'Termék'::text category_name FROM products p ORDER BY name`)}
     res.json({services:services.rows,products:products.rows})
-  }catch(e){next(e)}
+  }catch(e:any){console.error('[workorders] catalog failed',e?.code||'',e?.message||e);next(e)}
 });
 
 router.get('/:id',requireVisible,async(req:AuthRequest,res,next)=>{
   try{
     const scope=(req as any).workOrderScope as Scope,hasView=await relationExists('v_work_order_details');
     const header=hasView
-      ?await db.query(`SELECT v.*,w.work_order_number,w.source_created_at,w.source_snapshot,w.locked_at,w.locked_reason,w.archived_at,w.archive_hash,w.location_id,l.name location_name,w.client_id,w.client_name,w.client_phone,w.client_email,w.employee_id,e.full_name employee_name,w.fully_paid,w.note_for_another_visitor,w.payment_status,w.financial_closed_at,w.financial_closed_by,w.amount_due,w.amount_paid,w.discount_amount,w.tip_amount,w.invoice_status,$2::boolean can_edit FROM v_work_order_details v JOIN work_orders w ON w.id=v.id LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE v.id=$1::uuid`,[req.params.id,scope.canEdit])
+      ?await db.query(`SELECT w.*,v.*,l.name location_name,e.full_name employee_name,$2::boolean can_edit FROM work_orders w LEFT JOIN v_work_order_details v ON v.id=w.id LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE w.id=$1::uuid`,[req.params.id,scope.canEdit])
       :await db.query(`SELECT w.*,l.name location_name,e.full_name employee_name,$2::boolean can_edit FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE w.id=$1::uuid`,[req.params.id,scope.canEdit]);
     if(!header.rows[0])return res.status(404).json({message:'A munkalap nem található.'});
     const items=await db.query(`SELECT id,item_type,service_id,product_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes FROM work_order_items WHERE work_order_id=$1::uuid ORDER BY created_at`,[req.params.id]).catch(()=>({rows:[]} as any));
@@ -199,8 +195,28 @@ router.patch('/:id/lifecycle',requireEditor,async(req:AuthRequest,res,next)=>{
   try{
     const scope=(req as any).workOrderScope as Scope,check=await editableWorkOrder(req.params.id,scope);
     if(check.error==='not_found')return res.status(404).json({message:'Másik szalon munkalapja nem módosítható vagy a munkalap nem található.'});
-    if(check.error==='locked')return res.status(409).json({message:`A(z) ${check.row?.work_order_number||'munkalap'} lezárt és archivált; nem módosítható.`});next()
-  }catch(e:any){if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(e)}
+    if(check.error==='locked')return res.status(409).json({message:`A(z) ${check.row?.work_order_number||'munkalap'} lezárt és archivált; nem módosítható.`});
+    const status=String(req.body?.status||'').trim().toLowerCase();
+    if(!WORK_ORDER_STATUSES.has(status))return res.status(400).json({message:'Érvénytelen munkalap státusz.'});
+    if(status==='completed')return res.status(409).json({message:'A munkalap nem zárható le közvetlen státuszváltással. Előbb zárja le a fizetést, majd használja a végleges munkalaplezárást.'});
+    const current=String(check.row?.status||'waiting');
+    if(status===current)return res.json(check.row);
+    if(!WORK_ORDER_NEXT[current]?.has(status))return res.status(409).json({message:`Nem engedélyezett státuszváltás: ${current} → ${status}.`});
+    const cols=await tableColumns('work_orders'),sets:string[]=['status=$2'];
+    if(cols.has('started_at'))sets.push(`started_at=CASE WHEN $2='in_progress' THEN COALESCE(started_at,now()) ELSE started_at END`);
+    if(cols.has('work_started_at'))sets.push(`work_started_at=CASE WHEN $2='in_progress' THEN COALESCE(work_started_at,now()) ELSE work_started_at END`);
+    if(cols.has('arrival_at'))sets.push(`arrival_at=CASE WHEN $2='arrived' THEN COALESCE(arrival_at,now()) ELSE arrival_at END`);
+    if(cols.has('cancelled_at'))sets.push(`cancelled_at=CASE WHEN $2 IN ('cancelled','no_show') THEN COALESCE(cancelled_at,now()) ELSE cancelled_at END`);
+    if(cols.has('status_updated_at'))sets.push('status_updated_at=now()');
+    if(cols.has('updated_at'))sets.push('updated_at=now()');
+    if(cols.has('document_status'))sets.push(`document_status=CASE WHEN $2 IN ('cancelled','no_show') THEN 'cancelled' WHEN $2='in_progress' THEN 'open' ELSE COALESCE(document_status,'draft') END`);
+    const q=await db.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id=$1::uuid RETURNING *`,[req.params.id,status]);
+    res.json(q.rows[0])
+  }catch(e:any){
+    if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});
+    if(e?.code==='55000'||e?.code==='23514')return res.status(409).json({message:e?.message||'A státuszváltás nem engedélyezett.'});
+    console.error('[workorders] lifecycle failed',e?.code||'',e?.message||e);next(e)
+  }
 });
 
 router.post('/:id/items',requireEditor,async(req:AuthRequest,res,next)=>{
@@ -215,8 +231,8 @@ router.post('/:id/items',requireEditor,async(req:AuthRequest,res,next)=>{
     const quantity=Number.isFinite(rawQuantity)?(kind==='product'?Math.max(.01,Math.min(9999,rawQuantity)):Math.max(1,Math.min(99,rawQuantity))):1,discount=Number.isFinite(rawDiscount)?Math.max(0,rawDiscount):0;
     if(!['service','product'].includes(kind)||!itemId)return res.status(400).json({message:'Válasszon szolgáltatást vagy terméket.'});
     let row:any;
-    if(kind==='service')row=(await db.query(`SELECT s.id,COALESCE(NULLIF(to_jsonb(s)->>'name',''),'Szolgáltatás') name,COALESCE(NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,NULLIF(to_jsonb(s)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration FROM services s WHERE s.id=$1::uuid AND COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true`,[itemId])).rows[0];
-    else row=(await db.query(`SELECT p.id,COALESCE(NULLIF(to_jsonb(p)->>'name',''),'Termék') name,COALESCE(NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price FROM products p WHERE p.id=$1::uuid AND COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true`,[itemId])).rows[0];
+    if(kind==='service')row=(await db.query(`SELECT s.id,COALESCE(${jsonText('s','name')},'Szolgáltatás') name,${safeNumeric('s',['promo_price','list_price','base_price','price'])} price,${safeInteger('s','duration_minutes',30)} duration FROM services s WHERE s.id=$1::uuid AND ${activeExpr('s')}=true`,[itemId])).rows[0];
+    else row=(await db.query(`SELECT p.id,COALESCE(${jsonText('p','name')},'Termék') name,${safeNumeric('p',['sale_price','retail_price_gross','price'])} price FROM products p WHERE p.id=$1::uuid AND ${activeExpr('p')}=true`,[itemId])).rows[0];
     if(!row)return res.status(404).json({message:'A kiválasztott tétel nem található vagy nem aktív.'});
     const unit=Number(row.price||0),line=Math.max(0,quantity*unit-discount);
     const q=kind==='service'
@@ -282,7 +298,8 @@ router.patch('/:id',requireEditor,async(req:AuthRequest,res,next)=>{
     const add=(key:string,column:string,value:any,cast='')=>{if(!Object.prototype.hasOwnProperty.call(b,key))return;params.push(value);sets.push(`${column}=$${params.length}${cast}`)};
     add('title','title',String(b.title||'').trim());add('notes','notes',b.notes===null?null:String(b.notes||''));add('employee_id','employee_id',b.employee_id||null,'::uuid');add('client_id','client_id',b.client_id||null,'::uuid');add('client_name','client_name',b.client_name===null?null:String(b.client_name||''));add('client_phone','client_phone',b.client_phone===null?null:String(b.client_phone||''));add('client_email','client_email',b.client_email===null?null:String(b.client_email||''));add('note_for_another_visitor','note_for_another_visitor',Boolean(b.note_for_another_visitor));
     if(!sets.length)return res.status(400).json({message:'Nincs módosítható mező a kérésben.'});
-    const q=await db.query(`UPDATE work_orders SET ${sets.join(',')},updated_at=now() WHERE id=$1::uuid RETURNING *`,params);res.json(q.rows[0])
+    const cols=await tableColumns('work_orders');if(cols.has('updated_at'))sets.push('updated_at=now()');
+    const q=await db.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id=$1::uuid RETURNING *`,params);res.json(q.rows[0])
   }catch(e:any){if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen azonosító a munkalap módosításában.'});next(e)}
 });
 
