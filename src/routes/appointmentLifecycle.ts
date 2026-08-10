@@ -1,4 +1,4 @@
-import {Router} from 'express';
+import {Router,Response,NextFunction} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 
@@ -6,6 +6,15 @@ const router=Router();
 router.use(requireAuth);
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'unknown');
 const allowedCancelReasons=new Set(['Közbejött valami','Betegség','Egyéb']);
+const ADMIN=['admin','administrator','rendszergazda','superadmin','super_admin'];
+const RECEPTION=['receptionist','recepciós','recepcios','reception'];
+const BUSINESS=['location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager'];
+const roles=(raw:any):string[]=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||''));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
+const anyRole=(r:string[],allowed:string[])=>r.some(x=>allowed.includes(x));
+type Scope={isAdmin:boolean;locationId:string|null};
+function resolveScope(req:AuthRequest):Scope|null{const r=roles(req.user?.role);if(anyRole(r,ADMIN))return{isAdmin:true,locationId:null};if(anyRole(r,[...RECEPTION,...BUSINESS]))return{isAdmin:false,locationId:req.user?.location_id?String(req.user.location_id):null};return null}
+function requireEditor(req:AuthRequest,res:Response,next:NextFunction){const scope=resolveScope(req);if(!scope)return res.status(403).json({error:'Foglalást csak adminisztrátor, recepciós vagy üzletvezető mondhat le, illetve jelölhet meg nem jelentként.'});if(!scope.isAdmin&&!scope.locationId)return res.status(403).json({error:'A felhasználóhoz nincs szalon rendelve.'});(req as any).appointmentLifecycleScope=scope;next()}
+router.use(requireEditor);
 
 async function ensureLifecycleSchema(c:any){
   await c.query(`
@@ -38,6 +47,8 @@ async function terminate(req:AuthRequest,res:any,next:any,target:'cancelled'|'no
     await ensureLifecycleSchema(c);
     const ap=(await c.query(`SELECT * FROM appointments WHERE id=$1::uuid FOR UPDATE`,[req.params.id])).rows[0];
     if(!ap){await c.query('ROLLBACK');return res.status(404).json({error:'A foglalás nem található.'});}
+    const scope=(req as any).appointmentLifecycleScope as Scope;
+    if(!scope.isAdmin&&String(ap.location_id||'')!==String(scope.locationId||'')){await c.query('ROLLBACK');return res.status(404).json({error:'A foglalás nem található ezen a szalonon.'});}
     if(String(ap.status||'')==='completed'){await c.query('ROLLBACK');return res.status(409).json({error:'Befejezett időpont nem mondható le és nem jelölhető meg nem jelenésnek.'});}
     if(String(ap.status||'')===target){await c.query('COMMIT');return res.json({appointment:ap,idempotent:true});}
 
