@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 import path from "path";
 import pool from "../db";
+import { ensureChecklistRuntime } from "../checklists/ensureChecklistRuntime";
 
 let migrationPromise: Promise<void> | null = null;
 
@@ -44,6 +45,7 @@ async function ensureSafeHrCore() {
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_name text`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
 }
 
@@ -60,6 +62,7 @@ export function ensureHrV2() {
   if (!migrationPromise) {
     migrationPromise = (async () => {
       await ensureSafeHrCore();
+      await ensureChecklistRuntime();
 
       for (const file of RUNTIME_FILES) {
         const version = file.replace(/\.sql$/i, "");
@@ -69,9 +72,6 @@ export function ensureHrV2() {
           const sql = await readFile(sqlPath, "utf8");
           await pool.query(sql);
         } catch (error: any) {
-          // Legacy telepítéseken egy régi HR migráció részben már jelen lehet,
-          // eltérő PK/FK típussal. Ez nem állíthatja le a teljes HR/checklist/payroll API-t.
-          // A célzott runtime bootstrapok a szükséges táblákat/mezőket külön biztosítják.
           console.warn(`[HR runtime] ${file} kihagyva:`, error?.message || error);
         }
       }
