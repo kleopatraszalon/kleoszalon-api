@@ -2,6 +2,7 @@ import { Router } from "express";
 import crypto from "crypto";
 import db from "../db";
 import ensureOnlineBooking from "../booking/ensureOnlineBooking";
+import { ensureBookingWorkOrder, ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 
 const router = Router();
 const asUuidList = (value: unknown) => String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -192,6 +193,7 @@ router.post("/book", async (req, res) => {
   const cx = await db.connect();
   try {
     await ensureOnlineBooking();
+    await ensureBookingWorkOrderSchema(cx);
     await cx.query("BEGIN");
     const cfgResult = await cx.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`, [locationId]);
     const cfg = cfgResult.rows[0] || { enabled: true, online_discount_percent: 5, require_staff_confirmation: true };
@@ -296,9 +298,10 @@ router.post("/book", async (req, res) => {
        VALUES($1::uuid,$2,'public',$3::jsonb,$4)`,
       [appointment.rows[0].id, bookingSource === "online_voice" ? "voice_created" : "online_created", JSON.stringify({ status, start_time: start, end_time: end, employee_id: employeeId, booking_source: bookingSource }), bookingSource === "online_voice" ? "Hangalapú online foglalás" : "Online foglalás"]
     );
+    const workOrder = await ensureBookingWorkOrder(cx, String(appointment.rows[0].id), "public");
 
     await cx.query("COMMIT");
-    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource });
+    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource, work_order_id: workOrder.work_order_id, work_order_number: workOrder.work_order_number });
   } catch (error: any) {
     await cx.query("ROLLBACK").catch(() => undefined);
     res.status(500).json({ error: "Az online foglalás mentése sikertelen.", detail: error?.message || String(error) });
@@ -327,20 +330,30 @@ router.post("/waitlist", async (req, res) => {
 });
 
 router.post("/cancel/:token", async (req, res) => {
+  const cx=await db.connect();
   try {
     await ensureOnlineBooking();
+    await ensureBookingWorkOrderSchema(cx);
     const reason = String(req.body?.reason || "Online lemondás").trim();
-    const { rows } = await db.query(
-      `UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=now(),updated_at=now()
-       WHERE cancellation_token=$1::uuid AND status NOT IN ('cancelled','canceled','completed','paid') RETURNING id`,
-      [req.params.token, reason]
-    );
-    if (!rows[0]) return res.status(404).json({ error: "A foglalás nem található vagy már nem mondható le." });
-    await db.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1::uuid,'cancelled','public',$2)`, [rows[0].id, reason]);
-    res.json({ ok: true, id: rows[0].id });
+    await cx.query('BEGIN');
+    const appointment=(await cx.query(`SELECT * FROM appointments WHERE cancellation_token=$1::uuid FOR UPDATE`,[req.params.token])).rows[0];
+    if(!appointment||['cancelled','canceled','completed','paid'].includes(String(appointment.status||'').toLowerCase())){await cx.query('ROLLBACK');return res.status(404).json({ error: "A foglalás nem található vagy már nem mondható le." })}
+    let workOrder:any=null;
+    if(appointment.work_order_id){
+      workOrder=(await cx.query(`SELECT * FROM work_orders WHERE id=$1::uuid FOR UPDATE`,[appointment.work_order_id])).rows[0]||null;
+      if(workOrder?.locked_at||workOrder?.archived_at||['completed','cancelled','no_show'].includes(String(workOrder?.status||'').toLowerCase())){await cx.query('ROLLBACK');return res.status(409).json({error:'A kapcsolódó munkalap már lezárt; a lemondáshoz kérjük, vegye fel a kapcsolatot a szalonnal.'})}
+      const paid=Number((await cx.query(`SELECT COALESCE(SUM(amount),0)::numeric total FROM work_order_payments WHERE work_order_id=$1`,[appointment.work_order_id])).rows[0]?.total||0);
+      if(paid>0||workOrder?.financial_closed_at){await cx.query('ROLLBACK');return res.status(409).json({error:'A foglaláshoz már fizetés tartozik; online lemondás helyett kérjük, vegye fel a kapcsolatot a szalonnal.'})}
+    }
+    const updated=(await cx.query(`UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=now(),updated_at=now() WHERE id=$1::uuid RETURNING id`,[appointment.id,reason])).rows[0];
+    if(workOrder)await cx.query(`UPDATE work_orders SET status='cancelled',status_updated_at=now(),updated_at=now() WHERE id=$1::uuid`,[workOrder.id]);
+    await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1::uuid,'cancelled','public',$2)`, [appointment.id, reason]);
+    await cx.query('COMMIT');
+    res.json({ ok: true, id: updated.id, work_order_id: workOrder?.id||null });
   } catch (error: any) {
+    await cx.query('ROLLBACK').catch(()=>undefined);
     res.status(500).json({ error: "A lemondás sikertelen.", detail: error?.message || String(error) });
-  }
+  } finally {cx.release()}
 });
 
 export default router;
