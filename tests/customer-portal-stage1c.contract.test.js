@@ -32,6 +32,14 @@ test('customer reschedule rejects paid or locked work orders and revalidates ava
   assert.match(src,/employee_service_overrides/);
 });
 
+test('customer reschedule uses stable ISO local dates for PostgreSQL date parameters',()=>{
+  const src=read('src/routes/customerPortalSelfService.ts');
+  assert.match(src,/to_char\([^;]+YYYY-MM-DD[^;]+AS booking_day/);
+  assert.match(src,/local\.booking_day/);
+  assert.doesNotMatch(src,/::date day,/);
+  assert.doesNotMatch(src,/String\(local\.day\)/);
+});
+
 test('profile self-service keeps email read-only and limits notification preference',()=>{
   const src=read('src/routes/customerPortalSelfService.ts');
   assert.match(src,/email_read_only:true/);
