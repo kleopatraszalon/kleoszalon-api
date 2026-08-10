@@ -56,3 +56,22 @@ test('method based RBAC maps writes to create/edit/delete capabilities',()=>{
   assert.match(middleware,/case\s+"DELETE"\s*:\s*action\s*=\s*"can_delete"/);
   assert.match(middleware,/default\s*:\s*action\s*=\s*"can_view"/);
 });
+
+test('startup creates all stage-1 masterdata menus before seeding permissions',()=>{
+  const ensure=read('src/virSpec/ensureVirSpecModules.ts');
+  const productMenus=ensure.indexOf('20260807_PRODUCT_MASTERDATA_MENU.sql');
+  const serviceMenus=ensure.indexOf('20260807_MASTERDATA_SERVICES_MENU.sql');
+  const rbacSeed=ensure.indexOf('20260810_MASTERDATA_RBAC_STAGE1.sql');
+
+  assert.ok(productMenus>=0,'product masterdata menu migration must run at startup');
+  assert.ok(serviceMenus>=0,'service masterdata menu migration must run at startup');
+  assert.ok(rbacSeed>productMenus&&rbacSeed>serviceMenus,'RBAC seed must run after masterdata menus exist');
+});
+
+test('stage-1 RBAC seed covers every protected masterdata menu without overwriting custom permissions',()=>{
+  const seed=read('src/sql/20260810_MASTERDATA_RBAC_STAGE1.sql');
+  for(const [,menuCode] of guardedRoutes) assert.match(seed,new RegExp(`['\"]${escapeRe(menuCode)}['\"]`));
+  assert.match(seed,/SELECT\s+'admin'[\s\S]*all_locations/);
+  assert.match(seed,/SELECT\s+'manager'[\s\S]*true,true,true,false/);
+  assert.match(seed,/ON CONFLICT\(role_key,menu_id\) DO NOTHING/g);
+});
