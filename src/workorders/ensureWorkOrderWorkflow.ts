@@ -12,6 +12,10 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS arrival_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS work_started_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS work_finished_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS started_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS completed_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS status_updated_at timestamptz NOT NULL DEFAULT now();
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS closed_at timestamptz;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS closed_by text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS cancelled_by text;
@@ -23,6 +27,13 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_gross numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paid_total numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS amount_due numeric(14,2);
+
+    UPDATE work_orders
+    SET started_at=COALESCE(started_at,work_started_at),
+        work_started_at=COALESCE(work_started_at,started_at),
+        completed_at=COALESCE(completed_at,work_finished_at),
+        work_finished_at=COALESCE(work_finished_at,completed_at)
+    WHERE started_at IS NULL OR work_started_at IS NULL OR completed_at IS NULL OR work_finished_at IS NULL;
 
     DO $$
     BEGIN
@@ -56,6 +67,9 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
 
     CREATE INDEX IF NOT EXISTS work_orders_document_status_idx
       ON work_orders(document_status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS work_orders_status_idx ON work_orders(status);
+    CREATE INDEX IF NOT EXISTS work_orders_started_at_idx ON work_orders(started_at);
+    CREATE INDEX IF NOT EXISTS work_orders_completed_at_idx ON work_orders(completed_at);
 
     CREATE TABLE IF NOT EXISTS work_order_status_history (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
