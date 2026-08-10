@@ -2,6 +2,7 @@ import { Router, Response, NextFunction } from "express";
 import db from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { ensureCustomerPortal } from "../customerPortal/ensureCustomerPortal";
+import customerPortalSelfServiceRouter from "./customerPortalSelfService";
 
 const router = Router();
 router.use(requireAuth);
@@ -21,6 +22,7 @@ function roleList(raw:unknown):string[]{
 function isCustomer(req:AuthRequest){return roleList(req.user?.role).some(r=>["customer","client","guest","ugyfel","ügyfél","vendeg","vendég"].includes(r));}
 function requireCustomer(req:AuthRequest,res:Response,next:NextFunction){if(!isCustomer(req))return res.status(403).json({error:"Ez a felület csak ügyfél belépéssel használható."});next();}
 router.use(requireCustomer);
+router.use(customerPortalSelfServiceRouter);
 
 async function resolveCustomer(req:AuthRequest):Promise<Customer|null>{
   const email=String(req.user?.email??"").trim();
@@ -64,7 +66,7 @@ router.get("/dashboard",asyncRoute(async(req,res)=>{
          LEFT JOIN services s ON s.id::text=b.service_id
         WHERE p.account_id=$1::uuid AND p.status='active' AND (p.valid_until IS NULL OR p.valid_until>=CURRENT_DATE)
         GROUP BY p.id,t.id
-        ORDER BY p.valid_until NULLS LAST,p.created_at DESC`,[accountId]
+        ORDER BY p.valid_until NULLS LAST`,[accountId]
     ):Promise.resolve({rows:[]} as any),
     db.query(
       `SELECT cc.id::text campaign_id,cc.name,cc.discount_type,cc.discount_value,cc.valid_from,cc.valid_until,
