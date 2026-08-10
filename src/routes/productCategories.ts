@@ -1,9 +1,11 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
 import { requireAuth } from "../middleware/auth";
+import { requireMenuPermissionByMethod } from "../middleware/menuPermission";
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireMenuPermissionByMethod("masterdata.product-categories"));
 
 router.get("/", async (_req: Request, res: Response) => {
   try {
