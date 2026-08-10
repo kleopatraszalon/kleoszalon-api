@@ -25,6 +25,30 @@ async function relationExists(name:string){
   return Boolean(q.rows[0]?.ok)
 }
 
+let workOrderItemsSchemaReady=false;
+async function ensureWorkOrderItemsSchema(){
+  if(workOrderItemsSchemaReady)return;
+  await db.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+  await db.query(`CREATE TABLE IF NOT EXISTS work_order_items(
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),work_order_id uuid NOT NULL,item_type text,item_name text,
+    service_id uuid,product_id uuid,quantity numeric(12,3) NOT NULL DEFAULT 1,unit_price numeric(14,2) NOT NULL DEFAULT 0,
+    discount_amount numeric(14,2) NOT NULL DEFAULT 0,line_total numeric(14,2) NOT NULL DEFAULT 0,duration_minutes integer,
+    created_at timestamptz NOT NULL DEFAULT now())`);
+  for(const sql of [
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS item_type text`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS item_name text`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS service_id uuid`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS product_id uuid`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS quantity numeric(12,3) NOT NULL DEFAULT 1`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS unit_price numeric(14,2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS discount_amount numeric(14,2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS line_total numeric(14,2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS duration_minutes integer`,
+    `ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`
+  ])await db.query(sql);
+  workOrderItemsSchemaReady=true
+}
+
 async function resolveScope(req:AuthRequest):Promise<Scope>{
   const r=roles(req.user?.role),uid=String(req.user?.id||''),email=String(req.user?.email||'').trim();
   if(anyRole(r,ADMIN))return{kind:'all',locationId:null,employeeId:null,customerId:null,canEdit:true,roleLabel:'admin'};
@@ -96,8 +120,12 @@ async function editableWorkOrder(id:string,scope:Scope){
 }
 
 async function recalc(workOrderId:string){
-  const exists=(await db.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;
-  if(exists)await db.query(`SELECT recalc_work_order_totals($1::uuid)`,[workOrderId])
+  try{
+    const exists=(await db.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;
+    if(exists)await db.query(`SELECT recalc_work_order_totals($1::uuid)`,[workOrderId])
+  }catch(e:any){
+    console.warn('[workorders] total recalculation skipped:',e?.code||'',e?.message||e)
+  }
 }
 
 router.get('/dashboard/summary',async(req:AuthRequest,res,next)=>{
@@ -136,10 +164,12 @@ router.get('/:id/catalog',requireVisible,async(req:AuthRequest,res,next)=>{
   try{
     const wo=(await db.query(`SELECT location_id::text FROM work_orders WHERE id=$1::uuid`,[req.params.id])).rows[0];
     const locationId=String(wo?.location_id||'');
-    const [services,products]=await Promise.all([
-      db.query(`SELECT s.id::text id,s.name,COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric price,COALESCE(s.duration_minutes,30)::int duration_minutes,COALESCE(st.name,'Egyéb') category_name FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id WHERE COALESCE(s.is_active,true)=true AND ($1='' OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id::text=$1)) ORDER BY COALESCE(st.name,'Egyéb'),s.name`,[locationId]),
-      db.query(`SELECT p.id::text id,p.name,COALESCE(p.sale_price,p.retail_price_gross,0)::numeric price,COALESCE(p.main_category,p.sub_category,'Termék') category_name FROM products p WHERE COALESCE(p.is_active,true)=true ORDER BY COALESCE(p.main_category,p.sub_category,'Termék'),p.name`)
-    ]);
+    const hasServiceTypes=await relationExists('service_types'),hasServiceLocations=await relationExists('service_locations');
+    const serviceCategory=hasServiceTypes?`COALESCE((SELECT NULLIF(to_jsonb(st)->>'name','') FROM service_types st WHERE st.id::text=(to_jsonb(s)->>'service_type_id') LIMIT 1),'Egyéb')`:`'Egyéb'`;
+    const locationFilter=hasServiceLocations?` AND ($1='' OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id::text=s.id::text) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id::text=s.id::text AND sl.location_id::text=$1))`:``;
+    const serviceSql=`SELECT s.id::text id,COALESCE(NULLIF(to_jsonb(s)->>'name',''),'Szolgáltatás') name,COALESCE(NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,NULLIF(to_jsonb(s)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration_minutes,${serviceCategory} category_name FROM services s WHERE COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true${locationFilter} ORDER BY category_name,name`;
+    const productSql=`SELECT p.id::text id,COALESCE(NULLIF(to_jsonb(p)->>'name',''),'Termék') name,COALESCE(NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(p)->>'main_category',''),NULLIF(to_jsonb(p)->>'sub_category',''),NULLIF(to_jsonb(p)->>'category_name',''),'Termék') category_name FROM products p WHERE COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true ORDER BY category_name,name`;
+    const [services,products]=await Promise.all([db.query(serviceSql,hasServiceLocations?[locationId]:[]),db.query(productSql)]);
     res.json({services:services.rows,products:products.rows})
   }catch(e){next(e)}
 });
@@ -179,18 +209,24 @@ router.post('/:id/items',requireEditor,async(req:AuthRequest,res,next)=>{
     if(check.error==='not_found')return res.status(404).json({message:'A munkalap nem található vagy másik szalonhoz tartozik.'});
     if(check.error==='locked')return res.status(409).json({message:'A lezárt munkalap tételei nem módosíthatók.'});
     if(check.row?.financial_closed_at)return res.status(409).json({message:'A pénzügyileg lezárt munkalap tételei már nem módosíthatók.'});
-    const kind=String(req.body?.item_type||'').toLowerCase(),itemId=String(req.body?.item_id||'').trim(),quantity=Math.max(1,Math.min(99,Number(req.body?.quantity||1))),discount=Math.max(0,Number(req.body?.discount_amount||0));
+    await ensureWorkOrderItemsSchema();
+    const kind=String(req.body?.item_type||'').toLowerCase(),itemId=String(req.body?.item_id||'').trim();
+    const rawQuantity=Number(req.body?.quantity??1),rawDiscount=Number(req.body?.discount_amount??0);
+    const quantity=Number.isFinite(rawQuantity)?Math.max(1,Math.min(99,rawQuantity)):1,discount=Number.isFinite(rawDiscount)?Math.max(0,rawDiscount):0;
     if(!['service','product'].includes(kind)||!itemId)return res.status(400).json({message:'Válasszon szolgáltatást vagy terméket.'});
     let row:any;
-    if(kind==='service')row=(await db.query(`SELECT id,name,COALESCE(promo_price,list_price,base_price,0)::numeric price,COALESCE(duration_minutes,30)::int duration FROM services WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[itemId])).rows[0];
-    else row=(await db.query(`SELECT id,name,COALESCE(sale_price,retail_price_gross,0)::numeric price FROM products WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[itemId])).rows[0];
+    if(kind==='service')row=(await db.query(`SELECT s.id,COALESCE(NULLIF(to_jsonb(s)->>'name',''),'Szolgáltatás') name,COALESCE(NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,NULLIF(to_jsonb(s)->>'price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration FROM services s WHERE s.id=$1::uuid AND COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true`,[itemId])).rows[0];
+    else row=(await db.query(`SELECT p.id,COALESCE(NULLIF(to_jsonb(p)->>'name',''),'Termék') name,COALESCE(NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price FROM products p WHERE p.id=$1::uuid AND COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true`,[itemId])).rows[0];
     if(!row)return res.status(404).json({message:'A kiválasztott tétel nem található vagy nem aktív.'});
     const unit=Number(row.price||0),line=Math.max(0,quantity*unit-discount);
     const q=kind==='service'
       ?await db.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[req.params.id,row.id,row.name,quantity,unit,discount,line,row.duration])
       :await db.query(`INSERT INTO work_order_items(work_order_id,item_type,product_id,item_name,quantity,unit_price,discount_amount,line_total) VALUES($1,'product',$2,$3,$4,$5,$6,$7) RETURNING *`,[req.params.id,row.id,row.name,quantity,unit,discount,line]);
     await recalc(req.params.id);res.status(201).json(q.rows[0])
-  }catch(e:any){if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen tételazonosító.'});next(e)}
+  }catch(e:any){
+    if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen tételazonosító.'});
+    console.error('[workorders] item insert failed',e?.code||'',e?.message||e);next(e)
+  }
 });
 
 router.delete('/:id/items/:itemId',requireEditor,async(req:AuthRequest,res,next)=>{
@@ -199,6 +235,7 @@ router.delete('/:id/items/:itemId',requireEditor,async(req:AuthRequest,res,next)
     if(check.error==='not_found')return res.status(404).json({message:'A munkalap nem található vagy másik szalonhoz tartozik.'});
     if(check.error==='locked')return res.status(409).json({message:'A lezárt munkalap tételei nem módosíthatók.'});
     if(check.row?.financial_closed_at)return res.status(409).json({message:'A pénzügyileg lezárt munkalap tételei már nem módosíthatók.'});
+    await ensureWorkOrderItemsSchema();
     const q=await db.query(`DELETE FROM work_order_items WHERE id=$1::uuid AND work_order_id=$2::uuid RETURNING id`,[req.params.itemId,req.params.id]);
     if(!q.rows[0])return res.status(404).json({message:'A munkalaptétel nem található.'});await recalc(req.params.id);res.json({ok:true})
   }catch(e:any){if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen tételazonosító.'});next(e)}
