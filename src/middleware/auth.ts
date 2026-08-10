@@ -13,21 +13,24 @@ export interface AuthRequest extends Request {
   };
 }
 
+/**
+ * Authentication tokens are accepted only from transport locations that are
+ * intended for credentials: the Authorization header or the HttpOnly cookie.
+ * Query-string/body tokens are deliberately rejected because URLs and request
+ * bodies can be copied into browser history, proxy/access logs and diagnostics.
+ */
 function getTokenFromReq(req: Request): string | null {
   const authHeader =
     (req.headers["authorization"] as string | undefined) ||
     (req.headers["Authorization"] as string | undefined);
 
   if (authHeader && /^Bearer\s+/i.test(authHeader)) {
-    return authHeader.replace(/^Bearer\s+/i, "");
+    return authHeader.replace(/^Bearer\s+/i, "").trim() || null;
   }
 
   const cookieToken = (req as any).cookies?.token;
-  if (cookieToken) return cookieToken;
-
-  if (typeof req.query.token === "string") return req.query.token;
-  if (req.body && typeof (req.body as any).token === "string") {
-    return (req.body as any).token;
+  if (typeof cookieToken === "string" && cookieToken.trim()) {
+    return cookieToken.trim();
   }
 
   return null;
