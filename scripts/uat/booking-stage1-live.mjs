@@ -70,6 +70,21 @@ async function cleanup(){
   }catch(error){console.error('⚠️ Cleanup hiba:',error.message);}
 }
 
+async function cleanupStaleDemoAppointments(appointments,currentId){
+  if(!Array.isArray(appointments))return 0;
+  let cleaned=0;
+  for(const item of appointments){
+    if(String(item?.id||'')===String(currentId||''))continue;
+    try{
+      const result=(await request(`/api/customer-portal/self-service/appointments/${encodeURIComponent(item.id)}/cancel`,{method:'POST',auth:true,body:{reason:`${UAT_PREFIX} korábbi DEMO UAT takarítás`}})).data;
+      if(result?.ok)cleaned+=1;
+    }catch(error){
+      console.warn(`⚠️ Korábbi DEMO időpont nem takarítható: ${item?.id||'?'} — ${error.message}`);
+    }
+  }
+  return cleaned;
+}
+
 try{
   const health=(await request('/api/health')).data;
   if(!health?.ok||health?.db?.ok!==true)throw new Error(`API/DB health nem OK: ${JSON.stringify(health)}`);
@@ -124,7 +139,11 @@ try{
   if(profile?.email_read_only!==true)throw new Error('Az ügyfélprofil e-mail mezője nem read-only jelzésű.');
   logStep('CRM self-service profil','PASS',`${profile.full_name} · preferred_contact=${profile.preferred_contact||'n/a'}`);
 
-  const appointments=(await request('/api/customer-portal/self-service/appointments',{auth:true})).data;
+  let appointments=(await request('/api/customer-portal/self-service/appointments',{auth:true})).data;
+  const cleaned=await cleanupStaleDemoAppointments(appointments,created.id);
+  if(cleaned)logStep('Korábbi DEMO UAT időpontok takarítása','PASS',`${cleaned} db korábbi aktív DEMO időpont lemondva`);
+  if(cleaned)appointments=(await request('/api/customer-portal/self-service/appointments',{auth:true})).data;
+
   const own=Array.isArray(appointments)?appointments.find(x=>String(x.id)===String(created.id)):null;
   if(!own)throw new Error('A frissen létrehozott foglalás nem jelent meg a saját időpontok között.');
   if(!Array.isArray(own.services)||!own.services.length)throw new Error('A saját időpont szolgáltatáslistája üres.');
