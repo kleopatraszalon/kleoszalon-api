@@ -2,6 +2,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { enforceKnownModuleAccess } from "./pathAccess";
+import JWT_SECRET from "../security/jwtSecret";
 
 export interface AuthRequest extends Request {
   user?: {
@@ -11,8 +12,6 @@ export interface AuthRequest extends Request {
     location_id?: number | null;
   };
 }
-
-const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
 function getTokenFromReq(req: Request): string | null {
   const authHeader =
