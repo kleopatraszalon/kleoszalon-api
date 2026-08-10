@@ -23,11 +23,19 @@ function resolveScope(req:AuthRequest){
   return {ok:false,status:403,message:"A bérszámfejtési állapothoz adminisztrátori vagy üzletvezetői jogosultság szükséges."};
 }
 
+function isRecoverablePgError(code:string){
+  if(!/^[0-9A-Z]{5}$/.test(code))return false;
+  if(code.startsWith("08"))return false;
+  if(["57P01","57P02","57P03"].includes(code))return false;
+  return true;
+}
+
 async function safeOne(section:string,sql:string,params:any[],fallback:any,warnings:Warning[]){
   try{return (await db.query(sql,params)).rows[0]||fallback}
   catch(error:any){
     const code=String(error?.code||"unknown");
-    if(["42P01","42703","42804","42883"].includes(code)){
+    if(isRecoverablePgError(code)){
+      console.warn(`[payroll-readiness] ${section} partial fallback`,code,error?.message||error);
       warnings.push({section,code,message:String(error?.message||error)});
       return fallback;
     }
