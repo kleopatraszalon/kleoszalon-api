@@ -65,6 +65,67 @@ export async function repairBookingWorkOrderStatusConstraints(c:any){
       END IF;
     END $$;
   `);
+
+  // Legacy compatibility: a régi séma order_number, az új workflow work_order_number
+  // néven tárolja ugyanazt a hivatalos munkalapszámot. Ha mindkét oszlop létezik,
+  // a meglévő adatokat visszatöltjük és BEFORE triggerrel kétirányúan szinkronban tartjuk.
+  // Így a legacy order_number NOT NULL feltétel is teljesül új munkalap beszúrásakor.
+  await c.query(`
+    DO $$
+    BEGIN
+      IF to_regclass('public.work_orders') IS NOT NULL
+         AND EXISTS(
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='work_orders' AND column_name='order_number'
+         )
+         AND EXISTS(
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='work_orders' AND column_name='work_order_number'
+         ) THEN
+
+        UPDATE work_orders
+           SET work_order_number=order_number
+         WHERE work_order_number IS NULL AND order_number IS NOT NULL;
+
+        UPDATE work_orders
+           SET order_number=work_order_number
+         WHERE order_number IS NULL AND work_order_number IS NOT NULL;
+
+        CREATE OR REPLACE FUNCTION sync_work_order_number_columns()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $sync$
+        BEGIN
+          IF TG_OP='INSERT' THEN
+            IF NEW.work_order_number IS NOT NULL THEN
+              NEW.order_number:=NEW.work_order_number;
+            ELSIF NEW.order_number IS NOT NULL THEN
+              NEW.work_order_number:=NEW.order_number;
+            END IF;
+          ELSE
+            IF NEW.work_order_number IS DISTINCT FROM OLD.work_order_number
+               AND NEW.work_order_number IS NOT NULL THEN
+              NEW.order_number:=NEW.work_order_number;
+            ELSIF NEW.order_number IS DISTINCT FROM OLD.order_number
+               AND NEW.order_number IS NOT NULL THEN
+              NEW.work_order_number:=NEW.order_number;
+            ELSIF NEW.work_order_number IS NULL AND NEW.order_number IS NOT NULL THEN
+              NEW.work_order_number:=NEW.order_number;
+            ELSIF NEW.order_number IS NULL AND NEW.work_order_number IS NOT NULL THEN
+              NEW.order_number:=NEW.work_order_number;
+            END IF;
+          END IF;
+          RETURN NEW;
+        END
+        $sync$;
+
+        DROP TRIGGER IF EXISTS trg_sync_work_order_number_columns ON work_orders;
+        CREATE TRIGGER trg_sync_work_order_number_columns
+          BEFORE INSERT OR UPDATE OF order_number,work_order_number ON work_orders
+          FOR EACH ROW EXECUTE FUNCTION sync_work_order_number_columns();
+      END IF;
+    END $$;
+  `);
 }
 
 export default repairBookingWorkOrderStatusConstraints;
