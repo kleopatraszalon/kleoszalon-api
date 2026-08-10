@@ -2,8 +2,11 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
 import onlineBookingRouter from "./onlineBooking";
+import bookingVoiceRouter from "./bookingVoice";
 
 const router = Router();
+// A speciális voice route az általános booking router előtt fut.
+router.use("/booking/voice", bookingVoiceRouter);
 router.use("/booking", onlineBookingRouter);
 
 const PUBLIC_SALONS = [
