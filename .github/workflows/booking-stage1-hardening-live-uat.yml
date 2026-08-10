@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      # Second run intentionally gives Render's main-branch deployment time to settle.
       - name: Run live hardening UAT with cleanup
         env:
           UAT_API_BASE: https://kleoszalon-api-1.onrender.com
