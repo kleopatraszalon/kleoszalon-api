@@ -27,6 +27,7 @@ export function ensureChecklistRuntime() {
 
       await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid`);
       await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true`);
+      await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_name text`);
       await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
 
       await pool.query(`
