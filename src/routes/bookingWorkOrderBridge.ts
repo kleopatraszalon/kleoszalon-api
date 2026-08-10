@@ -141,7 +141,8 @@ async function ensureOne(c:any,appointmentId:string,scope:Scope,createdBy:string
 }
 
 router.post('/ensure',async(req:AuthRequest,res,next)=>{
-  const ids=Array.from(new Set((Array.isArray(req.body?.appointment_ids)?req.body.appointment_ids:[]).map(String).filter(Boolean))).slice(0,100);
+  const sourceIds:any[]=Array.isArray(req.body?.appointment_ids)?req.body.appointment_ids:[];
+  const ids:string[]=Array.from(new Set<string>(sourceIds.map((value:any)=>String(value)).filter(Boolean))).slice(0,100);
   if(!ids.length)return res.json({items:[]});
   const c=await db.connect();
   try{
