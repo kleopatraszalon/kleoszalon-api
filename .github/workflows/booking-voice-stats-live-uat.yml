@@ -1,0 +1,32 @@
+name: Voice Booking 1E live UAT
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/booking-voice-stats-live.mjs'
+      - '.github/workflows/booking-voice-stats-live-uat.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: booking-voice-stats-live-uat
+  cancel-in-progress: false
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run production-safe Voice Booking 1E live UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_FRONTEND_BASE: https://kleoszalon-frontend.onrender.com
+          UAT_ADMIN_IDENTIFIER: admin1
+          UAT_ADMIN_PASSWORD: Teszt1234!
+        run: node scripts/uat/booking-voice-stats-live.mjs
