@@ -30,11 +30,12 @@ test('booking POST cannot bypass working schedule or salon booking window',()=>{
   assert.match(src,/booking_horizon_days/);
 });
 
-test('booking schedule local date SQL uses a non-reserved explicit alias',()=>{
+test('booking schedule local date SQL uses ISO text and a non-reserved alias',()=>{
   const src=read('src/routes/bookingSchedule.ts');
-  assert.match(src,/::date AS booking_day/);
+  assert.match(src,/to_char\([^;]+YYYY-MM-DD[^;]+AS booking_day/);
   assert.match(src,/local\.booking_day/);
   assert.doesNotMatch(src,/::date day,/);
+  assert.doesNotMatch(src,/String\(local\.booking_day\)/);
 });
 
 test('multi-service duration and employee eligibility are preserved in schedule-aware availability',()=>{
