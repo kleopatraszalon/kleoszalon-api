@@ -11,6 +11,13 @@ test('schedule booking router is mounted before legacy online booking router',()
   assert.ok(schedule>=0&&legacy>=0&&schedule<legacy);
 });
 
+test('direct legacy /api/public/booking alias cannot bypass the schedule guard',()=>{
+  const src=read('src/routes/onlineBooking.ts');
+  assert.match(src,/import bookingScheduleRouter from "\.\/bookingSchedule"/);
+  assert.match(src,/req\.baseUrl\|\|""\)===\"\/api\/public\/booking\"/);
+  assert.match(src,/bookingScheduleRouter as any/);
+});
+
 test('availability uses published work shifts when a published schedule exists',()=>{
   const src=read('src/routes/bookingSchedule.ts');
   assert.match(src,/work_shifts/);
