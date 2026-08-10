@@ -2,6 +2,7 @@ import {Router,Response,NextFunction} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {ensureBookingWorkOrder,ensureBookingWorkOrderSchema,type BookingWorkOrderResult} from '../services/bookingWorkOrder';
+import {repairBookingWorkOrderStatusConstraints} from '../booking/repairBookingWorkOrderStatusConstraints';
 
 const router=Router();
 router.use(requireAuth);
@@ -20,12 +21,17 @@ function bridgeError(res:Response,error:any,stage:string,next:NextFunction){
   const code=String(error?.code||error?.publicCode||'');
   if(code==='22P02')return res.status(400).json({message:'Érvénytelen foglalásazonosító.',error_code:code,stage});
   if(error?.httpStatus)return res.status(error.httpStatus).json({message:error.message,error_code:error.publicCode||code||undefined,stage});
-  if(['42P01','42703','42804','42830','42883'].includes(code)){
-    console.error(`[booking-workorder] ${stage} schema error`,code,error?.message||error);
-    return res.status(503).json({message:'A foglalás–munkalap adatbázis séma frissítése még nem teljes. Az oldal újratöltése után próbálja újra.',error_code:code,stage});
+  if(['42P01','42703','42804','42830','42883','23514','25P02'].includes(code)){
+    console.error(`[booking-workorder] ${stage} schema/lifecycle error`,code,error?.message||error);
+    return res.status(503).json({message:'A foglalás–munkalap életciklus adatbázis-szabálya nem konzisztens. A javítás automatikusan lefut; frissítse az oldalt és próbálja újra.',error_code:code,stage});
   }
   console.error(`[booking-workorder] ${stage} error`,code,error?.message||error);
   return next(error);
+}
+
+async function prepareBridgeSchema(c:any){
+  await ensureBookingWorkOrderSchema(c);
+  await repairBookingWorkOrderStatusConstraints(c);
 }
 
 router.post('/ensure',async(req:AuthRequest,res,next)=>{
@@ -35,7 +41,7 @@ router.post('/ensure',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   let stage='schema';
   try{
-    await ensureBookingWorkOrderSchema(c);
+    await prepareBridgeSchema(c);
     stage='transaction';await c.query('BEGIN');
     const scope=(req as any).bookingWorkOrderScope as Scope;
     const items:BookingWorkOrderResult[]=[];
@@ -48,7 +54,7 @@ router.post('/appointments/:id/arrive',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   let stage='schema';
   try{
-    await ensureBookingWorkOrderSchema(c);
+    await prepareBridgeSchema(c);
     stage='transaction';await c.query('BEGIN');
     const scope=(req as any).bookingWorkOrderScope as Scope;
     stage='scope';await assertVisible(c,String(req.params.id),scope);
@@ -63,10 +69,13 @@ router.post('/appointments/:id/arrive',async(req:AuthRequest,res,next)=>{
     if(!['in_progress','completed','cancelled','no_show'].includes(String(wo.status||'').toLowerCase())){
       stage='workorder-arrive';await c.query(`UPDATE work_orders SET status='arrived',status_updated_at=now(),updated_at=now() WHERE id::text=$1`,[wo.id]);
       const hasHistory=(await c.query(`SELECT to_regclass('public.work_order_status_history') IS NOT NULL ok`)).rows[0]?.ok;
-      if(hasHistory)await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata) VALUES($1,'operational',$2,'arrived',$3,'APPOINTMENT_ARRIVAL',$4,$5::jsonb)`,[wo.id,wo.status||'waiting',actor(req),'Vendég érkeztetése a foglalási naptárból',JSON.stringify({appointment_id:req.params.id})]).catch(()=>undefined)
+      if(hasHistory){
+        stage='workorder-history';
+        await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata) VALUES($1,'service',$2,'arrived',$3,'APPOINTMENT_ARRIVAL',$4,$5::jsonb)`,[wo.id,wo.status||'waiting',actor(req),'Vendég érkeztetése a foglalási naptárból',JSON.stringify({appointment_id:req.params.id})]);
+      }
     }
     const hasLog=(await c.query(`SELECT to_regclass('public.appointment_change_log') IS NOT NULL ok`)).rows[0]?.ok;
-    if(hasLog)await c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1,'arrived',$2,$3)`,[req.params.id,actor(req),`Kapcsolt munkalap: ${wo.work_order_number||wo.id}`]).catch(()=>undefined);
+    if(hasLog){stage='appointment-history';await c.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,note) VALUES($1,'arrived',$2,$3)`,[req.params.id,actor(req),`Kapcsolt munkalap: ${wo.work_order_number||wo.id}`]);}
     stage='commit';await c.query('COMMIT');res.json({ok:true,appointment_id:req.params.id,appointment_status:apStatus==='in_progress'?'in_progress':'arrived',work_order_id:wo.id,work_order_number:wo.work_order_number,created:ensured.created});
   }catch(error:any){await c.query('ROLLBACK').catch(()=>undefined);return bridgeError(res,error,stage,next)}finally{c.release()}
 });
