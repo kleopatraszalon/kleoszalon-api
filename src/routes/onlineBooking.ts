@@ -3,8 +3,19 @@ import crypto from "crypto";
 import db from "../db";
 import ensureOnlineBooking from "../booking/ensureOnlineBooking";
 import { ensureBookingWorkOrder, ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
+import bookingScheduleRouter from "./bookingSchedule";
 
 const router = Router();
+
+// A régi /api/public/booking alias továbbra is kompatibilis marad, de nem
+// kerülheti meg a Foglalás 3.0 közzétett munkaidő / nyitvatartás guardját.
+// A kanonikus /api/public/marketing/booking útvonalon a guardot a
+// publicMarketing router már a generic onlineBooking router előtt futtatja.
+router.use((req,res,next)=>{
+  if(String(req.baseUrl||"")==="/api/public/booking") return (bookingScheduleRouter as any)(req,res,next);
+  return next();
+});
+
 const asUuidList = (value: unknown) => String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const dayStart = (date: string) => new Date(`${date}T00:00:00`);
