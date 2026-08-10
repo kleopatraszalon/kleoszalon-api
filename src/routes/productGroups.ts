@@ -1,7 +1,9 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
+import { requireAuth } from "../middleware/auth";
 
 const router = Router();
+router.use(requireAuth);
 
 router.get("/", async (_req: Request, res: Response) => {
   try {
