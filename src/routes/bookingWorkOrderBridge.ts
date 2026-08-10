@@ -6,7 +6,8 @@ const router=Router();
 router.use(requireAuth);
 
 const ADMIN=['admin','administrator','rendszergazda','superadmin','super_admin'];
-const LOCATION_ROLES=['receptionist','recepciós','recepcios','reception','location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager','szalonvezető','szalonvezeto','salon_manager','manager','vezető','vezeto'];
+const RECEPTION=['receptionist','recepciós','recepcios','reception'];
+const BUSINESS=['location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager'];
 const ACTIVE_APPOINTMENT_STATUSES=new Set(['pending','confirmed','booked','waiting','arrived','in_progress']);
 const TERMINAL_APPOINTMENT_STATUSES=new Set(['cancelled','canceled','no_show','completed']);
 
@@ -24,20 +25,22 @@ type EnsureResult={appointment_id:string;work_order_id:string|null;work_order_nu
 function resolveScope(req:AuthRequest):Scope|null{
   const roles=roleList(req.user?.role);
   if(hasAny(roles,ADMIN))return{isAdmin:true,locationId:null};
-  if(hasAny(roles,LOCATION_ROLES))return{isAdmin:false,locationId:req.user?.location_id?String(req.user.location_id):null};
+  if(hasAny(roles,[...RECEPTION,...BUSINESS]))return{isAdmin:false,locationId:req.user?.location_id?String(req.user.location_id):null};
   return null;
 }
 
 function requireBridgeAccess(req:AuthRequest,res:Response,next:NextFunction){
   const scope=resolveScope(req);
-  if(!scope)return res.status(403).json({message:'A foglalás–munkalap kapcsolatot csak adminisztrátor vagy szalonkezelő használhatja.'});
+  if(!scope)return res.status(403).json({message:'A foglalás–munkalap kapcsolatot csak adminisztrátor, recepciós vagy üzletvezető kezelheti.'});
   if(!scope.isAdmin&&!scope.locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});
   (req as any).bookingWorkOrderScope=scope;
   next();
 }
 router.use(requireBridgeAccess);
 
+let schemaReady=false;
 async function ensureSchema(c:any){
+  if(schemaReady)return;
   await c.query(`
     ALTER TABLE appointments ADD COLUMN IF NOT EXISTS work_order_id uuid;
     ALTER TABLE appointments ADD COLUMN IF NOT EXISTS work_order_number text;
@@ -57,6 +60,7 @@ async function ensureSchema(c:any){
     CREATE TABLE IF NOT EXISTS work_order_number_sequences(year integer PRIMARY KEY,last_value bigint NOT NULL DEFAULT 0,updated_at timestamptz NOT NULL DEFAULT now());
   `);
   await c.query(`CREATE OR REPLACE FUNCTION next_official_work_order_number(p_at timestamptz DEFAULT now()) RETURNS text LANGUAGE plpgsql AS $$ DECLARE y integer:=EXTRACT(YEAR FROM p_at)::integer;n bigint;BEGIN INSERT INTO work_order_number_sequences(year,last_value) VALUES(y,1) ON CONFLICT(year) DO UPDATE SET last_value=work_order_number_sequences.last_value+1,updated_at=now() RETURNING last_value INTO n;RETURN 'KLEO-ML-'||y::text||'-'||LPAD(n::text,6,'0');END $$;`);
+  schemaReady=true;
 }
 
 async function appointmentRow(c:any,id:string){
@@ -95,7 +99,6 @@ async function linkedWorkOrder(c:any,ap:any){
 }
 
 async function ensureOne(c:any,appointmentId:string,scope:Scope,createdBy:string):Promise<EnsureResult>{
-  await ensureSchema(c);
   const ap=await appointmentRow(c,appointmentId);
   const visibility=assertVisible(ap,scope);
   if(visibility){const err:any=new Error(visibility.message);err.httpStatus=visibility.status;throw err;}
@@ -146,6 +149,7 @@ router.post('/ensure',async(req:AuthRequest,res,next)=>{
   if(!ids.length)return res.json({items:[]});
   const c=await db.connect();
   try{
+    await ensureSchema(c);
     await c.query('BEGIN');
     const scope=(req as any).bookingWorkOrderScope as Scope;
     const items:EnsureResult[]=[];
@@ -163,6 +167,7 @@ router.post('/ensure',async(req:AuthRequest,res,next)=>{
 router.post('/appointments/:id/arrive',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   try{
+    await ensureSchema(c);
     await c.query('BEGIN');
     const scope=(req as any).bookingWorkOrderScope as Scope;
     const ensured=await ensureOne(c,String(req.params.id),scope,actor(req));
