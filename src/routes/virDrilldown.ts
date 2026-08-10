@@ -1,22 +1,26 @@
 import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
+import { parseRoleKeys } from "../security/roles";
 
 const router = Router();
+router.use(requireAuth);
 
-function isAdmin(req: AuthRequest) {
-  return (req.user?.role || "").toLowerCase() === "admin";
+function scopedLocation(req: AuthRequest, res: Response): string | null | undefined {
+  if (parseRoleKeys(req.user?.role).includes("admin")) return null;
+  const own = req.user?.location_id == null ? "" : String(req.user.location_id).trim();
+  if (!own) {
+    res.status(403).json({ ok: false, error: "A felhasználóhoz nincs telephely rendelve." });
+    return undefined;
+  }
+  return own;
 }
 
-function scopedLocation(req: AuthRequest): string | null {
-  if (isAdmin(req)) return null;
-  return req.user?.location_id ? String(req.user.location_id) : null;
-}
-
-router.get("/staff/:staffId", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/staff/:staffId", async (req: AuthRequest, res: Response) => {
   try {
     const { staffId } = req.params;
-    const locationId = scopedLocation(req);
+    const locationId = scopedLocation(req, res);
+    if (locationId === undefined) return;
 
     const staffSql = `
       SELECT
@@ -52,16 +56,21 @@ router.get("/staff/:staffId", requireAuth, async (req: AuthRequest, res: Respons
       pool.query(servicesSql, [staffId, locationId]),
     ]);
 
-    return res.json({ ok: true, data: { staff: staff.rows[0] || null, services: services.rows, recent_appointments: [] } });
+    if (!staff.rows[0]) {
+      return res.status(404).json({ ok: false, error: "A munkatárs nem található vagy nincs hozzá jogosultsága." });
+    }
+
+    return res.json({ ok: true, data: { staff: staff.rows[0], services: services.rows, recent_appointments: [] } });
   } catch (error: any) {
     return res.status(500).json({ ok: false, error: error?.message || "staff_drilldown_failed" });
   }
 });
 
-router.get("/service/:serviceId", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/service/:serviceId", async (req: AuthRequest, res: Response) => {
   try {
     const { serviceId } = req.params;
-    const locationId = scopedLocation(req);
+    const locationId = scopedLocation(req, res);
+    if (locationId === undefined) return;
 
     const serviceSql = `
       SELECT
@@ -94,7 +103,11 @@ router.get("/service/:serviceId", requireAuth, async (req: AuthRequest, res: Res
       pool.query(staffSql, [serviceId, locationId]),
     ]);
 
-    return res.json({ ok: true, data: { service: service.rows[0] || null, staff: staff.rows, recent_appointments: [] } });
+    if (!service.rows[0]) {
+      return res.status(404).json({ ok: false, error: "A szolgáltatás nem található vagy nincs hozzá jogosultsága." });
+    }
+
+    return res.json({ ok: true, data: { service: service.rows[0], staff: staff.rows, recent_appointments: [] } });
   } catch (error: any) {
     return res.status(500).json({ ok: false, error: error?.message || "service_drilldown_failed" });
   }
