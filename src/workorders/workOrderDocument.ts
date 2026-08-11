@@ -87,7 +87,13 @@ async function repairClosedWorkOrderArchive(workOrderId:string){
     const wo=(await c.query(`SELECT w.*,to_jsonb(w) AS _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[String(workOrderId)])).rows[0];
     if(!wo){await c.query('ROLLBACK');return null}
     const j=wo._json||{};
-    const closed=Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)||String(wo.status||'')==='completed'||String(j.document_status||'')==='completed';
+    // Legacy finalization can persist the financial close even when an old
+    // status/locking trigger silently keeps the service status unchanged.
+    // A paid financial close is durable evidence that document recovery may
+    // rebuild the missing immutable archive after the finalizer was invoked.
+    const financiallyClosed=Boolean(j.financial_closed_at)&&String(j.payment_status||'')==='paid';
+    const closed=Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)
+      ||String(wo.status||'')==='completed'||String(j.document_status||'')==='completed'||financiallyClosed;
     if(!closed){await c.query('ROLLBACK');return null}
 
     const tableRows=async(table:string)=>{
