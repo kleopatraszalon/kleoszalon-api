@@ -1,12 +1,20 @@
 import type { Pool } from 'pg';
 
+async function runStage(pool:Pool,substage:string,sql:string){
+  try{return await pool.query(sql)}
+  catch(error:any){
+    error.workOrderBootstrapSubstage=substage;
+    throw error;
+  }
+}
+
 /**
  * Idempotens munkalap workflow bootstrap.
  * A felhasználói audit-azonosítók szövegesek, mert a rendszer e-mailt,
  * numerikus user ID-t vagy külső principal azonosítót is tárolhat.
  */
 export async function ensureWorkOrderWorkflow(pool: Pool) {
-  await pool.query(`
+  await runStage(pool,'columns',`
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS document_status text;
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS arrival_at timestamptz;
@@ -27,35 +35,12 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS total_gross numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paid_total numeric(14,2);
     ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS amount_due numeric(14,2);
+  `);
 
-    UPDATE work_orders
-    SET started_at=COALESCE(started_at,work_started_at),
-        work_started_at=COALESCE(work_started_at,started_at),
-        completed_at=COALESCE(completed_at,work_finished_at),
-        work_finished_at=COALESCE(work_finished_at,completed_at)
-    WHERE started_at IS NULL OR work_started_at IS NULL OR completed_at IS NULL OR work_finished_at IS NULL;
-
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='public' AND table_name='work_orders'
-          AND column_name='closed_by' AND data_type <> 'text'
-      ) THEN
-        ALTER TABLE work_orders ALTER COLUMN closed_by TYPE text USING closed_by::text;
-      END IF;
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='public' AND table_name='work_orders'
-          AND column_name='cancelled_by' AND data_type <> 'text'
-      ) THEN
-        ALTER TABLE work_orders ALTER COLUMN cancelled_by TYPE text USING cancelled_by::text;
-      END IF;
-    END $$;
-
-    -- Több régi work_orders séma eltérő document_status CHECK-et hagyott maga után.
-    -- Ezeket még az adatok normalizálása előtt el kell távolítani, különben egy
-    -- legacy CHECK 23514 hibával blokkolhatja az önjavító bootstrapot.
+  // KRITIKUS sorrend: egy NOT VALID legacy CHECK a már meglévő hibás sorokra
+  // bármely későbbi UPDATE-nél újra lefuthat. Ezért a document_status-hoz kötött
+  // régi CHECK-eket az ELSŐ work_orders UPDATE előtt kell eltávolítani.
+  await runStage(pool,'drop_legacy_document_status_checks',`
     DO $$
     DECLARE status_att smallint; r record;
     BEGIN
@@ -76,7 +61,38 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
         END LOOP;
       END IF;
     END $$;
+  `);
 
+  await runStage(pool,'sync_timestamps',`
+    UPDATE work_orders
+    SET started_at=COALESCE(started_at,work_started_at),
+        work_started_at=COALESCE(work_started_at,started_at),
+        completed_at=COALESCE(completed_at,work_finished_at),
+        work_finished_at=COALESCE(work_finished_at,completed_at)
+    WHERE started_at IS NULL OR work_started_at IS NULL OR completed_at IS NULL OR work_finished_at IS NULL;
+  `);
+
+  await runStage(pool,'actor_columns',`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='work_orders'
+          AND column_name='closed_by' AND data_type <> 'text'
+      ) THEN
+        ALTER TABLE work_orders ALTER COLUMN closed_by TYPE text USING closed_by::text;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='work_orders'
+          AND column_name='cancelled_by' AND data_type <> 'text'
+      ) THEN
+        ALTER TABLE work_orders ALTER COLUMN cancelled_by TYPE text USING cancelled_by::text;
+      END IF;
+    END $$;
+  `);
+
+  await runStage(pool,'normalize_document_status',`
     UPDATE work_orders
     SET document_status = CASE
       WHEN status IN ('completed','paid') THEN 'completed'
@@ -89,7 +105,9 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
 
     ALTER TABLE work_orders ALTER COLUMN document_status SET DEFAULT 'draft';
     ALTER TABLE work_orders ALTER COLUMN document_status SET NOT NULL;
+  `);
 
+  await runStage(pool,'indexes_and_history_schema',`
     CREATE INDEX IF NOT EXISTS work_orders_document_status_idx
       ON work_orders(document_status, created_at DESC);
     CREATE INDEX IF NOT EXISTS work_orders_status_idx ON work_orders(status);
@@ -124,7 +142,7 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
       ON work_order_status_history(work_order_id, changed_at DESC);
   `);
 
-  await pool.query(`
+  await runStage(pool,'canonical_document_status_check',`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='work_orders_document_status_chk') THEN
@@ -135,7 +153,7 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     ALTER TABLE work_orders VALIDATE CONSTRAINT work_orders_document_status_chk;
   `);
 
-  await pool.query(`
+  await runStage(pool,'initial_history',`
     INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_at,reason)
     SELECT w.id,'document',NULL,w.document_status,COALESCE(w.created_at,now()),'MIGRATION_INITIAL_STATE'
     FROM work_orders w
