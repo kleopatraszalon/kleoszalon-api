@@ -92,8 +92,6 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
       return sets;
     };
 
-    // Először normál completed státusszal próbáljuk. Ha egy régi CHECK/trigger ezt blokkolja,
-    // a dokumentumot akkor is lezárjuk locked/archived állapottal; az archív snapshot terminal_status=completed lesz.
     await c.query('SAVEPOINT wo_finalize_status');
     let statusPersisted=true;
     let sets=buildSets(true);
@@ -135,8 +133,21 @@ router.get('/workorders/:id/pdf',async(req,res,next)=>{
   }catch(e){next(e)}
 });
 
-router.post('/workorders/:id/email',async(req,res,next)=>{
-  try{const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:true,forceMail:true});const{pdf,...meta}=delivery;return res.json(meta)}catch(e){next(e)}
+router.post('/workorders/:id/email',async(req,res)=>{
+  try{
+    const archive=await loadWorkOrderArchive(req.params.id);
+    if(!archive)return res.status(409).json({message:'E-mail csak véglegesen lezárt és archivált munkalapról küldhető.',code:'WORKORDER_NOT_ARCHIVED'});
+    const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:true,forceMail:true});
+    const{pdf,...meta}=delivery;const mail=(delivery as any)?.mail||{};
+    if(mail.sent||mail.logged||mail.already_sent)return res.json(meta);
+    return res.status(502).json({...meta,message:mail.error||'Az e-mail szolgáltató nem igazolta vissza a küldést.',code:'WORKORDER_EMAIL_DELIVERY_FAILED'});
+  }catch(e:any){
+    const code=String(e?.code||'');const detail=String(e?.message||e);
+    console.error('[workorder-finalization-fast] email retry failed',code,detail);
+    if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code});
+    if(code==='57014'||code==='55P03')return res.status(503).json({message:'Az e-mail újraküldését adatbázis-zárolás vagy timeout akadályozta.',code,detail});
+    return res.status(503).json({message:'A lezárt munkalap PDF/e-mail előállítása átmenetileg nem sikerült.',code:'WORKORDER_EMAIL_RETRY_FAILED',detail});
+  }
 });
 
 export default router;
