@@ -18,6 +18,9 @@ test('missing archive is rebuilt for a genuinely closed workorder',()=>{
   assert.match(documentSource,/FOR UPDATE/);
   assert.match(documentSource,/j\.locked_at\|\|j\.archived_at\|\|j\.completed_at\|\|j\.closed_at/);
   assert.match(documentSource,/document_status\|\|''\)===['"]completed['"]/);
+  assert.match(documentSource,/financial_closed_at/);
+  assert.match(documentSource,/payment_status\|\|''\)===['"]paid['"]/);
+  assert.match(documentSource,/\|\|financiallyClosed/);
   assert.match(documentSource,/WHERE NOT EXISTS\(SELECT 1 FROM work_order_archive WHERE work_order_id::text=\$1\)/);
   assert.match(documentSource,/missing archive self-healed/);
 });
