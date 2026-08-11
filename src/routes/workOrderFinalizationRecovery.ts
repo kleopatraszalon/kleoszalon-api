@@ -118,7 +118,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     }
 
     const sets=[`status='completed'`];const params:any[]=[wo.id];
-    const add=async(col:string,expr:string,value?:any)=>{if(await columnExists(c,'work_orders',col)){if(arguments.length>2){params.push(value);sets.push(`${col}=${expr.replace('?',`$${params.length}`)}`)}else sets.push(`${col}=${expr}`)}};
+    const add=async(col:string,expr:string)=>{if(await columnExists(c,'work_orders',col))sets.push(`${col}=${expr}`)};
     await add('document_status',`'completed'`);
     await add('completed_at',`COALESCE(completed_at,now())`);
     await add('closed_at',`COALESCE(closed_at,now())`);
