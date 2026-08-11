@@ -5,10 +5,14 @@ import onlineBookingRouter from "./onlineBooking";
 import bookingVoiceRouter from "./bookingVoice";
 import bookingScheduleRouter from "./bookingSchedule";
 import bookingManageRouter from "./bookingManage";
+import bookingVoiceRateLimit from "../booking/voiceRateLimit";
 
 const router = Router();
 // Speciális booking rétegek az általános router előtt futnak.
-router.use("/booking/voice", bookingVoiceRouter);
+// A Voice Booking POST /interpret hívásai először a PostgreSQL-backed limiteren mennek át,
+// így több Render instance esetén is közös limit érvényesül. A bookingVoice belső limiter
+// további defense-in-depth marad.
+router.use("/booking/voice", bookingVoiceRateLimit, bookingVoiceRouter);
 router.use("/booking/manage", bookingManageRouter);
 router.use("/booking", bookingScheduleRouter);
 router.use("/booking", onlineBookingRouter);
