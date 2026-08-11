@@ -2,6 +2,7 @@ import { Router, Request } from "express";
 import axios from "axios";
 import crypto from "crypto";
 import db from "../db";
+import { estimateOpenAiTextCost, resolveOpenAiTextPricing } from "../ai/openAiCost";
 
 const router = Router();
 const MAX_TRANSCRIPT = 700;
@@ -72,6 +73,13 @@ async function aiInterpret(transcript:string,c:Catalog,base:VoiceIntent,key:stri
   const locations=c.locations.map(x=>`${x.id}|${x.name}`).join("\n"),services=c.services.slice(0,180).map(x=>`${x.id}|${x.name}`).join("\n"),employees=c.employees.slice(0,180).map(x=>`${x.id}|${x.full_name}|${x.location_id||""}`).join("\n");
   const prompt=`A Kleopátra Szépségszalon hangalapú foglalási szándékát értelmezed. Csak JSON-t adj vissza: {"intent":"book|waitlist|cancel","location_id":null,"service_ids":[],"employee_id":null,"date":null,"time":null,"preferred_period":null}. Csak a megadott katalógus ID-kat használhatod. A dátum YYYY-MM-DD, az idő HH:MM. Ha nem biztos, legyen null vagy üres lista. Ma: ${isoLocal(new Date())}.\nSZALONOK:\n${locations}\nSZOLGÁLTATÁSOK:\n${services}\nMUNKATÁRSAK:\n${employees}\nFELHASZNÁLÓ: ${transcript}`;
   const response:any=await axios.post("https://api.openai.com/v1/responses",{model:process.env.BOOKING_VOICE_OPENAI_MODEL||process.env.OPENAI_MODEL||"gpt-5-mini",instructions:"Pontosan, konzervatívan értelmezd a foglalási szándékot. Ne találj ki adatot.",input:[{role:"user",content:[{type:"input_text",text:prompt}]}],store:false,max_output_tokens:300},{headers:{Authorization:`Bearer ${apiKey}`,"Content-Type":"application/json"},timeout:20_000});
+  const model=String(response.data?.model||process.env.BOOKING_VOICE_OPENAI_MODEL||process.env.OPENAI_MODEL||"gpt-5-mini");
+  const usage=estimateOpenAiTextCost(model,response.data?.usage||{});
+  try{
+    await db.query(`INSERT INTO ai_usage_log(user_key,model,input_tokens,output_tokens,estimated_cost_usd) VALUES($1,$2,$3,$4,$5)`,[`public-booking-voice:${key}`,model,usage.inputTokens,usage.outputTokens,usage.estimatedCostUsd]);
+  }catch(error:any){console.warn("booking voice AI usage log:",error?.message||error);}
+  if(!usage.pricingResolved)console.warn("booking voice AI pricing unresolved:",model);
+
   let parsed:any=null;try{parsed=JSON.parse(extractOutputText(response.data));}catch{return null;}
   const locationIds=new Set(c.locations.map(x=>x.id)),serviceIds=new Set(c.services.map(x=>x.id)),employeeIds=new Set(c.employees.map(x=>x.id)),out:Partial<VoiceIntent>={};
   if(["book","waitlist","cancel"].includes(parsed?.intent))out.intent=parsed.intent;
@@ -80,8 +88,6 @@ async function aiInterpret(transcript:string,c:Catalog,base:VoiceIntent,key:stri
   if(employeeIds.has(String(parsed?.employee_id||"")))out.employee_id=String(parsed.employee_id);
   if(isIsoDate(parsed?.date))out.date=String(parsed.date);if(isTime(parsed?.time))out.time=String(parsed.time);
   if(["morning","afternoon","evening"].includes(parsed?.preferred_period))out.preferred_period=parsed.preferred_period;
-  const usage=response.data?.usage||{},inputTokens=Number(usage.input_tokens||0),outputTokens=Number(usage.output_tokens||0);
-  db.query(`INSERT INTO ai_usage_log(user_key,model,input_tokens,output_tokens,estimated_cost_usd) VALUES($1,$2,$3,$4,0)`,[`public-booking-voice:${key}`,response.data?.model||"booking-voice",inputTokens,outputTokens]).catch(()=>undefined);
   return out;
 }
 function mergeIntent(base:VoiceIntent,ai:Partial<VoiceIntent>|null):VoiceIntent{if(!ai)return base;return{intent:ai.intent||base.intent,location_id:base.location_id||ai.location_id||null,service_ids:base.service_ids.length?base.service_ids:(ai.service_ids||[]),employee_id:base.employee_id||ai.employee_id||null,date:base.date||ai.date||null,time:base.time||ai.time||null,preferred_period:base.preferred_period||ai.preferred_period||null};}
@@ -100,5 +106,9 @@ router.post("/interpret",async(req,res)=>{
     return res.json({ok:true,intent,summary,missing_fields:missing,recognized,ai_used:aiUsed,requires_confirmation:true,spoken_follow_up:followUp(intent,missing)});
   }catch(error:any){console.error("POST booking/voice/interpret:",error);return res.status(500).json({error:"A hangalapú foglalási kérés értelmezése sikertelen.",detail:error?.message||String(error)});}
 });
-router.get("/health",(_req,res)=>res.json({ok:true,ai_configured:Boolean(process.env.OPENAI_API_KEY),model:process.env.BOOKING_VOICE_OPENAI_MODEL||process.env.OPENAI_MODEL||"gpt-5-mini",transcripts_stored:process.env.BOOKING_VOICE_STORE_TRANSCRIPTS==="1"}));
+router.get("/health",(_req,res)=>{
+  const model=process.env.BOOKING_VOICE_OPENAI_MODEL||process.env.OPENAI_MODEL||"gpt-5-mini";
+  const pricing=resolveOpenAiTextPricing(model);
+  res.json({ok:true,ai_configured:Boolean(process.env.OPENAI_API_KEY),model,transcripts_stored:process.env.BOOKING_VOICE_STORE_TRANSCRIPTS==="1",ai_cost_estimation:{resolved:Boolean(pricing),source:pricing?.source||null,input_usd_per_1m:pricing?.inputUsdPer1M??null,cached_input_usd_per_1m:pricing?.cachedInputUsdPer1M??null,output_usd_per_1m:pricing?.outputUsdPer1M??null}});
+});
 export default router;
