@@ -2,6 +2,7 @@ import {Router} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {generateAndDeliverClosedWorkOrder,loadWorkOrderArchive,renderClosedWorkOrderPdf} from '../workorders/workOrderDocument';
+import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
 
 const router=Router();
 router.use(requireAuth);
@@ -42,6 +43,7 @@ async function ensureCoreSchema(c:any){
     pdf_generated_at timestamptz,email_sent_at timestamptz,email_status text,email_recipients jsonb,email_error text
   )`,'work_order_archive');
   for(const[col,type]of [['pdf_generated_at','timestamptz'],['email_sent_at','timestamptz'],['email_status','text'],['email_recipients','jsonb'],['email_error','text']] as [string,string][])await safeDDL(c,`ALTER TABLE work_order_archive ADD COLUMN IF NOT EXISTS ${col} ${type}`,`work_order_archive.${col}`);
+  await repairLegacyWorkOrderTriggers(c);
 }
 
 async function ensureWorkOrderNumber(c:any,wo:any){

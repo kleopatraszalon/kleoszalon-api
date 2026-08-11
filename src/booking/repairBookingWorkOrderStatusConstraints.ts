@@ -1,3 +1,5 @@
+import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
+
 let repairReady=false;
 
 const NON_FATAL_REPAIR_CODES=new Set([
@@ -26,6 +28,8 @@ async function optionalRepair(c:any,label:string,sql:string){
 
 export async function repairBookingWorkOrderStatusConstraints(c:any){
   if(repairReady)return;
+
+  await repairLegacyWorkOrderTriggers(c);
 
   // KRITIKUS legacy kompatibilitás: a régi work_order_items séma line_no mezője
   // NOT NULL. Ezt még minden egyéb, potenciálisan lockoló ALTER TABLE előtt
