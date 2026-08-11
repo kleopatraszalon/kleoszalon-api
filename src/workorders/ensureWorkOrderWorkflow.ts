@@ -8,6 +8,27 @@ async function runStage(pool:Pool,substage:string,sql:string){
   }
 }
 
+async function runCompatibilityStage(pool:Pool,substage:string,sql:string){
+  try{return await pool.query(sql)}
+  catch(error:any){
+    // Legacy élő adatbázisokban előfordulhat, hogy egy régi, a mostani
+    // workflow-tól független CHECK már meglévő sorokat érvénytelennek tekint.
+    // PostgreSQL bármely UPDATE-nél újraértékeli az ilyen CHECK-et. A timestamp
+    // backfill viszont csak kompatibilitási adatjavítás; nem NAV/pénzügyi
+    // invariáns, ezért 23514 esetén nem blokkolhatja a teljes Finance/NAV sémát.
+    if(String(error?.code||'')==='23514'){
+      console.warn('[work-order-workflow] compatibility backfill skipped',{
+        substage,
+        code:String(error.code),
+        constraint:error?.constraint?String(error.constraint):null
+      });
+      return null;
+    }
+    error.workOrderBootstrapSubstage=substage;
+    throw error;
+  }
+}
+
 /**
  * Idempotens munkalap workflow bootstrap.
  * A felhasználói audit-azonosítók szövegesek, mert a rendszer e-mailt,
@@ -63,7 +84,7 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     END $$;
   `);
 
-  await runStage(pool,'sync_timestamps',`
+  await runCompatibilityStage(pool,'sync_timestamps',`
     UPDATE work_orders
     SET started_at=COALESCE(started_at,work_started_at),
         work_started_at=COALESCE(work_started_at,started_at),
