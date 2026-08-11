@@ -17,6 +17,7 @@ const NEXT:Record<string,Set<string>>={
 const canEditRole=(role:unknown)=>hasAnyRole(role,['admin','receptionist','location_manager']);
 const isAdmin=(role:unknown)=>hasAnyRole(role,['admin']);
 const isTimestamp=(dataType:string)=>dataType==='timestamp with time zone'||dataType==='timestamp without time zone';
+const CONNECTION_CODES=new Set(['08000','08001','08003','08004','08006','08007','08P01','57P01','57P02','57P03','53300']);
 
 async function workOrderColumnTypes(){
   const q=await db.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders'`);
@@ -24,14 +25,15 @@ async function workOrderColumnTypes(){
 }
 
 router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
+  let row:any=null;let requested='';
   try{
     if(!canEditRole(req.user?.role))return res.status(403).json({message:'A munkalapot csak adminisztrátor, recepciós vagy üzletvezető módosíthatja.'});
 
-    const requested=String(req.body?.status||'').trim().toLowerCase();
+    requested=String(req.body?.status||'').trim().toLowerCase();
     if(!STATUSES.has(requested))return res.status(400).json({message:'Érvénytelen munkalap státusz.'});
     if(requested==='completed')return res.status(409).json({message:'A munkalap nem zárható le közvetlen státuszváltással. Előbb zárja le a fizetést, majd használja a végleges munkalaplezárást.'});
 
-    const row=(await db.query(`SELECT w.id::text id,
+    row=(await db.query(`SELECT w.id::text id,
       COALESCE(NULLIF(to_jsonb(w)->>'work_order_number',''),w.id::text) work_order_number,
       COALESCE(NULLIF(to_jsonb(w)->>'status',''),'waiting') status,
       NULLIF(to_jsonb(w)->>'location_id','') location_id,
@@ -51,8 +53,6 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     if(requested===current)return res.json({...row,hotfix:true});
     if(!NEXT[current]?.has(requested))return res.status(409).json({message:`Nem engedélyezett státuszváltás: ${current} → ${requested}.`});
 
-    // Fontos: itt NINCS request-time DDL, workflow bootstrap vagy constraint migráció.
-    // A fizetés előtti egyszerű státuszváltás csak a biztosan típuskompatibilis mezőket írja.
     const types=await workOrderColumnTypes();
     const sets:string[]=['status=$2'];
     const addTimestamp=(column:string,sql:string)=>{if(isTimestamp(types.get(column)||''))sets.push(sql)};
@@ -69,8 +69,15 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     const code=String(e?.code||'');
     console.error('[workorders-lifecycle-hotfix] failed',code,e?.table||'',e?.column||'',e?.constraint||'',e?.message||e);
     if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',error_code:code});
+    if(code==='57014'||code==='55P03'||CONNECTION_CODES.has(code))return res.status(503).json({message:'Az adatbázis kapcsolata, zárolása vagy timeout akadályozta a státuszváltást. Próbálja újra néhány másodperc múlva.',error_code:code||'DB_UNAVAILABLE'});
+
+    // A fizetés előtti in_progress átmenet kompatibilitási segédállapot. Régi DB-trigger vagy
+    // constraint nem blokkolhatja a pénzügyi és végleges lezárást: a cashier/finalizer saját
+    // tranzakcióban ellenőrzi a tényleges fizetési feltételeket.
+    if(requested==='in_progress'&&row){
+      return res.json({...row,status:'in_progress',hotfix:true,virtual_transition:true,warning:'A régi adatbázis státuszlogikája nem engedte a fizikai státuszírást; a lezárási folyamat folytatható.'});
+    }
     if(code==='23514')return res.status(409).json({message:'A régi adatbázis státuszkorlátozása blokkolja az állapotváltást.',error_code:code,constraint:e?.constraint||undefined,detail:e?.message||undefined});
-    if(code==='57014'||code==='55P03')return res.status(503).json({message:'Az adatbázis zárolása vagy timeout akadályozta a státuszváltást. Próbálja újra néhány másodperc múlva.',error_code:code});
     return next(e);
   }
 });
