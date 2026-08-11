@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {generateAndDeliverClosedWorkOrder,loadWorkOrderArchive,renderClosedWorkOrderPdf} from '../workorders/workOrderDocument';
+import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
 
 const router=Router();
 router.use(requireAuth);
@@ -136,9 +137,11 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
 
 router.get('/workorders/:id/pdf',async(req,res,next)=>{
   try{
-    const archive=await loadWorkOrderArchive(req.params.id);
+    await repairLegacyWorkOrderTriggers(db);
+    const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:false});
+    const archive=delivery.archive;
     if(!archive)return res.status(409).json({message:'A PDF a munkalap végleges lezárása után tölthető le.',code:'WORKORDER_NOT_ARCHIVED'});
-    const pdf=await renderClosedWorkOrderPdf(archive);
+    const pdf=delivery.pdf;
     await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id::text=$1`,[req.params.id]).catch(()=>undefined);
     const filename=`${archive.work_order_number||'lezart-munkalap'}.pdf`.replace(/[^A-Za-z0-9._-]/g,'_');
     res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);res.setHeader('Content-Length',String(pdf.length));return res.send(pdf);
@@ -147,6 +150,7 @@ router.get('/workorders/:id/pdf',async(req,res,next)=>{
 
 router.post('/workorders/:id/email',async(req,res)=>{
   try{
+    await repairLegacyWorkOrderTriggers(db);
     const archive=await loadWorkOrderArchive(req.params.id);
     if(!archive)return res.status(409).json({message:'E-mail csak véglegesen lezárt és archivált munkalapról küldhető.',code:'WORKORDER_NOT_ARCHIVED'});
     const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:true,forceMail:true});
