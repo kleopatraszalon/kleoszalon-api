@@ -4,10 +4,12 @@ import pool from "../db";
 import onlineBookingRouter from "./onlineBooking";
 import bookingVoiceRouter from "./bookingVoice";
 import bookingScheduleRouter from "./bookingSchedule";
+import bookingManageRouter from "./bookingManage";
 
 const router = Router();
 // Speciális booking rétegek az általános router előtt futnak.
 router.use("/booking/voice", bookingVoiceRouter);
+router.use("/booking/manage", bookingManageRouter);
 router.use("/booking", bookingScheduleRouter);
 router.use("/booking", onlineBookingRouter);
 
