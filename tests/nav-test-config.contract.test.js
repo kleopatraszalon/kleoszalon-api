@@ -18,6 +18,12 @@ test('NAV UAT configuration can never switch to live environment',()=>{
   assert.doesNotMatch(src,/SET active=true,environment=\$[0-9]+/);
 });
 
+test('an existing live config is protected from test UAT overwrite',()=>{
+  assert.match(src,/existing&&String\(existing\.environment\)!=='test'/);
+  assert.match(src,/nav_uat_live_config_protected/);
+  assert.match(src,/A teszt UAT végpont ezt nem írhatja felül/);
+});
+
 test('NAV UAT configuration never echoes stored secrets and reports only presence',()=>{
   assert.match(src,/technical_password_configured:Boolean/);
   assert.match(src,/signing_key_configured:Boolean/);
@@ -28,12 +34,13 @@ test('NAV UAT configuration never echoes stored secrets and reports only presenc
   assert.doesNotMatch(src,/exchange_key:row\.exchange_key/);
 });
 
-test('blank or masked secret input preserves existing or environment-backed credentials',()=>{
+test('blank or masked secret input preserves DB secrets without copying Render ENV into DB',()=>{
   assert.match(src,/const keepSecret=/);
   assert.match(src,/masked\(next\)/);
-  assert.match(src,/process\.env\.NAV_TECHNICAL_PASSWORD/);
-  assert.match(src,/process\.env\.NAV_SIGNING_KEY/);
-  assert.match(src,/process\.env\.NAV_EXCHANGE_KEY/);
+  assert.match(src,/const effectiveTechnicalPassword=process\.env\.NAV_TECHNICAL_PASSWORD\|\|technicalPassword/);
+  assert.match(src,/const effectiveSigningKey=process\.env\.NAV_SIGNING_KEY\|\|signingKey/);
+  assert.match(src,/const effectiveExchangeKey=process\.env\.NAV_EXCHANGE_KEY\|\|exchangeKey/);
+  assert.doesNotMatch(src,/keepSecret\([^\n]+process\.env\.NAV_/);
 });
 
 test('fixture creation requires a complete test credential set',()=>{
