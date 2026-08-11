@@ -7,8 +7,12 @@ import * as XLSX from "xlsx";
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 let schemaPromise: Promise<void> | null = null;
+let schemaRetryAt = 0;
+let schemaLastError: any = null;
+const CLIENT_SCHEMA_RETRY_MS = 5 * 60 * 1000;
 
 function ensureClientSchema() {
+  if (!schemaPromise && schemaLastError && Date.now() < schemaRetryAt) return Promise.reject(schemaLastError);
   if (!schemaPromise) {
     schemaPromise = (async () => {
       await pool.query(`
@@ -71,7 +75,9 @@ function ensureClientSchema() {
           ('Fotódokumentációs hozzájárulás','Kezelés előtti és utáni képek készítésének engedélye','consent')
         ON CONFLICT DO NOTHING;
       `);
-    })().catch((error) => { schemaPromise = null; throw error; });
+    })().then(() => { schemaLastError = null; schemaRetryAt = 0; }).catch((error) => {
+      schemaPromise = null; schemaLastError = error; schemaRetryAt = Date.now() + CLIENT_SCHEMA_RETRY_MS; throw error;
+    });
   }
   return schemaPromise;
 }
