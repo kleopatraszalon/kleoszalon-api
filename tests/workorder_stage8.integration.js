@@ -49,6 +49,21 @@ async function main(){
   let r=await req(base,'/editor/create',{method:'POST',headers:auth(admin),body:JSON.stringify({location_id:d.loc1,appointment_id:d.appointment,employee_id:d.employee,client_id:d.customer,status:'in_progress',title:'Stage 8 integráció',services:[{service_id:d.service,quantity:1}],products:[{product_id:d.product,quantity:2}]})});
   assert.equal(r.status,201,`work order create: ${JSON.stringify(r.body)}`);const wid=r.body.id;assert.ok(wid);assert.match(r.body.work_order_number,/^KLEO-ML-/);
 
+  // Legacy live-DB regresszió: régi document_status érték + eltérő CHECK korábban
+  // 23514 hibával megakasztotta a Finance/NAV bootstrapot. Az ensure-nek ezt
+  // önjavító módon normalizálnia és a kanonikus CHECK-et visszaépítenie kell.
+  await q(`ALTER TABLE work_orders DISABLE TRIGGER trg_work_orders_document_status_guard`);
+  await q(`ALTER TABLE work_orders DROP CONSTRAINT IF EXISTS work_orders_document_status_chk`);
+  await q(`UPDATE work_orders SET document_status='legacy_closed' WHERE id=$1`,[wid]);
+  await q(`ALTER TABLE work_orders ADD CONSTRAINT legacy_work_orders_document_status_chk CHECK(document_status IN('legacy_closed','draft')) NOT VALID`);
+  await q(`ALTER TABLE work_orders ENABLE TRIGGER trg_work_orders_document_status_guard`);
+  await ensureWorkOrderWorkflow(pool);
+  const repaired=(await q(`SELECT document_status FROM work_orders WHERE id=$1`,[wid])).rows[0];
+  assert.equal(repaired.document_status,'open');
+  const canonical=(await q(`SELECT convalidated FROM pg_constraint WHERE conname='work_orders_document_status_chk' AND conrelid='work_orders'::regclass`)).rows[0];
+  assert.equal(canonical?.convalidated,true);
+  assert.equal(Number((await q(`SELECT count(*) n FROM pg_constraint WHERE conname='legacy_work_orders_document_status_chk' AND conrelid='work_orders'::regclass`)).rows[0].n),0);
+
   r=await req(base,`/editor/create`,{method:'POST',headers:auth(admin),body:JSON.stringify({location_id:d.loc1,appointment_id:d.appointment,employee_id:d.employee,client_id:d.customer,status:'in_progress',title:'Duplikáció próba'})});
   assert.equal(r.status,200);assert.equal(r.body.existing,true);assert.equal(r.body.id,wid);
 
