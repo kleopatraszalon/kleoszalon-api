@@ -137,7 +137,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
 
 router.get('/workorders/:id/pdf',async(req,res,next)=>{
   try{
-    await repairLegacyWorkOrderTriggers(db);
+    await repairLegacyWorkOrderTriggers(db).catch((e:any)=>console.warn('[workorder-finalization-fast] trigger repair skipped',e?.code||'',e?.message||e));
     const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:false});
     const archive=delivery.archive;
     if(!archive)return res.status(409).json({message:'A PDF a munkalap végleges lezárása után tölthető le.',code:'WORKORDER_NOT_ARCHIVED'});
@@ -150,7 +150,7 @@ router.get('/workorders/:id/pdf',async(req,res,next)=>{
 
 router.post('/workorders/:id/email',async(req,res)=>{
   try{
-    await repairLegacyWorkOrderTriggers(db);
+    await repairLegacyWorkOrderTriggers(db).catch((e:any)=>console.warn('[workorder-finalization-fast] trigger repair skipped',e?.code||'',e?.message||e));
     const archive=await loadWorkOrderArchive(req.params.id);
     if(!archive)return res.status(409).json({message:'E-mail csak véglegesen lezárt és archivált munkalapról küldhető.',code:'WORKORDER_NOT_ARCHIVED'});
     const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:true,forceMail:true});
