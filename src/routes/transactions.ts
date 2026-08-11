@@ -60,8 +60,17 @@ const router=express.Router();
 const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
   try{await ensureFinanceNav();next()}
   catch(error:any){
-    console.error('Finance/NAV schema bootstrap hiba:',error?.message||error);
-    res.status(503).json({ok:false,error:'finance_schema_unavailable',message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})
+    const stage=error?.stage?String(error.stage):null;
+    const dbCode=error?.dbCode?String(error.dbCode):(error?.code?String(error.code):null);
+    console.error('Finance/NAV schema bootstrap hiba:',{stage,dbCode,message:error?.message||String(error)});
+    res.status(503).json({
+      ok:false,
+      error:'finance_schema_unavailable',
+      message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',
+      bootstrap_stage:stage,
+      db_code:dbCode,
+      detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined
+    })
   }
 };
 const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
