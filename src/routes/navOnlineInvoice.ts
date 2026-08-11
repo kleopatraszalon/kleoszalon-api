@@ -3,24 +3,134 @@ import axios from 'axios';
 import crypto from 'crypto';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
-const router=Router();router.use(requireAuth);
+import {buildNavInvoiceXml,resolveNavOperation,validateNavXmlPrerequisites,NavInvoiceOperation} from '../nav/navInvoiceXml';
+
+const router=Router();
+router.use(requireAuth);
+
 const actor=(r:AuthRequest)=>r.user?.email||String(r.user?.id||'');
 const esc=(v:any)=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
 const sha512=(s:string)=>crypto.createHash('sha512').update(s,'utf8').digest('hex').toUpperCase();
 const sha3=(s:string)=>crypto.createHash('sha3-512').update(s,'utf8').digest('hex').toUpperCase();
 const rid=()=>`KLEO${Date.now()}${crypto.randomBytes(5).toString('hex')}`.toUpperCase().slice(0,30);
-const ts=()=>new Date().toISOString();const compact=(iso:string)=>iso.replace(/[-:TZ.]/g,'').slice(0,14);
-function apiBase(env:string){return env==='live'?'https://api.onlineszamla.nav.gov.hu/invoiceService/v3':'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3'}
-async function cfg(locationId?:string){const r=await db.query(`SELECT * FROM nav_online_invoice_settings WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[locationId||'']);if(!r.rows[0])throw new Error('A NAV Online Számla beállításai hiányoznak.');const x=r.rows[0];return {...x,technical_login:process.env.NAV_TECHNICAL_LOGIN||x.technical_login,technical_password:process.env.NAV_TECHNICAL_PASSWORD||x.technical_password,signing_key:process.env.NAV_SIGNING_KEY||x.signing_key,exchange_key:process.env.NAV_EXCHANGE_KEY||x.exchange_key}}
+const ts=()=>new Date().toISOString();
+const compact=(iso:string)=>iso.replace(/[-:TZ.]/g,'').slice(0,14);
+const allowedOperations=new Set<NavInvoiceOperation>(['CREATE','MODIFY','STORNO']);
+
+function apiBase(env:string){
+  return env==='live'?'https://api.onlineszamla.nav.gov.hu/invoiceService/v3':'https://api-test.onlineszamla.nav.gov.hu/invoiceService/v3';
+}
+
+async function cfg(locationId?:string){
+  const r=await db.query(`SELECT * FROM nav_online_invoice_settings WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[locationId||'']);
+  if(!r.rows[0])throw new Error('A NAV Online Számla beállításai hiányoznak.');
+  const x=r.rows[0];
+  return {...x,technical_login:process.env.NAV_TECHNICAL_LOGIN||x.technical_login,technical_password:process.env.NAV_TECHNICAL_PASSWORD||x.technical_password,signing_key:process.env.NAV_SIGNING_KEY||x.signing_key,exchange_key:process.env.NAV_EXCHANGE_KEY||x.exchange_key};
+}
+
 const missingCfg=(e:any)=>String(e?.message||e).includes('NAV Online Számla beállításai hiányoznak');
-function commonHeader(c:any,requestId:string,timestamp:string,signature:string){return `<header><requestId>${requestId}</requestId><timestamp>${timestamp}</timestamp><requestVersion>3.0</requestVersion><headerVersion>1.0</headerVersion></header><user><login>${esc(c.technical_login)}</login><passwordHash cryptoType="SHA-512">${sha512(String(c.technical_password||''))}</passwordHash><taxNumber>${esc(String(c.supplier_tax_number).replace(/\D/g,'').slice(0,8))}</taxNumber><requestSignature cryptoType="SHA3-512">${signature}</requestSignature></user>`}
-function software(c:any){return `<software><softwareId>${esc(c.software_id)}</softwareId><softwareName>${esc(c.software_name)}</softwareName><softwareOperation>${esc(c.software_operation||'ONLINE_SERVICE')}</softwareOperation><softwareMainVersion>${esc(c.software_main_version||'1.0')}</softwareMainVersion><softwareDevName>${esc(c.software_dev_name)}</softwareDevName>${c.software_dev_contact?`<softwareDevContact>${esc(c.software_dev_contact)}</softwareDevContact>`:''}<softwareDevCountryCode>${esc(c.software_dev_country_code||'HU')}</softwareDevCountryCode></software>`}
-function decryptToken(encoded:string,keyHex:string){const key=Buffer.from(keyHex,'hex');const decipher=crypto.createDecipheriv('aes-128-ecb',key,null);decipher.setAutoPadding(true);return Buffer.concat([decipher.update(Buffer.from(encoded,'base64')),decipher.final()]).toString('utf8')}
-async function exchangeToken(c:any){for(const k of ['technical_login','technical_password','signing_key','exchange_key'])if(!c[k])throw new Error(`NAV technikai hitelesítő adat hiányzik: ${k}`);const requestId=rid(),timestamp=ts(),signature=sha3(requestId+compact(timestamp)+String(c.signing_key));const xml=`<?xml version="1.0" encoding="UTF-8"?><TokenExchangeRequest xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">${commonHeader(c,requestId,timestamp,signature)}${software(c)}</TokenExchangeRequest>`;const r=await axios.post(`${apiBase(c.environment)}/tokenExchange`,xml,{headers:{'Content-Type':'application/xml'},timeout:20000});const encoded=String(r.data).match(/<encodedExchangeToken>([^<]+)<\/encodedExchangeToken>/)?.[1];if(!encoded)throw new Error(`NAV tokenExchange sikertelen: ${String(r.data).slice(0,500)}`);return {token:decryptToken(encoded,String(c.exchange_key)),requestId,response:String(r.data)}}
-function invoiceXml(c:any,inv:any,lines:any[]){const issue=String(inv.issue_date||new Date().toISOString().slice(0,10)).slice(0,10);const perf=String(inv.performance_date||issue).slice(0,10);const due=String(inv.due_date||issue).slice(0,10);const supplierTax=String(c.supplier_tax_number).replace(/\D/g,'');const customerTax=String(inv.customer_tax_number||inv.partner_tax_no||'').replace(/\D/g,'');const customerName=inv.customer_name||inv.partner_name||'Magánszemély';const lineXml=lines.map((l:any,i:number)=>`<line><lineNumber>${i+1}</lineNumber><lineExpressionIndicator>true</lineExpressionIndicator><lineDescription>${esc(l.description)}</lineDescription><quantity>${Number(l.quantity||1).toFixed(4)}</quantity><unitOfMeasure>${esc(l.unit_of_measure||'PIECE')}</unitOfMeasure><unitPrice>${Number(l.unit_price_net||0).toFixed(4)}</unitPrice><lineAmountsNormal><lineNetAmountData><lineNetAmount>${Number(l.net_amount||0).toFixed(2)}</lineNetAmount><lineNetAmountHUF>${Number(l.net_amount||0).toFixed(2)}</lineNetAmountHUF></lineNetAmountData><lineVatRate><vatPercentage>${Number(l.vat_rate??0.27).toFixed(4)}</vatPercentage></lineVatRate><lineVatData><lineVatAmount>${Number(l.vat_amount||0).toFixed(2)}</lineVatAmount><lineVatAmountHUF>${Number(l.vat_amount||0).toFixed(2)}</lineVatAmountHUF></lineVatData><lineGrossAmountData><lineGrossAmountNormal>${Number(l.gross_amount||0).toFixed(2)}</lineGrossAmountNormal><lineGrossAmountNormalHUF>${Number(l.gross_amount||0).toFixed(2)}</lineGrossAmountNormalHUF></lineGrossAmountData></lineAmountsNormal></line>`).join('');return `<?xml version="1.0" encoding="UTF-8"?><InvoiceData xmlns="http://schemas.nav.gov.hu/OSA/3.0/data"><invoiceNumber>${esc(inv.invoice_no)}</invoiceNumber><invoiceIssueDate>${issue}</invoiceIssueDate><completenessIndicator>false</completenessIndicator><invoiceMain><invoice><invoiceHead><supplierInfo><supplierTaxNumber><taxpayerId>${supplierTax.slice(0,8)}</taxpayerId><vatCode>${supplierTax.slice(8,9)||'2'}</vatCode><countyCode>${supplierTax.slice(9,11)||'00'}</countyCode></supplierTaxNumber><supplierName>${esc(c.supplier_name)}</supplierName><supplierAddress><simpleAddress><countryCode>${esc(c.supplier_country_code||'HU')}</countryCode><postalCode>${esc(c.supplier_postal_code)}</postalCode><city>${esc(c.supplier_city)}</city><additionalAddressDetail>${esc(c.supplier_address)}</additionalAddressDetail></simpleAddress></supplierAddress></supplierInfo><customerInfo><customerVatStatus>${customerTax?'DOMESTIC':'PRIVATE_PERSON'}</customerVatStatus>${customerTax?`<customerVatData><customerTaxNumber><taxpayerId>${customerTax.slice(0,8)}</taxpayerId><vatCode>${customerTax.slice(8,9)||'2'}</vatCode><countyCode>${customerTax.slice(9,11)||'00'}</countyCode></customerTaxNumber></customerVatData>`:''}<customerName>${esc(customerName)}</customerName><customerAddress><simpleAddress><countryCode>${esc(inv.customer_country_code||'HU')}</countryCode><postalCode>${esc(inv.customer_postal_code||'0000')}</postalCode><city>${esc(inv.customer_city||'N/A')}</city><additionalAddressDetail>${esc(inv.customer_address||'N/A')}</additionalAddressDetail></simpleAddress></customerAddress></customerInfo><invoiceDetail><invoiceCategory>NORMAL</invoiceCategory><invoiceDeliveryDate>${perf}</invoiceDeliveryDate><currencyCode>${esc(inv.currency||'HUF')}</currencyCode><exchangeRate>1</exchangeRate><paymentMethod>${esc((inv.payment_method||'OTHER').toUpperCase())}</paymentMethod><paymentDate>${due}</paymentDate><invoiceAppearance>ELECTRONIC</invoiceAppearance></invoiceDetail></invoiceHead><invoiceLines>${lineXml}</invoiceLines><invoiceSummary><summaryNormal><summaryByVatRate><vatRate><vatPercentage>${Number(lines[0]?.vat_rate??0.27).toFixed(4)}</vatPercentage></vatRate><vatRateNetData><vatRateNetAmount>${Number(inv.net_total||0).toFixed(2)}</vatRateNetAmount><vatRateNetAmountHUF>${Number(inv.net_total||0).toFixed(2)}</vatRateNetAmountHUF></vatRateNetData><vatRateVatData><vatRateVatAmount>${Number(inv.vat_total||0).toFixed(2)}</vatRateVatAmount><vatRateVatAmountHUF>${Number(inv.vat_total||0).toFixed(2)}</vatRateVatAmountHUF></vatRateVatData><vatRateGrossData><vatRateGrossAmount>${Number(inv.gross_total||0).toFixed(2)}</vatRateGrossAmount><vatRateGrossAmountHUF>${Number(inv.gross_total||0).toFixed(2)}</vatRateGrossAmountHUF></vatRateGrossData></summaryByVatRate><invoiceNetAmount>${Number(inv.net_total||0).toFixed(2)}</invoiceNetAmount><invoiceNetAmountHUF>${Number(inv.net_total||0).toFixed(2)}</invoiceNetAmountHUF><invoiceVatAmount>${Number(inv.vat_total||0).toFixed(2)}</invoiceVatAmount><invoiceVatAmountHUF>${Number(inv.vat_total||0).toFixed(2)}</invoiceVatAmountHUF></summaryNormal><summaryGrossData><invoiceGrossAmount>${Number(inv.gross_total||0).toFixed(2)}</invoiceGrossAmount><invoiceGrossAmountHUF>${Number(inv.gross_total||0).toFixed(2)}</invoiceGrossAmountHUF></summaryGrossData></invoiceSummary></invoice></invoiceMain></InvoiceData>`}
-router.get('/settings',async(req:AuthRequest,res,next)=>{try{const c=await cfg(String(req.query.location_id||req.user?.location_id||''));const copy={...c};for(const k of ['technical_password','signing_key','exchange_key'])if(copy[k])copy[k]='********';res.json(copy)}catch(e:any){if(missingCfg(e))return res.json(null);next(e)}});
-router.get('/connection-test',async(req:AuthRequest,res,next)=>{try{const c=await cfg(String(req.query.location_id||req.user?.location_id||''));const t=await exchangeToken(c);res.json({ok:true,environment:c.environment,request_id:t.requestId,message:'NAV tokenExchange sikeres.'})}catch(e:any){res.status(409).json({ok:false,message:e.message})}});
-router.post('/invoices/:id/prepare',async(req:AuthRequest,res,next)=>{try{const inv=(await db.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid`,[req.params.id])).rows[0];if(!inv)return res.status(404).json({message:'A számla nem található.'});const c=await cfg(String(inv.location_id||req.user?.location_id||''));let lines=(await db.query(`SELECT * FROM finance_invoice_lines WHERE invoice_id=$1::uuid ORDER BY line_number`,[inv.id])).rows;if(!lines.length&&inv.work_order_id){const items=(await db.query(`SELECT * FROM work_order_items WHERE work_order_id=$1 ORDER BY created_at`,[inv.work_order_id])).rows;for(let i=0;i<items.length;i++){const x=items[i],gross=Number(x.line_total||0),rate=Number(c.default_vat_rate||0.27),net=gross/(1+rate),vat=gross-net;const l=(await db.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,service_id,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[inv.id,i+1,x.item_name||'Tétel',Number(x.quantity||1),net/Number(x.quantity||1),rate,net,vat,gross,x.service_id?String(x.service_id):null,x.product_id?String(x.product_id):null])).rows[0];lines.push(l)}}const xml=invoiceXml(c,inv,lines);const s=(await db.query(`INSERT INTO nav_invoice_submissions(invoice_id,work_order_id,invoice_number,operation,environment,status,invoice_xml,created_by) VALUES($1,$2,$3,'CREATE',$4,'prepared',$5,$6) RETURNING *`,[inv.id,inv.work_order_id||null,inv.invoice_no,c.environment,xml,actor(req)])).rows[0];res.status(201).json({submission:s,invoice_xml:xml})}catch(e:any){if(missingCfg(e))return res.status(409).json({ok:false,message:e.message});next(e)}});
-router.post('/submissions/:id/submit',async(req:AuthRequest,res,next)=>{try{const s=(await db.query(`SELECT * FROM nav_invoice_submissions WHERE id=$1::uuid`,[req.params.id])).rows[0];if(!s)return res.status(404).json({message:'NAV beküldés nem található.'});const inv=(await db.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid`,[s.invoice_id])).rows[0];const c=await cfg(String(inv.location_id||req.user?.location_id||''));const {token}=await exchangeToken(c);const requestId=rid(),timestamp=ts();const invoiceData=Buffer.from(String(s.invoice_xml),'utf8').toString('base64');const partial=sha3('CREATE'+invoiceData);const signature=sha3(requestId+compact(timestamp)+String(c.signing_key)+partial);const xml=`<?xml version="1.0" encoding="UTF-8"?><ManageInvoiceRequest xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">${commonHeader(c,requestId,timestamp,signature)}${software(c)}<exchangeToken>${esc(token)}</exchangeToken><invoiceOperations><compressedContent>false</compressedContent><invoiceOperation><index>1</index><invoiceOperation>CREATE</invoiceOperation><invoiceData>${invoiceData}</invoiceData></invoiceOperation></invoiceOperations></ManageInvoiceRequest>`;await db.query(`UPDATE nav_invoice_submissions SET status='submitting',request_id=$2,request_xml=$3,updated_at=now() WHERE id=$1`,[s.id,requestId,xml]);const r=await axios.post(`${apiBase(c.environment)}/manageInvoice`,xml,{headers:{'Content-Type':'application/xml'},timeout:30000});const response=String(r.data),transactionId=response.match(/<transactionId>([^<]+)<\/transactionId>/)?.[1];if(!transactionId)throw new Error(`NAV manageInvoice sikertelen: ${response.slice(0,800)}`);await db.query(`UPDATE nav_invoice_submissions SET status='submitted',transaction_id=$2,response_xml=$3,submitted_at=now(),updated_at=now() WHERE id=$1`,[s.id,transactionId,response]);await db.query(`UPDATE finance_invoices SET nav_status='submitted',nav_transaction_id=$2,nav_submission_id=$3 WHERE id=$1`,[s.invoice_id,transactionId,s.id]);res.json({ok:true,transaction_id:transactionId,environment:c.environment})}catch(e:any){await db.query(`UPDATE nav_invoice_submissions SET status='error',error_message=$2,updated_at=now() WHERE id=$1::uuid`,[req.params.id,String(e.message||e)]).catch(()=>undefined);res.status(409).json({ok:false,message:e.message})}});
-router.get('/invoices/:id/submissions',async(req,res,next)=>{try{const r=await db.query(`SELECT id,invoice_number,operation,environment,request_id,transaction_id,status,error_code,error_message,submitted_at,completed_at,created_at FROM nav_invoice_submissions WHERE invoice_id=$1::uuid ORDER BY created_at DESC`,[req.params.id]);res.json(r.rows)}catch(e){next(e)}});
+
+function commonHeader(c:any,requestId:string,timestamp:string,signature:string){
+  return `<header><requestId>${requestId}</requestId><timestamp>${timestamp}</timestamp><requestVersion>3.0</requestVersion><headerVersion>1.0</headerVersion></header><user><login>${esc(c.technical_login)}</login><passwordHash cryptoType="SHA-512">${sha512(String(c.technical_password||''))}</passwordHash><taxNumber>${esc(String(c.supplier_tax_number).replace(/\D/g,'').slice(0,8))}</taxNumber><requestSignature cryptoType="SHA3-512">${signature}</requestSignature></user>`;
+}
+
+function software(c:any){
+  return `<software><softwareId>${esc(c.software_id)}</softwareId><softwareName>${esc(c.software_name)}</softwareName><softwareOperation>${esc(c.software_operation||'ONLINE_SERVICE')}</softwareOperation><softwareMainVersion>${esc(c.software_main_version||'1.0')}</softwareMainVersion><softwareDevName>${esc(c.software_dev_name)}</softwareDevName>${c.software_dev_contact?`<softwareDevContact>${esc(c.software_dev_contact)}</softwareDevContact>`:''}<softwareDevCountryCode>${esc(c.software_dev_country_code||'HU')}</softwareDevCountryCode></software>`;
+}
+
+function decryptToken(encoded:string,keyHex:string){
+  const key=Buffer.from(keyHex,'hex');
+  const decipher=crypto.createDecipheriv('aes-128-ecb',key,null);
+  decipher.setAutoPadding(true);
+  return Buffer.concat([decipher.update(Buffer.from(encoded,'base64')),decipher.final()]).toString('utf8');
+}
+
+async function exchangeToken(c:any){
+  for(const k of ['technical_login','technical_password','signing_key','exchange_key'])if(!c[k])throw new Error(`NAV technikai hitelesítő adat hiányzik: ${k}`);
+  const requestId=rid(),timestamp=ts(),signature=sha3(requestId+compact(timestamp)+String(c.signing_key));
+  const xml=`<?xml version="1.0" encoding="UTF-8"?><TokenExchangeRequest xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">${commonHeader(c,requestId,timestamp,signature)}${software(c)}</TokenExchangeRequest>`;
+  const r=await axios.post(`${apiBase(c.environment)}/tokenExchange`,xml,{headers:{'Content-Type':'application/xml'},timeout:20000});
+  const encoded=String(r.data).match(/<encodedExchangeToken>([^<]+)<\/encodedExchangeToken>/)?.[1];
+  if(!encoded)throw new Error(`NAV tokenExchange sikertelen: ${String(r.data).slice(0,500)}`);
+  return {token:decryptToken(encoded,String(c.exchange_key)),requestId,response:String(r.data)};
+}
+
+router.get('/settings',async(req:AuthRequest,res,next)=>{
+  try{
+    const c=await cfg(String(req.query.location_id||req.user?.location_id||''));
+    const copy={...c};
+    for(const k of ['technical_password','signing_key','exchange_key'])if(copy[k])copy[k]='********';
+    res.json(copy);
+  }catch(e:any){if(missingCfg(e))return res.json(null);next(e)}
+});
+
+router.get('/connection-test',async(req:AuthRequest,res)=>{
+  try{
+    const c=await cfg(String(req.query.location_id||req.user?.location_id||''));
+    const t=await exchangeToken(c);
+    res.json({ok:true,environment:c.environment,request_id:t.requestId,message:'NAV tokenExchange sikeres.'});
+  }catch(e:any){res.status(409).json({ok:false,message:e.message})}
+});
+
+router.post('/invoices/:id/prepare',async(req:AuthRequest,res,next)=>{
+  try{
+    const inv=(await db.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid`,[req.params.id])).rows[0];
+    if(!inv)return res.status(404).json({message:'A számla nem található.'});
+    const c=await cfg(String(inv.location_id||req.user?.location_id||''));
+    let lines=(await db.query(`SELECT * FROM finance_invoice_lines WHERE invoice_id=$1::uuid ORDER BY line_number`,[inv.id])).rows;
+    if(!lines.length&&inv.work_order_id){
+      const items=(await db.query(`SELECT * FROM work_order_items WHERE work_order_id=$1 ORDER BY created_at`,[inv.work_order_id])).rows;
+      for(let i=0;i<items.length;i++){
+        const x=items[i],gross=Number(x.line_total||0),vatRate=Number(c.default_vat_rate||0.27),net=gross/(1+vatRate),vat=gross-net;
+        const l=(await db.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,service_id,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[inv.id,i+1,x.item_name||'Tétel',Number(x.quantity||1),net/Number(x.quantity||1),vatRate,net,vat,gross,x.service_id?String(x.service_id):null,x.product_id?String(x.product_id):null])).rows[0];
+        lines.push(l);
+      }
+    }
+    const validation=validateNavXmlPrerequisites(inv,lines);
+    if(!validation.valid)return res.status(409).json({ok:false,message:'A számla NAV XML előfeltételei hibásak.',errors:validation.errors});
+    const operation=resolveNavOperation(inv.invoice_type);
+    const xml=buildNavInvoiceXml(c,inv,lines);
+    const s=(await db.query(`INSERT INTO nav_invoice_submissions(invoice_id,work_order_id,invoice_number,operation,environment,status,invoice_xml,created_by) VALUES($1,$2,$3,$4,$5,'prepared',$6,$7) RETURNING *`,[inv.id,inv.work_order_id||null,inv.invoice_no,operation,c.environment,xml,actor(req)])).rows[0];
+    res.status(201).json({submission:s,operation,invoice_xml:xml});
+  }catch(e:any){if(missingCfg(e))return res.status(409).json({ok:false,message:e.message});next(e)}
+});
+
+router.post('/submissions/:id/submit',async(req:AuthRequest,res)=>{
+  try{
+    const s=(await db.query(`SELECT * FROM nav_invoice_submissions WHERE id=$1::uuid`,[req.params.id])).rows[0];
+    if(!s)return res.status(404).json({message:'NAV beküldés nem található.'});
+    const operation=String(s.operation||'').toUpperCase() as NavInvoiceOperation;
+    if(!allowedOperations.has(operation))return res.status(409).json({ok:false,message:`Érvénytelen NAV számlaművelet: ${operation||'hiányzik'}`});
+    if(!String(s.invoice_xml||'').trim())return res.status(409).json({ok:false,message:'A NAV beküldéshez nincs előkészített invoice_xml.'});
+    const inv=(await db.query(`SELECT * FROM finance_invoices WHERE id=$1::uuid`,[s.invoice_id])).rows[0];
+    if(!inv)return res.status(404).json({message:'A számla nem található.'});
+    const expectedOperation=resolveNavOperation(inv.invoice_type);
+    if(operation!==expectedOperation)return res.status(409).json({ok:false,message:`A NAV művelet (${operation}) nem egyezik a számla típusával (${expectedOperation}). Készítse elő újra az adatszolgáltatást.`});
+    const c=await cfg(String(inv.location_id||req.user?.location_id||''));
+    const {token}=await exchangeToken(c);
+    const requestId=rid(),timestamp=ts();
+    const invoiceData=Buffer.from(String(s.invoice_xml),'utf8').toString('base64');
+    const partial=sha3(operation+invoiceData);
+    const signature=sha3(requestId+compact(timestamp)+String(c.signing_key)+partial);
+    const xml=`<?xml version="1.0" encoding="UTF-8"?><ManageInvoiceRequest xmlns="http://schemas.nav.gov.hu/OSA/3.0/api">${commonHeader(c,requestId,timestamp,signature)}${software(c)}<exchangeToken>${esc(token)}</exchangeToken><invoiceOperations><compressedContent>false</compressedContent><invoiceOperation><index>1</index><invoiceOperation>${operation}</invoiceOperation><invoiceData>${invoiceData}</invoiceData></invoiceOperation></invoiceOperations></ManageInvoiceRequest>`;
+    await db.query(`UPDATE nav_invoice_submissions SET status='submitting',request_id=$2,request_xml=$3,updated_at=now() WHERE id=$1`,[s.id,requestId,xml]);
+    const r=await axios.post(`${apiBase(c.environment)}/manageInvoice`,xml,{headers:{'Content-Type':'application/xml'},timeout:30000});
+    const response=String(r.data),transactionId=response.match(/<transactionId>([^<]+)<\/transactionId>/)?.[1];
+    if(!transactionId)throw new Error(`NAV manageInvoice sikertelen: ${response.slice(0,800)}`);
+    await db.query(`UPDATE nav_invoice_submissions SET status='submitted',transaction_id=$2,response_xml=$3,submitted_at=now(),updated_at=now() WHERE id=$1`,[s.id,transactionId,response]);
+    await db.query(`UPDATE finance_invoices SET nav_status='submitted',nav_transaction_id=$2,nav_submission_id=$3 WHERE id=$1`,[s.invoice_id,transactionId,s.id]);
+    res.json({ok:true,transaction_id:transactionId,environment:c.environment,operation});
+  }catch(e:any){
+    await db.query(`UPDATE nav_invoice_submissions SET status='error',error_message=$2,updated_at=now() WHERE id=$1::uuid`,[req.params.id,String(e.message||e)]).catch(()=>undefined);
+    res.status(409).json({ok:false,message:e.message});
+  }
+});
+
+router.get('/invoices/:id/submissions',async(req,res,next)=>{
+  try{
+    const r=await db.query(`SELECT id,invoice_number,operation,environment,request_id,transaction_id,status,error_code,error_message,submitted_at,completed_at,created_at FROM nav_invoice_submissions WHERE invoice_id=$1::uuid ORDER BY created_at DESC`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){next(e)}
+});
+
 export default router;
