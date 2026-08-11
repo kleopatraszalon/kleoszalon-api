@@ -6,9 +6,41 @@ import {AuthRequest} from '../middleware/auth';
 const router=Router();
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 const tag=()=>`NAV-UAT-${new Date().toISOString().replace(/\D/g,'').slice(0,14)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+const masked=(v:any)=>String(v||'').trim()==='********';
+const keepSecret=(incoming:any,current:any,envValue?:string)=>{
+  const next=String(incoming||'').trim();
+  if(!next||masked(next))return envValue||current||null;
+  return next;
+};
+const safeConfig=(row:any)=>row?{
+  id:String(row.id),
+  location_id:row.location_id?String(row.location_id):null,
+  active:Boolean(row.active),
+  environment:String(row.environment),
+  supplier_name:row.supplier_name||'',
+  supplier_tax_number:row.supplier_tax_number||'',
+  supplier_country_code:row.supplier_country_code||'HU',
+  supplier_postal_code:row.supplier_postal_code||'',
+  supplier_city:row.supplier_city||'',
+  supplier_address:row.supplier_address||'',
+  invoice_prefix:row.invoice_prefix||'KLEO',
+  software_id:row.software_id||'KLEOSZALONVIR0001',
+  technical_login:process.env.NAV_TECHNICAL_LOGIN||row.technical_login||'',
+  technical_password_configured:Boolean(process.env.NAV_TECHNICAL_PASSWORD||row.technical_password),
+  signing_key_configured:Boolean(process.env.NAV_SIGNING_KEY||row.signing_key),
+  exchange_key_configured:Boolean(process.env.NAV_EXCHANGE_KEY||row.exchange_key),
+  credential_source:{
+    technical_login:process.env.NAV_TECHNICAL_LOGIN?'environment':'database',
+    technical_password:process.env.NAV_TECHNICAL_PASSWORD?'environment':'database',
+    signing_key:process.env.NAV_SIGNING_KEY?'environment':'database',
+    exchange_key:process.env.NAV_EXCHANGE_KEY?'environment':'database'
+  },
+  test_ready:String(row.environment)==='test'&&Boolean(process.env.NAV_TECHNICAL_LOGIN||row.technical_login)&&Boolean(process.env.NAV_TECHNICAL_PASSWORD||row.technical_password)&&Boolean(process.env.NAV_SIGNING_KEY||row.signing_key)&&Boolean(process.env.NAV_EXCHANGE_KEY||row.exchange_key),
+  live_submission_blocked:true
+}:null;
 
 async function selectedConfig(locationId:string){
-  const q=await db.query(`SELECT id::text,location_id::text,environment,supplier_name,supplier_tax_number FROM nav_online_invoice_settings WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[locationId]);
+  const q=await db.query(`SELECT * FROM nav_online_invoice_settings WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[locationId]);
   return q.rows[0]||null;
 }
 
@@ -32,12 +64,68 @@ export async function navTestOnlySubmitGuard(req:Request,res:Response,next:NextF
   }catch(e){next(e)}
 }
 
+router.get('/configuration',async(req:AuthRequest,res,next)=>{
+  try{
+    const requested=String(req.query.location_id||req.user?.location_id||'').trim();
+    const active=await selectedConfig(requested);
+    const inactive=active?null:(await db.query(`SELECT * FROM nav_online_invoice_settings WHERE environment='test' AND ($1::text='' AND location_id IS NULL OR location_id::text=$1) ORDER BY updated_at DESC LIMIT 1`,[requested])).rows[0]||null;
+    const row=active||inactive;
+    res.json({ok:true,configured:Boolean(row),config:safeConfig(row),active:Boolean(active),test_only:true,live_configuration_write_blocked:true});
+  }catch(e){next(e)}
+});
+
+router.put('/configuration',async(req:AuthRequest,res,next)=>{
+  const c=await db.connect();
+  try{
+    if(req.body?.environment&&String(req.body.environment).toLowerCase()!=='test')return res.status(409).json({ok:false,error:'nav_uat_live_blocked',message:'A NAV UAT konfigurációs végpont kizárólag a tesztkörnyezetet engedélyezi.'});
+    const requested=String(req.body?.location_id||req.user?.location_id||'').trim();
+    const locationId=requested||null;
+    const supplierName=String(req.body?.supplier_name||'').trim();
+    const supplierTaxNumber=String(req.body?.supplier_tax_number||'').replace(/\D/g,'');
+    const postalCode=String(req.body?.supplier_postal_code||'').trim();
+    const city=String(req.body?.supplier_city||'').trim();
+    const address=String(req.body?.supplier_address||'').trim();
+    const invoicePrefix=String(req.body?.invoice_prefix||'KLEO').trim().toUpperCase().replace(/[^A-Z0-9_-]/g,'').slice(0,20)||'KLEO';
+    if(!supplierName||supplierTaxNumber.length!==11||!postalCode||!city||!address)return res.status(400).json({ok:false,message:'A teszt NAV konfigurációhoz kibocsátó név, 11 számjegyű adószám, irányítószám, város és cím szükséges.'});
+
+    await c.query('BEGIN');
+    const existing=(await c.query(`SELECT * FROM nav_online_invoice_settings WHERE location_id IS NOT DISTINCT FROM $1::uuid ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,[locationId])).rows[0]||null;
+    const technicalLogin=keepSecret(req.body?.technical_login,existing?.technical_login,process.env.NAV_TECHNICAL_LOGIN);
+    const technicalPassword=keepSecret(req.body?.technical_password,existing?.technical_password,process.env.NAV_TECHNICAL_PASSWORD);
+    const signingKey=keepSecret(req.body?.signing_key,existing?.signing_key,process.env.NAV_SIGNING_KEY);
+    const exchangeKey=keepSecret(req.body?.exchange_key,existing?.exchange_key,process.env.NAV_EXCHANGE_KEY);
+    if(!technicalLogin||!technicalPassword||!signingKey||!exchangeKey){
+      await c.query('ROLLBACK');
+      return res.status(400).json({ok:false,message:'A NAV teszt technikai login, jelszó, aláírókulcs és cserekulcs mind szükséges. A kulcsokat ne chatben küldje; az admin felületen vagy Render környezeti változóként adja meg.'});
+    }
+    if(!/^[0-9a-fA-F]{32}$/.test(String(exchangeKey))) {
+      await c.query('ROLLBACK');
+      return res.status(400).json({ok:false,message:'A NAV cserekulcsnak 32 hexadecimális karakterből kell állnia.'});
+    }
+
+    let row:any;
+    if(existing){
+      row=(await c.query(`UPDATE nav_online_invoice_settings SET active=true,environment='test',supplier_name=$2,supplier_tax_number=$3,supplier_country_code='HU',supplier_postal_code=$4,supplier_city=$5,supplier_address=$6,invoice_prefix=$7,technical_login=$8,technical_password=$9,signing_key=$10,exchange_key=$11,updated_at=now() WHERE id=$1::uuid RETURNING *`,[existing.id,supplierName,supplierTaxNumber,postalCode,city,address,invoicePrefix,technicalLogin,technicalPassword,signingKey,exchangeKey])).rows[0];
+    }else{
+      row=(await c.query(`INSERT INTO nav_online_invoice_settings(location_id,active,environment,supplier_name,supplier_tax_number,supplier_country_code,supplier_postal_code,supplier_city,supplier_address,invoice_prefix,technical_login,technical_password,signing_key,exchange_key) VALUES($1::uuid,true,'test',$2,$3,'HU',$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[locationId,supplierName,supplierTaxNumber,postalCode,city,address,invoicePrefix,technicalLogin,technicalPassword,signingKey,exchangeKey])).rows[0];
+    }
+    await c.query('COMMIT');
+    console.info('[NAV-UAT] test configuration saved',{config_id:String(row.id),location_id:row.location_id?String(row.location_id):null,actor:actor(req)});
+    res.json({ok:true,message:'NAV tesztkörnyezeti konfiguráció mentve és aktiválva.',config:safeConfig(row)});
+  }catch(e:any){
+    await c.query('ROLLBACK').catch(()=>undefined);
+    if(String(e?.code||'')==='22P02')return res.status(400).json({ok:false,message:'Érvénytelen telephely-azonosító.'});
+    next(e);
+  }finally{c.release()}
+});
+
 router.get('/environment',async(req:AuthRequest,res,next)=>{
   try{
     const requested=String(req.query.location_id||req.user?.location_id||'').trim();
     const c=await selectedConfig(requested);
     if(!c)return res.status(404).json({ok:false,message:'Nincs aktív NAV Online Számla konfiguráció.'});
-    res.json({ok:true,environment:c.environment,location_id:c.location_id||null,test_ready:c.environment==='test',live_submission_blocked:true});
+    const safe=safeConfig(c);
+    res.json({ok:true,environment:c.environment,location_id:c.location_id||null,test_ready:Boolean(safe?.test_ready),credentials_configured:{technical_login:Boolean(safe?.technical_login),technical_password:Boolean(safe?.technical_password_configured),signing_key:Boolean(safe?.signing_key_configured),exchange_key:Boolean(safe?.exchange_key_configured)},live_submission_blocked:true});
   }catch(e){next(e)}
 });
 
@@ -48,6 +136,8 @@ router.post('/fixture',async(req:AuthRequest,res,next)=>{
     const config=await selectedConfig(requested);
     if(!config)return res.status(409).json({ok:false,message:'NAV UAT: nincs aktív NAV konfiguráció.'});
     if(String(config.environment)!=='test')return res.status(409).json({ok:false,error:'nav_uat_live_blocked',message:'NAV UAT tesztadat nem készíthető, mert az aktív NAV konfiguráció nem tesztkörnyezet.',environment:config.environment});
+    const safe=safeConfig(config);
+    if(!safe?.test_ready)return res.status(409).json({ok:false,error:'nav_uat_credentials_missing',message:'NAV UAT: a teszt technikai felhasználó hitelesítő adatai hiányosak.'});
     const uatTag=tag();
     const invoiceNo=`KLEO-${uatTag}`.slice(0,50);
     const locationId=config.location_id||requested||null;
