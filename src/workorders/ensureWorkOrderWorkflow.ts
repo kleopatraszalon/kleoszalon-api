@@ -53,14 +53,39 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
       END IF;
     END $$;
 
+    -- Több régi work_orders séma eltérő document_status CHECK-et hagyott maga után.
+    -- Ezeket még az adatok normalizálása előtt el kell távolítani, különben egy
+    -- legacy CHECK 23514 hibával blokkolhatja az önjavító bootstrapot.
+    DO $$
+    DECLARE status_att smallint; r record;
+    BEGIN
+      SELECT attnum INTO status_att
+        FROM pg_attribute
+       WHERE attrelid='work_orders'::regclass
+         AND attname='document_status'
+         AND NOT attisdropped;
+      IF status_att IS NOT NULL THEN
+        FOR r IN
+          SELECT conname
+            FROM pg_constraint
+           WHERE conrelid='work_orders'::regclass
+             AND contype='c'
+             AND status_att=ANY(conkey)
+        LOOP
+          EXECUTE format('ALTER TABLE work_orders DROP CONSTRAINT %I',r.conname);
+        END LOOP;
+      END IF;
+    END $$;
+
     UPDATE work_orders
     SET document_status = CASE
-      WHEN status='completed' THEN 'completed'
-      WHEN status IN ('cancelled','no_show') THEN 'cancelled'
+      WHEN status IN ('completed','paid') THEN 'completed'
+      WHEN status IN ('cancelled','canceled','no_show') THEN 'cancelled'
       WHEN status='in_progress' THEN 'open'
       ELSE 'draft'
     END
-    WHERE document_status IS NULL;
+    WHERE document_status IS NULL
+       OR document_status NOT IN ('draft','open','completed','cancelled');
 
     ALTER TABLE work_orders ALTER COLUMN document_status SET DEFAULT 'draft';
     ALTER TABLE work_orders ALTER COLUMN document_status SET NOT NULL;
@@ -104,9 +129,10 @@ export async function ensureWorkOrderWorkflow(pool: Pool) {
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='work_orders_document_status_chk') THEN
         ALTER TABLE work_orders ADD CONSTRAINT work_orders_document_status_chk
-          CHECK (document_status IN ('draft','open','completed','cancelled'));
+          CHECK (document_status IN ('draft','open','completed','cancelled')) NOT VALID;
       END IF;
     END $$;
+    ALTER TABLE work_orders VALIDATE CONSTRAINT work_orders_document_status_chk;
   `);
 
   await pool.query(`
