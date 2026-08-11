@@ -54,10 +54,22 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
     const j=wo._json||{};
 
-    if(j.locked_at||j.archived_at||String(wo.status||'')==='completed'){
-      const archive=await ensureArchiveRow(c,wo,'completed');await c.query('COMMIT');
+    const alreadyClosed=Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)
+      ||String(wo.status||'')==='completed'||String(j.document_status||'')==='completed';
+    if(alreadyClosed){
+      const archive=await ensureArchiveRow(c,{...wo,status:'completed'},'completed');
+      const repairSets:string[]=[];
+      if(timestampLike(woCols.get('locked_at')))repairSets.push('locked_at=COALESCE(locked_at,now())');
+      if(timestampLike(woCols.get('archived_at')))repairSets.push('archived_at=COALESCE(archived_at,now())');
+      if(repairSets.length&&!j.locked_at&&!j.archived_at){
+        await c.query('SAVEPOINT wo_repair_close_markers');
+        try{wo=(await c.query(`UPDATE work_orders SET ${repairSets.join(',')} WHERE id=$1::uuid RETURNING *`,[wo.id])).rows[0]}
+        catch(e:any){await c.query('ROLLBACK TO SAVEPOINT wo_repair_close_markers');console.warn('[workorder-finalization-fast] close marker repair skipped',e?.code||'',e?.message||e)}
+        await c.query('RELEASE SAVEPOINT wo_repair_close_markers');
+      }
+      await c.query('COMMIT');
       const docs=await deliverNow(String(wo.id),false);
-      return res.json({idempotent:true,finalized:true,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
+      return res.json({idempotent:true,repaired:true,finalized:true,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
     }
     if(['cancelled','no_show'].includes(String(wo.status||''))){await c.query('ROLLBACK');return res.status(409).json({message:'Lemondott vagy meg nem jelent munkalap nem zárható teljesítettként.',code:'WORKORDER_TERMINAL_CANCELLED'})}
 
