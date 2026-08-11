@@ -30,6 +30,7 @@ import workOrderMaterialsRouter from "./workOrderMaterials";
 import navOnlineInvoiceRouter from "./navOnlineInvoice";
 import navOnlineInvoiceStatusRouter from "./navOnlineInvoiceStatus";
 import navInvoiceLifecycleRouter from "./navInvoiceLifecycle";
+import navTestUatRouter,{navTestOnlySubmitGuard} from "./navTestUat";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
 import dashboardSettingsRouter from "./dashboardSettings";
@@ -108,9 +109,11 @@ router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finan
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
 
 router.use("/workorder-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
+router.use("/nav-online-invoice",navTestOnlySubmitGuard);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
+router.use("/nav-test-uat",requireManagement,ensureFinanceReady,requireFeature("finance"),navTestUatRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
 router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
 router.use("/uat",requireManagement,uatTestCenterRouter);
