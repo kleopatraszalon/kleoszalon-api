@@ -47,6 +47,7 @@ async function deliverNow(workOrderId:string,forceMail=false){
 router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   try{
+    await repairLegacyWorkOrderTriggers(c).catch((e:any)=>console.warn('[workorder-finalization-fast] pre-finalize trigger repair skipped',e?.code||'',e?.message||e));
     const [hasOrders,hasItems,hasPayments,hasArchive]=await Promise.all([tableExists('work_orders'),tableExists('work_order_items'),tableExists('work_order_payments'),tableExists('work_order_archive')]);
     if(!hasOrders||!hasItems||!hasPayments||!hasArchive)return next();
     const woCols=await columns('work_orders');
