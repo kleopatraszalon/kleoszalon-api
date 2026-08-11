@@ -1,0 +1,25 @@
+name: Voice Booking exact correlation live UAT
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/booking-voice-exact-correlation-live.mjs'
+      - '.github/workflows/booking-voice-exact-correlation-live-uat.yml'
+  workflow_dispatch:
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run exact Voice correlation live UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_FRONTEND_BASE: https://kleoszalon-frontend.onrender.com
+          UAT_ADMIN_IDENTIFIER: admin1
+          UAT_ADMIN_PASSWORD: Teszt1234!
+        run: node scripts/uat/booking-voice-exact-correlation-live.mjs
