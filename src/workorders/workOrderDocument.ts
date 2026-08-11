@@ -115,11 +115,14 @@ async function repairClosedWorkOrderArchive(workOrderId:string){
       WHERE NOT EXISTS(SELECT 1 FROM work_order_archive WHERE work_order_id::text=$1)
       RETURNING *`,[String(workOrderId),number,archivedAt,JSON.stringify(snapshot),hash])).rows[0];
     const archive=inserted||(await c.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(workOrderId)])).rows[0]||null;
-    if(archive&&j.archive_hash==null){
-      const hasHash=(await c.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders' AND column_name='archive_hash' LIMIT 1`)).rowCount;
-      if(hasHash)await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id::text=$1`,[String(workOrderId),hash]).catch(()=>undefined);
-    }
     await c.query('COMMIT');
+    // Keep this optional legacy backfill outside the archive transaction.
+    // A failing work_orders trigger must never poison and roll back the newly
+    // committed immutable archive row.
+    if(archive&&j.archive_hash==null){
+      const hasHash=(await db.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders' AND column_name='archive_hash' LIMIT 1`)).rowCount;
+      if(hasHash)await db.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id::text=$1`,[String(workOrderId),hash]).catch(()=>undefined);
+    }
     if(archive)console.warn('[workorder-document] missing archive self-healed',workOrderId);
     return archive;
   }catch(e){
