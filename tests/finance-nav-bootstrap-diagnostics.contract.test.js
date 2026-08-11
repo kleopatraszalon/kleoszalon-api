@@ -6,10 +6,12 @@ const path=require('node:path');
 const ensureSrc=fs.readFileSync(path.join(process.cwd(),'src/finance/ensureFinanceNav.ts'),'utf8');
 const txSrc=fs.readFileSync(path.join(process.cwd(),'src/routes/transactions.ts'),'utf8');
 
-test('Finance NAV bootstrap errors identify the failing stage and database code',()=>{
+test('Finance NAV bootstrap errors identify the failing stage, optional substage and database code',()=>{
   assert.match(ensureSrc,/class FinanceNavBootstrapError/);
-  assert.match(ensureSrc,/this\.stage=stage/);
+  assert.match(ensureSrc,/const substage=cause\?\.workOrderBootstrapSubstage/);
+  assert.match(ensureSrc,/this\.stage=substage\?`\$\{stage\}:\$\{substage\}`:stage/);
   assert.match(ensureSrc,/this\.dbCode=cause\?\.code\?String\(cause\.code\):null/);
+  assert.match(ensureSrc,/this\.constraint=cause\?\.constraint/);
   assert.match(ensureSrc,/step\('work_order_workflow'/);
   assert.match(ensureSrc,/step\('hr_v2'/);
   assert.match(ensureSrc,/step\(`sql:\$\{file\}`/);
