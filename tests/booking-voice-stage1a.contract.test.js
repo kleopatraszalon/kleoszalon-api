@@ -6,7 +6,8 @@ const read=(file)=>fs.readFileSync(path.join(process.cwd(),file),'utf8');
 
 test('public marketing mounts the voice interpreter before generic booking routes',()=>{
   const src=read('src/routes/publicMarketing.ts');
-  const voice=src.indexOf('router.use("/booking/voice", bookingVoiceRouter)');
+  const voiceMatch=src.match(/router\.use\("\/booking\/voice",[^\n]*bookingVoiceRouter\)/);
+  const voice=voiceMatch?src.indexOf(voiceMatch[0]):-1;
   const booking=src.indexOf('router.use("/booking", onlineBookingRouter)');
   assert.ok(voice>=0,'voice booking route is not mounted');
   assert.ok(booking>=0,'generic booking route is not mounted');
