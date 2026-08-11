@@ -1,0 +1,30 @@
+name: Public booking manage live UAT
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/public-booking-manage-live.mjs'
+      - '.github/workflows/public-booking-manage-live-uat.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: public-booking-manage-live-uat
+  cancel-in-progress: false
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run public booking management live UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_FRONTEND_BASE: https://kleoszalon-frontend.onrender.com
+        run: node scripts/uat/public-booking-manage-live.mjs
