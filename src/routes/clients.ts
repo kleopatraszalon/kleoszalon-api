@@ -102,9 +102,19 @@ const dateValue = (v:any): string | null => {
 };
 
 router.use(requireAuth);
-router.use(async (_req, res, next) => {
-  try { await ensureClientSchema(); next(); } catch (error) { fail(res, error); }
+router.use(async (req, res, next) => {
+  try { await ensureClientSchema(); next(); } catch (error:any) {
+    // Legacy client-id types can make optional CRM foreign-key bootstrap fail.
+    // Read-only guest context must remain available from the base tables.
+    if(req.method==='GET'){console.warn('CRM optional schema unavailable for read',error?.code||'',error?.message||error);return next()}
+    return fail(res, error);
+  }
 });
+
+async function optionalClientRows(label:string,query:Promise<any>){
+  try{return (await query).rows||[]}
+  catch(error:any){console.warn(`CRM optional ${label} unavailable`,error?.code||'',error?.message||error);return[]}
+}
 
 router.get("/stats", async (req: AuthRequest, res) => {
   try {
@@ -274,15 +284,15 @@ router.post("/", async (req: AuthRequest, res) => {
 router.get("/:id", async (req: AuthRequest, res) => {
   try {
     const locationId = effectiveLocation(req);
-    const client = await pool.query(`SELECT c.*,COALESCE(NULLIF(c.full_name,''),c.name) display_name,l.name location_name FROM clients c LEFT JOIN locations l ON l.id=c.location_id WHERE c.id=$1::uuid AND ($2::uuid IS NULL OR c.location_id=$2::uuid)`, [req.params.id, locationId]);
+    const client = await pool.query(`SELECT c.*,COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'') display_name,l.name location_name FROM clients c LEFT JOIN locations l ON l.id::text=(to_jsonb(c)->>'location_id') WHERE c.id::text=$1 AND ($2::text IS NULL OR to_jsonb(c)->>'location_id'=$2::text)`, [req.params.id, locationId]);
     if (!client.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
     const [appointments, notes, tags, forms] = await Promise.all([
-      pool.query(`SELECT a.id,a.start_time,a.end_time,a.status,a.title,l.name location_name,COALESCE(e.full_name,e.name) employee_name FROM appointments a LEFT JOIN locations l ON l.id=a.location_id LEFT JOIN employees e ON e.id=a.employee_id WHERE a.client_id=$1::uuid ORDER BY a.start_time DESC LIMIT 100`, [req.params.id]),
-      pool.query(`SELECT * FROM crm_client_notes WHERE client_id=$1::uuid ORDER BY created_at DESC`, [req.params.id]),
-      pool.query(`SELECT t.* FROM crm_client_tags ct JOIN crm_tags t ON t.id=ct.tag_id WHERE ct.client_id=$1::uuid ORDER BY t.name`, [req.params.id]),
-      pool.query(`SELECT r.*,f.title,f.form_type FROM crm_form_responses r JOIN crm_forms f ON f.id=r.form_id WHERE r.client_id=$1::uuid ORDER BY r.completed_at DESC`, [req.params.id])
+      optionalClientRows('appointments',pool.query(`SELECT a.id,a.start_time,a.end_time,a.status,a.title,l.name location_name,COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(to_jsonb(e)->>'name',''),'') employee_name FROM appointments a LEFT JOIN locations l ON l.id::text=a.location_id::text LEFT JOIN employees e ON e.id::text=a.employee_id::text WHERE a.client_id::text=$1 ORDER BY a.start_time DESC LIMIT 100`, [req.params.id])),
+      optionalClientRows('notes',pool.query(`SELECT * FROM crm_client_notes WHERE client_id::text=$1 ORDER BY created_at DESC`, [req.params.id])),
+      optionalClientRows('tags',pool.query(`SELECT t.* FROM crm_client_tags ct JOIN crm_tags t ON t.id::text=ct.tag_id::text WHERE ct.client_id::text=$1 ORDER BY t.name`, [req.params.id])),
+      optionalClientRows('forms',pool.query(`SELECT r.*,f.title,f.form_type FROM crm_form_responses r JOIN crm_forms f ON f.id::text=r.form_id::text WHERE r.client_id::text=$1 ORDER BY r.completed_at DESC`, [req.params.id]))
     ]);
-    res.json({ client:client.rows[0],appointments:appointments.rows,notes:notes.rows,tags:tags.rows,forms:forms.rows });
+    res.json({ client:client.rows[0],appointments,notes,tags,forms });
   } catch (error) { fail(res, error); }
 });
 
