@@ -12,6 +12,7 @@ export async function ensureOnlineBooking() {
       ADD COLUMN IF NOT EXISTS recurring_group_id uuid,
       ADD COLUMN IF NOT EXISTS confirmation_required boolean NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS confirmed_at timestamptz,
+      ADD COLUMN IF NOT EXISTS voice_event_id uuid,
       ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
     ALTER TABLE appointments DROP CONSTRAINT IF EXISTS chk_appointments_status_phase3;
@@ -23,6 +24,8 @@ export async function ensureOnlineBooking() {
 
     CREATE UNIQUE INDEX IF NOT EXISTS appointments_cancellation_token_uq
       ON appointments(cancellation_token) WHERE cancellation_token IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS appointments_voice_event_uq
+      ON appointments(voice_event_id) WHERE voice_event_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS appointments_employee_time_idx
       ON appointments(employee_id,start_time,end_time)
       WHERE status NOT IN ('cancelled','canceled','no_show');
@@ -76,8 +79,12 @@ export async function ensureOnlineBooking() {
       preferred_employee_id uuid REFERENCES employees(id) ON DELETE SET NULL,
       preferred_from timestamptz, preferred_to timestamptz, note text,
       status text NOT NULL DEFAULT 'waiting', source text NOT NULL DEFAULT 'internal',
+      voice_event_id uuid,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE booking_waitlist ADD COLUMN IF NOT EXISTS voice_event_id uuid;
+    CREATE UNIQUE INDEX IF NOT EXISTS booking_waitlist_voice_event_uq
+      ON booking_waitlist(voice_event_id) WHERE voice_event_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS booking_waitlist_status_idx ON booking_waitlist(location_id,status,created_at);
 
     CREATE TABLE IF NOT EXISTS online_booking_settings (
@@ -140,7 +147,7 @@ export async function ensureOnlineBooking() {
           COALESCE(NULLIF(a.title,''),'Online foglalás'),a.notes,'waiting',a.employee_id,a.client_id,
           client_row.client_name,client_row.phone,client_row.email,a.location_id,a.id,false,false,
           'public-online-booking',now(),wo_number,now(),
-          jsonb_build_object('source',a.booking_source,'appointment_id',a.id,'start_time',a.start_time,'end_time',a.end_time)
+          jsonb_build_object('source',a.booking_source,'appointment_id',a.id,'start_time',a.start_time,'end_time',a.end_time,'voice_event_id',a.voice_event_id)
         ) RETURNING id INTO wo_id;
 
         UPDATE appointments SET work_order_id=wo_id,work_order_number=wo_number WHERE id=a.id;
