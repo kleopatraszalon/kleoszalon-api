@@ -41,6 +41,11 @@ const aiHealth=await json(`${API}/api/transactions/ai-support/health`,{headers:a
 console.log(`ℹ️ AI support health — HTTP ${aiHealth.res.status} · ${JSON.stringify(aiHealth.body)}`);
 const aiStatsProbe=await json(`${API}/api/transactions/ai-support/stats`,{headers:auth});
 console.log(`ℹ️ AI usage schema probe — HTTP ${aiStatsProbe.res.status} · ${JSON.stringify(aiStatsProbe.body)}`);
+const chatProbe=await json(`${API}/api/transactions/ai-support/chat`,{
+  method:'POST',headers:{...auth,'content-type':'application/json'},
+  body:JSON.stringify({messages:[{role:'user',content:'Válaszolj egyetlen szóval: rendben'}],context:{pathname:'/uat'}})
+});
+console.log(`ℹ️ OpenAI chat probe — HTTP ${chatProbe.res.status} · ${JSON.stringify(chatProbe.body)}`);
 
 const before=await json(`${API}/api/transactions/booking-voice-stats?days=30`,{headers:auth});
 assert(before.res.ok,'Voice statisztika előmérés sikertelen');
@@ -50,7 +55,7 @@ const beforeCost=Number(before.body?.ai?.estimated_cost_usd||0);
 const transcript='UAT költségmérés: jövő pénteken délután szeretnék időpontot, a szalon és a szolgáltatás még mindegy.';
 const interpreted=await json(`${API}/api/public/marketing/booking/voice/interpret`,{
   method:'POST',
-  headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.85'},
+  headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.86'},
   body:JSON.stringify({transcript})
 });
 assert(interpreted.res.ok,`Voice interpret sikertelen: HTTP ${interpreted.res.status} ${JSON.stringify(interpreted.body)}`);
