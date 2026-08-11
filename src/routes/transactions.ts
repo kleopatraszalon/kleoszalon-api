@@ -20,6 +20,7 @@ import loyaltyCustomerFinanceRouter from "./loyaltyCustomerFinance";
 import loyaltyCashierRouter from "./loyaltyCashier";
 import loyaltyAutomationRouter from "./loyaltyAutomation";
 import workOrderFinalizationRouter from "./workOrderFinalization";
+import workOrderFinalizationRecoveryRouter from "./workOrderFinalizationRecovery";
 import workOrderInvoiceChainRouter from "./workOrderInvoiceChain";
 import workOrderEditorRouter from "./workOrderEditor";
 import workOrderMaterialsRouter from "./workOrderMaterials";
@@ -90,8 +91,10 @@ router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
-// A végleges munkalaplezárás saját, célzott és idempotens sémabiztosítást használ,
-// ezért nem blokkoljuk a teljes Finance/NAV bootstrap esetleges hibájával.
+// Recovery router fut először: a végleges lezárást, PDF-et és e-mailt nem blokkolhatja
+// legacy Finance/NAV séma vagy egy kérés közbeni egyediindex-migráció.
+router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
+// A korábbi teljes finalization router megmarad kompatibilitási fallbackként az esetleges további végpontokra.
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
 router.use("/workorder-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
