@@ -13,6 +13,20 @@ test('archive lookup is compatible with uuid and legacy text work_order_id colum
   assert.doesNotMatch(documentSource,/WHERE work_order_id=\$1::uuid ORDER BY archived_at DESC LIMIT 1/);
 });
 
+test('missing archive is rebuilt for a genuinely closed workorder',()=>{
+  assert.match(documentSource,/repairClosedWorkOrderArchive/);
+  assert.match(documentSource,/FOR UPDATE/);
+  assert.match(documentSource,/j\.locked_at\|\|j\.archived_at\|\|j\.completed_at\|\|j\.closed_at/);
+  assert.match(documentSource,/document_status\|\|''\)===['"]completed['"]/);
+  assert.match(documentSource,/WHERE NOT EXISTS\(SELECT 1 FROM work_order_archive WHERE work_order_id::text=\$1\)/);
+  assert.match(documentSource,/missing archive self-healed/);
+});
+
+test('archive repair supports legacy text and uuid archive foreign-key storage',()=>{
+  assert.match(documentSource,/const textId=\['text','character varying','character'\]/);
+  assert.match(documentSource,/const idExpr=textId\?'\$1':'\$1::uuid'/);
+});
+
 test('closed workorder PDF has an emergency fallback before email delivery',()=>{
   assert.match(documentSource,/renderEmergencyClosedWorkOrderPdf/);
   assert.match(documentSource,/rich PDF failed, emergency PDF used/);
