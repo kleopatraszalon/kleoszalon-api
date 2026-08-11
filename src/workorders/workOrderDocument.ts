@@ -27,15 +27,23 @@ function fontPath(bold=false){
 }
 
 function setFont(doc:PDFKit.PDFDocument,bold=false){
-  const p=fontPath(bold);
-  doc.font(p|| (bold?'Helvetica-Bold':'Helvetica'));
+  const requested=fontPath(bold);
+  const regular=fontPath(false);
+  doc.font(requested||regular||(bold?'Helvetica-Bold':'Helvetica'));
+}
+
+function asciiSafe(v:any){
+  return String(v??'')
+    .replace(/ő/g,'o').replace(/Ő/g,'O').replace(/ű/g,'u').replace(/Ű/g,'U')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/×/g,'x').replace(/[–—]/g,'-').replace(/·/g,' - ')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g,'?');
 }
 
 function installSafeTextFallback(doc:PDFKit.PDFDocument){
   if(fontPath(false))return;
   const original=(doc as any).text.bind(doc);
-  const safe=(v:any)=>String(v??'').replace(/ő/g,'o').replace(/Ő/g,'O').replace(/ű/g,'u').replace(/Ű/g,'U');
-  (doc as any).text=(value:any,...args:any[])=>original(safe(value),...args);
+  (doc as any).text=(value:any,...args:any[])=>original(asciiSafe(value),...args);
 }
 
 function line(doc:PDFKit.PDFDocument){
@@ -56,13 +64,24 @@ function kv(doc:PDFKit.PDFDocument,label:string,value:any){
   setFont(doc,false);doc.fillColor('#111').text(text(value),178,y,{width:360});doc.y=Math.max(doc.y,y+14);
 }
 
+function archiveSnapshot(archive:any){
+  const raw=archive?.snapshot;
+  if(raw&&typeof raw==='object')return raw;
+  if(typeof raw==='string'){
+    try{return JSON.parse(raw)}catch{return{}}
+  }
+  return{};
+}
+
 export async function loadWorkOrderArchive(workOrderId:string){
-  const q=await db.query(`SELECT * FROM work_order_archive WHERE work_order_id=$1::uuid ORDER BY archived_at DESC LIMIT 1`,[workOrderId]);
+  // Legacy adatbázisokban a work_order_id típusa nem mindenhol azonos.
+  // A szöveges összehasonlítás UUID és text oszloppal is működik.
+  const q=await db.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(workOrderId)]);
   return q.rows[0]||null;
 }
 
 export async function renderClosedWorkOrderPdf(archive:any):Promise<Buffer>{
-  const snapshot=archive?.snapshot||{};
+  const snapshot=archiveSnapshot(archive);
   const header=snapshot?.header||{};
   const items=Array.isArray(snapshot?.items)?snapshot.items:[];
   const payments=Array.isArray(snapshot?.payments)?snapshot.payments:[];
@@ -137,16 +156,44 @@ export async function renderClosedWorkOrderPdf(archive:any):Promise<Buffer>{
   });
 }
 
+async function renderEmergencyClosedWorkOrderPdf(archive:any):Promise<Buffer>{
+  const snapshot=archiveSnapshot(archive);const header=snapshot?.header||{};
+  return await new Promise<Buffer>((resolve,reject)=>{
+    const chunks:Buffer[]=[];const doc=new PDFDocument({size:'A4',margin:48});
+    doc.on('data',(c:Buffer)=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
+    doc.font('Helvetica-Bold').fontSize(18).text(asciiSafe('KLEOPÁTRA – LEZÁRT DIGITÁLIS MUNKALAP'),{align:'center'});
+    doc.moveDown();doc.font('Helvetica').fontSize(10);
+    const rows=[
+      ['Munkalapszám',archive.work_order_number||header.work_order_number||header.id],
+      ['Archiválva',dateTime(archive.archived_at)],['Státusz',archive.terminal_status||header.status||'completed'],
+      ['Vendég',header.client_name],['E-mail',header.client_email],['Munkalap címe',header.title],
+      ['Fizetendő',money(header.amount_due??header.gross_total??0)],['Kifizetve',money(header.amount_paid??0)],
+      ['Snapshot SHA-256',archive.snapshot_hash]
+    ];
+    for(const[label,value]of rows)doc.text(asciiSafe(`${label}: ${text(value)}`));
+    doc.moveDown();doc.fontSize(8).text(asciiSafe('Technikai tartalék PDF: a teljes archivált munkalap továbbra is az adatbázis snapshotban található.'));
+    doc.end();
+  });
+}
+
 export async function generateAndDeliverClosedWorkOrder(workOrderId:string,options:{sendMail?:boolean;forceMail?:boolean}={}){
   const archive=await loadWorkOrderArchive(workOrderId);
   if(!archive)throw new Error('A lezárt munkalap archív példánya nem található.');
-  const pdf=await renderClosedWorkOrderPdf(archive);
-  await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id=$1::uuid`,[workOrderId]).catch(()=>undefined);
+  let pdf:Buffer;let pdfFallback=false;
+  try{pdf=await renderClosedWorkOrderPdf(archive)}
+  catch(e:any){
+    pdfFallback=true;
+    console.warn('[workorder-document] rich PDF failed, emergency PDF used',e?.message||e);
+    pdf=await renderEmergencyClosedWorkOrderPdf(archive);
+  }
+  await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id::text=$1`,[String(workOrderId)]).catch(()=>undefined);
   const recipients=closedWorkOrderRecipients();
   let mail:any={attempted:false,sent:false,recipients};
   if(options.sendMail!==false){
     if(archive.email_sent_at&&!options.forceMail){
       mail={attempted:false,sent:true,already_sent:true,recipients,email_sent_at:archive.email_sent_at};
+    }else if(!recipients.length){
+      mail={attempted:false,sent:false,recipients,error:'Nincs érvényes munkalap-zárási e-mail címzett konfigurálva.'};
     }else{
       try{
         const result=await sendEmail({
@@ -157,12 +204,12 @@ export async function generateAndDeliverClosedWorkOrder(workOrderId:string,optio
           attachments:[{filename:`${archive.work_order_number||'munkalap'}.pdf`,content:pdf,contentType:'application/pdf'}],
         });
         mail={attempted:true,...result,recipients};
-        await db.query(`UPDATE work_order_archive SET email_status=$2,email_recipients=$3::jsonb,email_error=NULL,email_sent_at=CASE WHEN $2='sent' THEN now() ELSE email_sent_at END WHERE work_order_id=$1::uuid`,[workOrderId,result.sent?'sent':'logged',JSON.stringify(recipients)]).catch(()=>undefined);
+        await db.query(`UPDATE work_order_archive SET email_status=$2,email_recipients=$3::jsonb,email_error=NULL,email_sent_at=CASE WHEN $2='sent' THEN now() ELSE email_sent_at END WHERE work_order_id::text=$1`,[String(workOrderId),result.sent?'sent':'logged',JSON.stringify(recipients)]).catch(()=>undefined);
       }catch(e:any){
         mail={attempted:true,sent:false,recipients,error:String(e?.message||e)};
-        await db.query(`UPDATE work_order_archive SET email_status='failed',email_recipients=$2::jsonb,email_error=$3 WHERE work_order_id=$1::uuid`,[workOrderId,JSON.stringify(recipients),String(e?.message||e)]).catch(()=>undefined);
+        await db.query(`UPDATE work_order_archive SET email_status='failed',email_recipients=$2::jsonb,email_error=$3 WHERE work_order_id::text=$1`,[String(workOrderId),JSON.stringify(recipients),String(e?.message||e)]).catch(()=>undefined);
       }
     }
   }
-  return{archive,pdf,mail};
+  return{archive,pdf,pdf_fallback:pdfFallback,mail};
 }
