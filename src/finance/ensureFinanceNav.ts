@@ -10,12 +10,16 @@ let ensurePromise:Promise<void>|null=null;
 export class FinanceNavBootstrapError extends Error{
   stage:string;
   dbCode:string|null;
+  substage:string|null;
+  constraint:string|null;
   constructor(stage:string,cause:any){
     const causeMessage=String(cause?.message||cause||'ismeretlen hiba');
     super(`Finance/NAV bootstrap hiba [${stage}]: ${causeMessage}`);
     this.name='FinanceNavBootstrapError';
     this.stage=stage;
     this.dbCode=cause?.code?String(cause.code):null;
+    this.substage=cause?.workOrderBootstrapSubstage?String(cause.workOrderBootstrapSubstage):null;
+    this.constraint=cause?.constraint?String(cause.constraint):null;
     (this as any).cause=cause;
   }
 }
