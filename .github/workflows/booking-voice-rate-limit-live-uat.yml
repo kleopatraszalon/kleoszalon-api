@@ -1,0 +1,29 @@
+name: Voice Booking distributed rate-limit live UAT
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/booking-voice-rate-limit-live.mjs'
+      - '.github/workflows/booking-voice-rate-limit-live-uat.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: booking-voice-rate-limit-live-uat
+  cancel-in-progress: false
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run distributed Voice Booking limiter live UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+        run: node scripts/uat/booking-voice-rate-limit-live.mjs
