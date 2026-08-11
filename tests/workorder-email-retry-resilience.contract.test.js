@@ -23,6 +23,9 @@ test('missing archive is rebuilt for a genuinely closed workorder',()=>{
   assert.match(documentSource,/\|\|financiallyClosed/);
   assert.match(documentSource,/WHERE NOT EXISTS\(SELECT 1 FROM work_order_archive WHERE work_order_id::text=\$1\)/);
   assert.match(documentSource,/missing archive self-healed/);
+  const commit=documentSource.indexOf("await c.query('COMMIT')",documentSource.indexOf('repairClosedWorkOrderArchive'));
+  const hashBackfill=documentSource.indexOf('UPDATE work_orders SET archive_hash',documentSource.indexOf('repairClosedWorkOrderArchive'));
+  assert.ok(commit>=0&&hashBackfill>commit,'optional archive hash backfill must run after archive commit');
 });
 
 test('archive repair supports legacy text and uuid archive foreign-key storage',()=>{
