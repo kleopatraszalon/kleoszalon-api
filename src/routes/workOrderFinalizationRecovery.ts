@@ -13,10 +13,13 @@ async function tableExists(c:any,table:string){
   return Boolean(q.rows[0]?.ok);
 }
 
-async function columnExists(c:any,table:string,column:string){
-  const q=await c.query(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2) ok`,[table,column]);
-  return Boolean(q.rows[0]?.ok);
+async function columnInfo(c:any,table:string,column:string){
+  const q=await c.query(`SELECT data_type,udt_name,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2 LIMIT 1`,[table,column]);
+  return q.rows[0]||null;
 }
+
+async function columnExists(c:any,table:string,column:string){return Boolean(await columnInfo(c,table,column))}
+const textLike=(info:any)=>Boolean(info&&['text','character varying','character'].includes(String(info.data_type||'')));
 
 async function safeDDL(c:any,sql:string,label:string){
   try{await c.query(sql);return true}
@@ -34,18 +37,9 @@ async function ensureCoreSchema(c:any){
   if(await tableExists(c,'work_order_items'))await safeDDL(c,`ALTER TABLE work_order_items ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`,'work_order_items.created_at');
   if(await tableExists(c,'work_order_payments'))await safeDDL(c,`ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS paid_at timestamptz NOT NULL DEFAULT now()`,'work_order_payments.paid_at');
   await safeDDL(c,`CREATE TABLE IF NOT EXISTS work_order_archive(
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    work_order_id uuid NOT NULL,
-    work_order_number text NOT NULL,
-    archived_at timestamptz NOT NULL DEFAULT now(),
-    terminal_status text NOT NULL,
-    snapshot jsonb NOT NULL,
-    snapshot_hash text NOT NULL,
-    pdf_generated_at timestamptz,
-    email_sent_at timestamptz,
-    email_status text,
-    email_recipients jsonb,
-    email_error text
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),work_order_id uuid NOT NULL,work_order_number text NOT NULL,
+    archived_at timestamptz NOT NULL DEFAULT now(),terminal_status text NOT NULL,snapshot jsonb NOT NULL,snapshot_hash text NOT NULL,
+    pdf_generated_at timestamptz,email_sent_at timestamptz,email_status text,email_recipients jsonb,email_error text
   )`,'work_order_archive');
   for(const[col,type]of [['pdf_generated_at','timestamptz'],['email_sent_at','timestamptz'],['email_status','text'],['email_recipients','jsonb'],['email_error','text']] as [string,string][])await safeDDL(c,`ALTER TABLE work_order_archive ADD COLUMN IF NOT EXISTS ${col} ${type}`,`work_order_archive.${col}`);
 }
@@ -87,9 +81,13 @@ async function optionalPostProcessing(c:any,workOrder:any,by:string){
     }catch(e:any){warnings.push(`Időpont lezárási szinkron: ${e?.message||e}`)}
   }
   if(await tableExists(c,'work_order_status_history')){
-    try{await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata)
-      VALUES($1::uuid,'document',$2,'completed',$3,'FINALIZATION_RECOVERY',$4,'{}'::jsonb)`,[workOrder.id,'open',by,'Végleges lezárás recovery útvonalon.'])}
-    catch(e:any){warnings.push(`Státusztörténet: ${e?.message||e}`)}
+    try{
+      const changedBy=await columnInfo(c,'work_order_status_history','changed_by');
+      if(textLike(changedBy))await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,changed_by,reason,note,metadata)
+        VALUES($1::uuid,'document',$2,'completed',$3,'FINALIZATION_RECOVERY',$4,'{}'::jsonb)`,[workOrder.id,'open',by,'Végleges lezárás recovery útvonalon.']);
+      else await c.query(`INSERT INTO work_order_status_history(work_order_id,status_kind,from_status,to_status,reason,note,metadata)
+        VALUES($1::uuid,'document',$2,'completed','FINALIZATION_RECOVERY',$3,'{}'::jsonb)`,[workOrder.id,'open','Végleges lezárás recovery útvonalon.']);
+    }catch(e:any){warnings.push(`Státusztörténet: ${e?.message||e}`)}
   }
   return warnings;
 }
@@ -122,7 +120,8 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     await add('document_status',`'completed'`);
     await add('completed_at',`COALESCE(completed_at,now())`);
     await add('closed_at',`COALESCE(closed_at,now())`);
-    if(await columnExists(c,'work_orders','closed_by')){params.push(actor(req));sets.push(`closed_by=COALESCE(closed_by,$${params.length})`)}
+    const closedByInfo=await columnInfo(c,'work_orders','closed_by');
+    if(textLike(closedByInfo)){params.push(actor(req));sets.push(`closed_by=COALESCE(closed_by,$${params.length})`)}
     await add('locked_at',`COALESCE(locked_at,now())`);
     await add('locked_reason',`COALESCE(locked_reason,'TERMINAL_STATUS:COMPLETED')`);
     await add('archived_at',`COALESCE(archived_at,now())`);
@@ -142,8 +141,12 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     return res.json({finalized:true,recovery:true,work_order:wo,archive,warnings,delivery:deliveryMeta});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);
-    console.error('[workorder-finalization-recovery] finalize failed',e?.code||'',e?.message||e);
-    next(e);
+    const code=String(e?.code||'');const detail=String(e?.message||e);
+    console.error('[workorder-finalization-recovery] finalize failed',code,detail);
+    if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code,detail});
+    if(code==='23514')return res.status(409).json({message:'A régi adatbázis státuszkorlátozása blokkolja a végleges lezárást. A Render logban megjelenő constraint nevet javítani kell.',code,detail});
+    if(code==='57014'||code==='55P03')return res.status(503).json({message:'A munkalap lezárását adatbázis-zárolás vagy statement timeout akadályozta. Próbálja újra néhány másodperc múlva.',code,detail});
+    return res.status(500).json({message:'A végleges lezárás adatbázis-művelete nem sikerült.',code:code||'FINALIZATION_DB_ERROR',detail});
   }finally{c.release()}
 });
 
