@@ -4,6 +4,7 @@ import inventoryControlRouter from "./inventoryControl";
 import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
+import workOrderCashierFastRouter from "./workOrderCashierFast";
 import financeOperationsRouter from "./financeOperations";
 import financeDashboardRouter from "./financeDashboard";
 import financeLinkingRouter from "./financeLinking";
@@ -19,9 +20,11 @@ import loyaltyCommissionRouter from "./loyaltyCommission";
 import loyaltyCustomerFinanceRouter from "./loyaltyCustomerFinance";
 import loyaltyCashierRouter from "./loyaltyCashier";
 import loyaltyAutomationRouter from "./loyaltyAutomation";
+import workOrderFinalizationFastRouter from "./workOrderFinalizationFast";
 import workOrderFinalizationRouter from "./workOrderFinalization";
 import workOrderFinalizationRecoveryRouter from "./workOrderFinalizationRecovery";
 import workOrderInvoiceChainRouter from "./workOrderInvoiceChain";
+import workOrderEditorFastRouter from "./workOrderEditorFast";
 import workOrderEditorRouter from "./workOrderEditor";
 import workOrderMaterialsRouter from "./workOrderMaterials";
 import navOnlineInvoiceRouter from "./navOnlineInvoice";
@@ -52,9 +55,8 @@ import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
 
 const router=express.Router();
 
-// A nehéz booking/workorder DDL-javítások nem futhatnak minden pénzügyi HTTP kérésben.
-// ensureFinanceNav memoizált bootstrap, ezért az első sikeres inicializálás után a kérések
-// már nem próbálnak újra ALTER TABLE / constraint műveleteket végezni.
+// A nehéz Finance/NAV bootstrap csak a teljes pénzügyi moduloknál marad.
+// A napi munkalap szerkesztés, fizetés és lezárás külön fast path-on fut.
 const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
   try{await ensureFinanceNav();next()}
   catch(error:any){
@@ -65,7 +67,6 @@ const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
 const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT w.work_order_number,w.status,NULLIF(to_jsonb(w)->>'locked_at','')::timestamptz locked_at,NULLIF(to_jsonb(w)->>'archived_at','')::timestamptz archived_at,NULLIF(to_jsonb(w)->>'financial_closed_at','')::timestamptz financial_closed_at FROM work_orders w WHERE w.id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(Boolean((req as any).body?.close_financially)&&String(wo.status||'')!=='in_progress')return res.status(409).json({message:'Végleges pénzügyi zárás csak Folyamatban állapotú munkalapon végezhető.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
 
-// A /api/transactions névtér kizárólag belső VIR műveleteket tartalmaz.
 router.use(requireAuth);
 
 router.get("/",(_req,res)=>res.json([{id:1,type:"income",amount:10000}]));
@@ -77,8 +78,14 @@ router.use("/central-supply",requireProcurementWorkflowAccess,centralSupplyRoute
 router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMethod("procurement.suppliers"),suppliersRouter);
 router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
 router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/booking-voice-stats",ensureVoiceStatsReady,requireMenuPermission("appointments.voice_stats","can_view"),bookingVoiceStatsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
+
+// Gyors munkalap szerkesztő: a meglévő munkalapnál párhuzamos lekérdezés + rövid cache.
+router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
+
+// Gyors pénztári útvonal a teljes Finance/NAV bootstrap ELŐTT.
+router.use("/cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
 router.use("/finance-dashboard",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeDashboardRouter);
@@ -90,12 +97,16 @@ router.use("/loyalty-operations",loyaltyPassLookupRouter);
 router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
+
+// Ha van hűségfiók, de nincs tényleges beváltás, ugyanaz a gyors pénztári útvonal zárja a munkalapot.
+router.use("/loyalty-cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
-// Recovery router fut először: a végleges lezárást, PDF-et és e-mailt nem blokkolhatja
-// legacy Finance/NAV séma vagy egy kérés közbeni egyediindex-migráció.
+
+// Gyors véglegesítés/PDF: nincs request-time DDL és nincs SMTP-várakozás.
+router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
-// A korábbi teljes finalization router megmarad kompatibilitási fallbackként az esetleges további végpontokra.
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
+
 router.use("/workorder-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
