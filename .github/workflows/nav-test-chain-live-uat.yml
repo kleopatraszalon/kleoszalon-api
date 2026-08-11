@@ -1,0 +1,27 @@
+name: NAV test CREATE MODIFY STORNO live UAT
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'scripts/uat/nav-test-chain-live.mjs'
+      - '.github/workflows/nav-test-chain-live-uat.yml'
+  workflow_dispatch:
+
+jobs:
+  nav-test-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run controlled NAV test UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_ADMIN_IDENTIFIER: admin1
+          UAT_ADMIN_PASSWORD: Teszt1234!
+        run: node scripts/uat/nav-test-chain-live.mjs
