@@ -23,6 +23,7 @@ import loyaltyAutomationRouter from "./loyaltyAutomation";
 import workOrderFinalizationFastRouter from "./workOrderFinalizationFast";
 import workOrderFinalizationRouter from "./workOrderFinalization";
 import workOrderFinalizationRecoveryRouter from "./workOrderFinalizationRecovery";
+import workOrderInvoiceFastRouter from "./workOrderInvoiceFast";
 import workOrderInvoiceChainRouter from "./workOrderInvoiceChain";
 import workOrderEditorFastRouter from "./workOrderEditorFast";
 import workOrderEditorRouter from "./workOrderEditor";
@@ -80,12 +81,10 @@ router.use("/suppliers",requireFeature("procurement"),requireMenuPermissionByMet
 router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaborationChatRouter);
 router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/booking-voice-stats",ensureVoiceStatsReady,requireMenuPermission("appointments.voice_stats","can_view"),bookingVoiceStatsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
 
-// Gyors munkalap szerkesztő: a meglévő munkalapnál párhuzamos lekérdezés + rövid cache.
 router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
-// Gyors pénztári útvonal a teljes Finance/NAV bootstrap ELŐTT.
 router.use("/cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
@@ -99,15 +98,14 @@ router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
 
-// Ha van hűségfiók, de nincs tényleges beváltás, ugyanaz a gyors pénztári útvonal zárja a munkalapot.
 router.use("/loyalty-cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
 
-// Gyors véglegesítés/PDF: nincs request-time DDL és nincs SMTP-várakozás.
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
 
+router.use("/workorder-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceFastRouter);
 router.use("/workorder-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",navTestOnlySubmitGuard);
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
