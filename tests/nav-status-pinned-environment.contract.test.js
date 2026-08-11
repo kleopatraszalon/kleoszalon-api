@@ -6,8 +6,8 @@ const src=fs.readFileSync(path.join(process.cwd(),'src/routes/navOnlineInvoiceSt
 
 test('queryTransactionStatus is pinned to the submission environment',()=>{
   assert.match(src,/const submissionEnvironment=String\(s\.environment\|\|''\)/);
-  assert.match(src,/base\(submissionEnvironment\)\/queryTransactionStatus/);
-  assert.doesNotMatch(src,/base\(c\.environment\)\/queryTransactionStatus/);
+  assert.ok(src.includes('base(submissionEnvironment)}/queryTransactionStatus'));
+  assert.ok(!src.includes('base(c.environment)}/queryTransactionStatus'));
 });
 
 test('status refresh fails closed when active config environment changed',()=>{
