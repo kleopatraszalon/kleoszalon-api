@@ -27,8 +27,6 @@ function preferredChannels(a:any):Array<{channel:Channel;recipient:string}>{
     result.push({channel:"email",recipient:email});
   }
 
-  // Ha a vendég által választott csatorna technikailag nem elérhető,
-  // használjuk a másik engedélyezett csatornát, hogy az operatív értesítés ne vesszen el.
   if(!result.length){
     if(emailEnabled&&email)result.push({channel:"email",recipient:email});
     else if(smsEnabled&&phone)result.push({channel:"sms",recipient:phone});
@@ -74,16 +72,18 @@ export async function queueAppointmentCommunications(appointmentId:string,event:
   };
 
   const where=`${a.location_name}, ${fmtDate(a.start_time)} ${fmtTime(a.start_time)}`;
-  const cancelLink=a.cancellation_token?`${process.env.PUBLIC_WEB_URL||"https://weblap-o3g6.onrender.com"}/booking/cancel/${a.cancellation_token}`:"";
+  const publicBookingBase=String(process.env.PUBLIC_BOOKING_URL||"https://kleoszalon-frontend.onrender.com").replace(/\/$/,"");
+  const manageLink=a.cancellation_token?`${publicBookingBase}/booking/manage/${a.cancellation_token}`:"";
+  const manageText=manageLink?`Foglalás kezelése (módosítás / lemondás): ${manageLink}`:"";
 
   if(event==="created"&&a.confirmation_enabled){
-    await insert("booking_created",new Date(),"Kleopátra Szalon – foglalási igény",`Kedves ${a.client_name}!\nFoglalási igényét rögzítettük.\n${where}\nSzakember: ${a.employee_name}\nStátusz: ${a.status}.\n${cancelLink?`Lemondás: ${cancelLink}`:""}`);
+    await insert("booking_created",new Date(),"Kleopátra Szalon – foglalási igény",`Kedves ${a.client_name}!\nFoglalási igényét rögzítettük.\n${where}\nSzakember: ${a.employee_name}\nStátusz: ${a.status}.\n${manageText}`);
   }
   if(event==="confirmed"&&a.confirmation_enabled){
-    await insert("booking_confirmed",new Date(),"Kleopátra Szalon – időpont visszaigazolva",`Kedves ${a.client_name}!\nIdőpontját visszaigazoltuk.\n${where}\nSzakember: ${a.employee_name}.\n${cancelLink?`Lemondás: ${cancelLink}`:""}`);
+    await insert("booking_confirmed",new Date(),"Kleopátra Szalon – időpont visszaigazolva",`Kedves ${a.client_name}!\nIdőpontját visszaigazoltuk.\n${where}\nSzakember: ${a.employee_name}.\n${manageText}`);
   }
   if(event==="rescheduled"&&a.confirmation_enabled){
-    await insert("booking_rescheduled",new Date(),"Kleopátra Szalon – időpont módosult",`Kedves ${a.client_name}!\nIdőpontja módosult.\nÚj időpont: ${where}\nSzakember: ${a.employee_name}.`);
+    await insert("booking_rescheduled",new Date(),"Kleopátra Szalon – időpont módosult",`Kedves ${a.client_name}!\nIdőpontja módosult.\nÚj időpont: ${where}\nSzakember: ${a.employee_name}.\n${manageText}`);
   }
   if(event==="cancelled"&&a.cancellation_enabled){
     await db.query(`UPDATE booking_communication_queue SET status='cancelled',updated_at=now() WHERE appointment_id=$1::uuid AND status='pending'`,[a.id]);
@@ -96,8 +96,8 @@ export async function queueAppointmentCommunications(appointmentId:string,event:
     await db.query(`UPDATE booking_communication_queue SET status='cancelled',updated_at=now()
       WHERE appointment_id=$1::uuid AND event_type IN ('reminder_48h','reminder_24h') AND status='pending'`,[a.id]);
     const startMs=new Date(a.start_time).getTime();
-    if(a.reminder_48h_enabled)await insert("reminder_48h",new Date(startMs-48*3600_000),"Kleopátra Szalon – emlékeztető az időpontjáról",`Kedves ${a.client_name}!\n48 óra múlva várjuk: ${where}.\nSzakember: ${a.employee_name}.`);
-    if(a.reminder_24h_enabled)await insert("reminder_24h",new Date(startMs-24*3600_000),"Kleopátra Szalon – holnap várjuk",`Kedves ${a.client_name}!\nHolnap várjuk: ${where}.\nSzakember: ${a.employee_name}.\n${cancelLink?`Ha mégsem tud jönni: ${cancelLink}`:""}`);
+    if(a.reminder_48h_enabled)await insert("reminder_48h",new Date(startMs-48*3600_000),"Kleopátra Szalon – emlékeztető az időpontjáról",`Kedves ${a.client_name}!\n48 óra múlva várjuk: ${where}.\nSzakember: ${a.employee_name}.\n${manageText}`);
+    if(a.reminder_24h_enabled)await insert("reminder_24h",new Date(startMs-24*3600_000),"Kleopátra Szalon – holnap várjuk",`Kedves ${a.client_name}!\nHolnap várjuk: ${where}.\nSzakember: ${a.employee_name}.\n${manageText}`);
   }
   return{queued,channels:channels.map(x=>x.channel)};
 }
