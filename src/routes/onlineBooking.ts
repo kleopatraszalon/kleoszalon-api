@@ -16,10 +16,29 @@ router.use((req,res,next)=>{
   return next();
 });
 
+const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const asUuidList = (value: unknown) => String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const dayStart = (date: string) => new Date(`${date}T00:00:00`);
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
+
+type VoiceValidation={ok:true;id:string;intent:string}|{ok:false;status:number;error:string};
+async function validateVoiceEvent(cx:any,id:string,allowedIntents:string[]):Promise<VoiceValidation>{
+  // Egy event csak egy végső kimenethez köthető. Az advisory lock a két külön
+  // cél-tábla (appointments / booking_waitlist) közötti versenyhelyzetet is kizárja.
+  await cx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`,[id]);
+  const event=(await cx.query(`SELECT id::text,intent,created_at FROM booking_voice_events WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];
+  if(!event)return{ok:false,status:400,error:"A Voice Booking esemény nem található."};
+  if(new Date(event.created_at).getTime()<Date.now()-24*3600_000)return{ok:false,status:409,error:"A Voice Booking munkamenet lejárt. Indíts új hangos foglalást."};
+  if(!allowedIntents.includes(String(event.intent||"")))return{ok:false,status:409,error:"Ez a Voice Booking esemény nem használható ehhez a művelethez."};
+  const used=(await cx.query(`
+    SELECT 'appointment' source FROM appointments WHERE voice_event_id=$1::uuid
+    UNION ALL
+    SELECT 'waitlist' source FROM booking_waitlist WHERE voice_event_id=$1::uuid
+    LIMIT 1`,[id])).rows[0];
+  if(used)return{ok:false,status:409,error:"Ez a Voice Booking esemény már fel lett használva."};
+  return{ok:true,id:String(event.id),intent:String(event.intent)};
+}
 
 async function settings(locationId: string) {
   await ensureOnlineBooking();
@@ -56,6 +75,7 @@ router.get("/health", async (_req, res) => {
       locations: locations.rows[0]?.count || 0,
       services: services.rows[0]?.count || 0,
       employees: employees.rows[0]?.count || 0,
+      voice_event_correlation:true,
     });
   } catch (error: any) {
     res.status(500).json({ ok: false, database: false, error: error?.message || String(error) });
@@ -196,16 +216,25 @@ router.post("/book", async (req, res) => {
   const email = String(req.body?.email || "").trim();
   const start = new Date(req.body?.start_time);
   const bookingSource = String(req.body?.booking_source || "online") === "voice" ? "online_voice" : "online";
+  const requestedVoiceEventId=bookingSource==="online_voice"?String(req.body?.voice_event_id||"").trim():"";
 
   if (!locationId || !employeeId || !serviceIds.length || !fullName || (!phone && !email) || !Number.isFinite(start.getTime())) {
     return res.status(400).json({ error: "Hiányos foglalási adatok." });
   }
+  if(requestedVoiceEventId&&!UUID_RE.test(requestedVoiceEventId))return res.status(400).json({error:"Érvénytelen Voice Booking eseményazonosító."});
 
   const cx = await db.connect();
   try {
     await ensureOnlineBooking();
     await ensureBookingWorkOrderSchema(cx);
     await cx.query("BEGIN");
+    let voiceEventId:string|null=null;
+    if(requestedVoiceEventId){
+      const voice=await validateVoiceEvent(cx,requestedVoiceEventId,["book"]);
+      if(!voice.ok){await cx.query("ROLLBACK");return res.status(voice.status).json({error:voice.error});}
+      voiceEventId=voice.id;
+    }
+
     const cfgResult = await cx.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`, [locationId]);
     const cfg = cfgResult.rows[0] || { enabled: true, online_discount_percent: 5, require_staff_confirmation: true };
     if (!cfg.enabled) {
@@ -290,9 +319,9 @@ router.post("/book", async (req, res) => {
     const status = cfg.require_staff_confirmation ? "pending" : "confirmed";
     const title = services.rows.map((x: any) => x.name).join(", ");
     const appointment = await cx.query(
-      `INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes,booking_source,cancellation_token,confirmation_required,confirmed_at,updated_at)
-       VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::timestamptz,$6::timestamptz,$7,$8,$9,$10::uuid,$11,$12,now()) RETURNING id`,
-      [employeeId, clientId, locationId, title, start.toISOString(), end.toISOString(), status, req.body?.note || "", bookingSource, token, Boolean(cfg.require_staff_confirmation), cfg.require_staff_confirmation ? null : new Date().toISOString()]
+      `INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes,booking_source,voice_event_id,cancellation_token,confirmation_required,confirmed_at,updated_at)
+       VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::timestamptz,$6::timestamptz,$7,$8,$9,$10::uuid,$11::uuid,$12,$13,now()) RETURNING id`,
+      [employeeId, clientId, locationId, title, start.toISOString(), end.toISOString(), status, req.body?.note || "", bookingSource, voiceEventId, token, Boolean(cfg.require_staff_confirmation), cfg.require_staff_confirmation ? null : new Date().toISOString()]
     );
 
     for (let i = 0; i < services.rows.length; i += 1) {
@@ -307,14 +336,15 @@ router.post("/book", async (req, res) => {
     await cx.query(
       `INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note)
        VALUES($1::uuid,$2,'public',$3::jsonb,$4)`,
-      [appointment.rows[0].id, bookingSource === "online_voice" ? "voice_created" : "online_created", JSON.stringify({ status, start_time: start, end_time: end, employee_id: employeeId, booking_source: bookingSource }), bookingSource === "online_voice" ? "Hangalapú online foglalás" : "Online foglalás"]
+      [appointment.rows[0].id, bookingSource === "online_voice" ? "voice_created" : "online_created", JSON.stringify({ status, start_time: start, end_time: end, employee_id: employeeId, booking_source: bookingSource, voice_event_id:voiceEventId }), bookingSource === "online_voice" ? "Hangalapú online foglalás" : "Online foglalás"]
     );
     const workOrder = await ensureBookingWorkOrder(cx, String(appointment.rows[0].id), "public");
 
     await cx.query("COMMIT");
-    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource, work_order_id: workOrder.work_order_id, work_order_number: workOrder.work_order_number });
+    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource, voice_event_id:voiceEventId, work_order_id: workOrder.work_order_id, work_order_number: workOrder.work_order_number });
   } catch (error: any) {
     await cx.query("ROLLBACK").catch(() => undefined);
+    if(String(error?.code||"")==="23505"&&String(error?.constraint||"").includes("voice_event"))return res.status(409).json({error:"Ez a Voice Booking esemény már fel lett használva."});
     res.status(500).json({ error: "Az online foglalás mentése sikertelen.", detail: error?.message || String(error) });
   } finally {
     cx.release();
@@ -322,22 +352,36 @@ router.post("/book", async (req, res) => {
 });
 
 router.post("/waitlist", async (req, res) => {
+  const locationId = String(req.body?.location_id || "").trim();
+  const name = String(req.body?.client_name || "").trim();
+  const serviceIds = Array.isArray(req.body?.service_ids) ? req.body.service_ids.map(String).filter(Boolean) : [];
+  const source=String(req.body?.booking_source||"online")==="voice"?"online_voice":"online";
+  const requestedVoiceEventId=source==="online_voice"?String(req.body?.voice_event_id||"").trim():"";
+  if (!locationId || !name || !serviceIds.length) return res.status(400).json({ error: "Telephely, név és szolgáltatás szükséges." });
+  if(requestedVoiceEventId&&!UUID_RE.test(requestedVoiceEventId))return res.status(400).json({error:"Érvénytelen Voice Booking eseményazonosító."});
+  const cx=await db.connect();
   try {
     await ensureOnlineBooking();
-    const locationId = String(req.body?.location_id || "").trim();
-    const name = String(req.body?.client_name || "").trim();
-    const serviceIds = Array.isArray(req.body?.service_ids) ? req.body.service_ids.map(String).filter(Boolean) : [];
-    if (!locationId || !name || !serviceIds.length) return res.status(400).json({ error: "Telephely, név és szolgáltatás szükséges." });
-    const { rows } = await db.query(
-      `INSERT INTO booking_waitlist(location_id,client_name,phone,email,service_ids,preferred_employee_id,preferred_from,preferred_to,note,source)
-       VALUES($1::uuid,$2,$3,$4,$5::uuid[],$6::uuid,$7::timestamptz,$8::timestamptz,$9,$10)
-       RETURNING id,status,created_at`,
-      [locationId, name, req.body?.phone || null, req.body?.email || null, serviceIds, req.body?.employee_id || null, req.body?.preferred_from || null, req.body?.preferred_to || null, req.body?.note || null, String(req.body?.booking_source || "online") === "voice" ? "online_voice" : "online"]
+    await cx.query("BEGIN");
+    let voiceEventId:string|null=null;
+    if(requestedVoiceEventId){
+      const voice=await validateVoiceEvent(cx,requestedVoiceEventId,["book","waitlist"]);
+      if(!voice.ok){await cx.query("ROLLBACK");return res.status(voice.status).json({error:voice.error});}
+      voiceEventId=voice.id;
+    }
+    const { rows } = await cx.query(
+      `INSERT INTO booking_waitlist(location_id,client_name,phone,email,service_ids,preferred_employee_id,preferred_from,preferred_to,note,source,voice_event_id)
+       VALUES($1::uuid,$2,$3,$4,$5::uuid[],$6::uuid,$7::timestamptz,$8::timestamptz,$9,$10,$11::uuid)
+       RETURNING id,status,created_at,voice_event_id::text`,
+      [locationId, name, req.body?.phone || null, req.body?.email || null, serviceIds, req.body?.employee_id || null, req.body?.preferred_from || null, req.body?.preferred_to || null, req.body?.note || null, source, voiceEventId]
     );
+    await cx.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (error: any) {
+    await cx.query("ROLLBACK").catch(()=>undefined);
+    if(String(error?.code||"")==="23505"&&String(error?.constraint||"").includes("voice_event"))return res.status(409).json({error:"Ez a Voice Booking esemény már fel lett használva."});
     res.status(500).json({ error: "A várólista mentése sikertelen.", detail: error?.message || String(error) });
-  }
+  } finally {cx.release();}
 });
 
 router.post("/cancel/:token", async (req, res) => {
