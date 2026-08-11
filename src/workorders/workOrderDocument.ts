@@ -1,4 +1,5 @@
 import fs from 'fs';
+import crypto from 'crypto';
 import PDFDocument from 'pdfkit';
 import db from '../db';
 import {sendEmail} from '../mailer';
@@ -73,11 +74,60 @@ function archiveSnapshot(archive:any){
   return{};
 }
 
+async function repairClosedWorkOrderArchive(workOrderId:string){
+  const c=await db.connect();
+  try{
+    await c.query('BEGIN');
+    const archiveTable=(await c.query(`SELECT to_regclass('public.work_order_archive') IS NOT NULL ok`)).rows[0]?.ok;
+    if(!archiveTable){await c.query('ROLLBACK');return null}
+
+    const existing=(await c.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(workOrderId)])).rows[0];
+    if(existing){await c.query('COMMIT');return existing}
+
+    const wo=(await c.query(`SELECT w.*,to_jsonb(w) AS _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[String(workOrderId)])).rows[0];
+    if(!wo){await c.query('ROLLBACK');return null}
+    const j=wo._json||{};
+    const closed=Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)||String(wo.status||'')==='completed'||String(j.document_status||'')==='completed';
+    if(!closed){await c.query('ROLLBACK');return null}
+
+    const tableRows=async(table:string)=>{
+      const exists=(await c.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${table}`])).rows[0]?.ok;
+      if(!exists)return[];
+      return (await c.query(`SELECT * FROM ${table} WHERE work_order_id::text=$1 ORDER BY id`,[String(workOrderId)])).rows;
+    };
+    const [items,payments]=await Promise.all([tableRows('work_order_items'),tableRows('work_order_payments')]);
+    const header={...wo,status:'completed'};delete (header as any)._json;
+    const snapshot={header,items,payments};
+    const hash=crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const number=String(wo.work_order_number||`KLEO-ML-${new Date(wo.created_at||Date.now()).getFullYear()}-${String(wo.id).replace(/-/g,'').slice(0,12).toUpperCase()}`);
+    const idInfo=(await c.query(`SELECT data_type,udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='work_order_archive' AND column_name='work_order_id' LIMIT 1`)).rows[0];
+    const textId=['text','character varying','character'].includes(String(idInfo?.data_type||''));
+    const idExpr=textId?'$1':'$1::uuid';
+    const archivedAt=wo.archived_at||wo.locked_at||wo.completed_at||wo.closed_at||new Date().toISOString();
+    const inserted=(await c.query(`INSERT INTO work_order_archive(work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash)
+      SELECT ${idExpr},$2,COALESCE($3::timestamptz,now()),'completed',$4::jsonb,$5
+      WHERE NOT EXISTS(SELECT 1 FROM work_order_archive WHERE work_order_id::text=$1)
+      RETURNING *`,[String(workOrderId),number,archivedAt,JSON.stringify(snapshot),hash])).rows[0];
+    const archive=inserted||(await c.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(workOrderId)])).rows[0]||null;
+    if(archive&&j.archive_hash==null){
+      const hasHash=(await c.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders' AND column_name='archive_hash' LIMIT 1`)).rowCount;
+      if(hasHash)await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id::text=$1`,[String(workOrderId),hash]).catch(()=>undefined);
+    }
+    await c.query('COMMIT');
+    if(archive)console.warn('[workorder-document] missing archive self-healed',workOrderId);
+    return archive;
+  }catch(e){
+    await c.query('ROLLBACK').catch(()=>undefined);
+    throw e;
+  }finally{c.release()}
+}
+
 export async function loadWorkOrderArchive(workOrderId:string){
-  // Legacy adatbázisokban a work_order_id típusa nem mindenhol azonos.
-  // A szöveges összehasonlítás UUID és text oszloppal is működik.
+  const table=(await db.query(`SELECT to_regclass('public.work_order_archive') IS NOT NULL ok`)).rows[0]?.ok;
+  if(!table)return null;
   const q=await db.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(workOrderId)]);
-  return q.rows[0]||null;
+  if(q.rows[0])return q.rows[0];
+  return repairClosedWorkOrderArchive(String(workOrderId));
 }
 
 export async function renderClosedWorkOrderPdf(archive:any):Promise<Buffer>{
