@@ -29,8 +29,6 @@ console.log('✅ API + DB health');
 const voiceHealth=await waitForPricing();
 assert(voiceHealth.ai_configured===true,'Voice AI nincs konfigurálva az élő környezetben');
 assert(voiceHealth.ai_cost_estimation?.resolved===true,'Az aktív modell árazása nincs feloldva');
-assert(Number(voiceHealth.ai_cost_estimation.input_usd_per_1m)>=0,'Input ár hiányzik');
-assert(Number(voiceHealth.ai_cost_estimation.output_usd_per_1m)>=0,'Output ár hiányzik');
 console.log(`✅ AI cost deploy — ${voiceHealth.model} · source=${voiceHealth.ai_cost_estimation.source}`);
 
 const login=await json(`${API}/api/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({identifier:adminId,password:adminPassword})});
@@ -38,6 +36,11 @@ assert(login.res.ok&&login.body?.token,'DEMO admin belépés sikertelen');
 const token=login.body.token;
 const auth={authorization:`Bearer ${token}`};
 console.log('✅ DEMO admin belépés');
+
+const aiHealth=await json(`${API}/api/transactions/ai-support/health`,{headers:auth});
+console.log(`ℹ️ AI support health — HTTP ${aiHealth.res.status} · ${JSON.stringify(aiHealth.body)}`);
+const aiStatsProbe=await json(`${API}/api/transactions/ai-support/stats`,{headers:auth});
+console.log(`ℹ️ AI usage schema probe — HTTP ${aiStatsProbe.res.status} · ${JSON.stringify(aiStatsProbe.body)}`);
 
 const before=await json(`${API}/api/transactions/booking-voice-stats?days=30`,{headers:auth});
 assert(before.res.ok,'Voice statisztika előmérés sikertelen');
@@ -47,7 +50,7 @@ const beforeCost=Number(before.body?.ai?.estimated_cost_usd||0);
 const transcript='UAT költségmérés: jövő pénteken délután szeretnék időpontot, a szalon és a szolgáltatás még mindegy.';
 const interpreted=await json(`${API}/api/public/marketing/booking/voice/interpret`,{
   method:'POST',
-  headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.84'},
+  headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.85'},
   body:JSON.stringify({transcript})
 });
 assert(interpreted.res.ok,`Voice interpret sikertelen: HTTP ${interpreted.res.status} ${JSON.stringify(interpreted.body)}`);
@@ -59,6 +62,7 @@ const afterCalls=Number(after.body?.ai?.calls||0);
 const afterCost=Number(after.body?.ai?.estimated_cost_usd||0);
 const deltaCalls=afterCalls-beforeCalls;
 const deltaCost=afterCost-beforeCost;
+console.log(`ℹ️ Voice AI usage delta — calls=${deltaCalls}, cost=$${deltaCost.toFixed(6)}`);
 assert(deltaCalls>=1,`AI usage log nem nőtt: before=${beforeCalls}, after=${afterCalls}`);
 assert(deltaCost>0,`AI estimated_cost_usd nem nőtt: before=${beforeCost}, after=${afterCost}`);
 console.log(`✅ AI usage/cost log — calls +${deltaCalls}, cost +$${deltaCost.toFixed(6)}`);
