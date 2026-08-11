@@ -1,15 +1,18 @@
 let repaired=false;
+let repairPromise:Promise<void>|null=null;
 
 export async function repairLegacyWorkOrderTriggers(c:any){
   if(repaired)return;
-  const exists=Boolean((await c.query(`SELECT to_regclass('public.work_orders') IS NOT NULL ok`)).rows[0]?.ok);
-  if(!exists)return;
+  if(repairPromise)return repairPromise;
+  repairPromise=(async()=>{
+    const exists=Boolean((await c.query(`SELECT to_regclass('public.work_orders') IS NOT NULL ok`)).rows[0]?.ok);
+    if(!exists)return;
 
   // Some live databases have a UUID work_orders.id but legacy child/link
   // columns stored as text (and others have the inverse).  Trigger PL/pgSQL
   // resolves `text = uuid` before it can run, so compare identifiers through
   // their canonical text representation at every legacy boundary.
-  await c.query(`
+    await c.query(`
     CREATE OR REPLACE FUNCTION archive_and_lock_work_order()
     RETURNS trigger LANGUAGE plpgsql AS $archive$
     DECLARE snap jsonb; h text;
@@ -36,7 +39,7 @@ export async function repairLegacyWorkOrderTriggers(c:any){
     END $archive$;
   `);
 
-  await c.query(`
+    await c.query(`
     CREATE OR REPLACE FUNCTION prevent_locked_appointment_change()
     RETURNS trigger LANGUAGE plpgsql AS $appointment$
     DECLARE l timestamptz; n text;
@@ -52,7 +55,7 @@ export async function repairLegacyWorkOrderTriggers(c:any){
     END $appointment$;
   `);
 
-  await c.query(`
+    await c.query(`
     CREATE OR REPLACE FUNCTION prevent_child_change_of_locked_work_order()
     RETURNS trigger LANGUAGE plpgsql AS $child$
     DECLARE wid text; l timestamptz; n text;
@@ -66,5 +69,8 @@ export async function repairLegacyWorkOrderTriggers(c:any){
       RETURN NEW;
     END $child$;
   `);
-  repaired=true;
+    repaired=true;
+  })();
+  try{await repairPromise}
+  catch(error){repairPromise=null;throw error}
 }
