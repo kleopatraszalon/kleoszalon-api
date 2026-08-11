@@ -52,11 +52,11 @@ async function main(){
   // Legacy live-DB regresszió: régi document_status érték + eltérő CHECK korábban
   // 23514 hibával megakasztotta a Finance/NAV bootstrapot. Az ensure-nek ezt
   // önjavító módon normalizálnia és a kanonikus CHECK-et visszaépítenie kell.
-  await q(`ALTER TABLE work_orders DISABLE TRIGGER trg_work_orders_document_status_guard`);
+  await q(`DO $$ BEGIN IF EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='trg_work_orders_document_status_guard' AND tgrelid='work_orders'::regclass AND NOT tgisinternal) THEN ALTER TABLE work_orders DISABLE TRIGGER trg_work_orders_document_status_guard; END IF; END $$`);
   await q(`ALTER TABLE work_orders DROP CONSTRAINT IF EXISTS work_orders_document_status_chk`);
   await q(`UPDATE work_orders SET document_status='legacy_closed' WHERE id=$1`,[wid]);
   await q(`ALTER TABLE work_orders ADD CONSTRAINT legacy_work_orders_document_status_chk CHECK(document_status IN('legacy_closed','draft')) NOT VALID`);
-  await q(`ALTER TABLE work_orders ENABLE TRIGGER trg_work_orders_document_status_guard`);
+  await q(`DO $$ BEGIN IF EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='trg_work_orders_document_status_guard' AND tgrelid='work_orders'::regclass AND NOT tgisinternal) THEN ALTER TABLE work_orders ENABLE TRIGGER trg_work_orders_document_status_guard; END IF; END $$`);
   await ensureWorkOrderWorkflow(pool);
   const repaired=(await q(`SELECT document_status FROM work_orders WHERE id=$1`,[wid])).rows[0];
   assert.equal(repaired.document_status,'open');
