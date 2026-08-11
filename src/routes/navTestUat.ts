@@ -7,9 +7,9 @@ const router=Router();
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 const tag=()=>`NAV-UAT-${new Date().toISOString().replace(/\D/g,'').slice(0,14)}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
 const masked=(v:any)=>String(v||'').trim()==='********';
-const keepSecret=(incoming:any,current:any,envValue?:string)=>{
+const keepSecret=(incoming:any,current:any)=>{
   const next=String(incoming||'').trim();
-  if(!next||masked(next))return envValue||current||null;
+  if(!next||masked(next))return current||null;
   return next;
 };
 const safeConfig=(row:any)=>row?{
@@ -70,7 +70,7 @@ router.get('/configuration',async(req:AuthRequest,res,next)=>{
     const active=await selectedConfig(requested);
     const inactive=active?null:(await db.query(`SELECT * FROM nav_online_invoice_settings WHERE environment='test' AND ($1::text='' AND location_id IS NULL OR location_id::text=$1) ORDER BY updated_at DESC LIMIT 1`,[requested])).rows[0]||null;
     const row=active||inactive;
-    res.json({ok:true,configured:Boolean(row),config:safeConfig(row),active:Boolean(active),test_only:true,live_configuration_write_blocked:true});
+    res.json({ok:true,configured:Boolean(row),config:safeConfig(row),active:Boolean(active),test_only:true,live_configuration_write_blocked:true,protected_live_config:Boolean(row&&String(row.environment)==='live')});
   }catch(e){next(e)}
 });
 
@@ -90,15 +90,27 @@ router.put('/configuration',async(req:AuthRequest,res,next)=>{
 
     await c.query('BEGIN');
     const existing=(await c.query(`SELECT * FROM nav_online_invoice_settings WHERE location_id IS NOT DISTINCT FROM $1::uuid ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,[locationId])).rows[0]||null;
-    const technicalLogin=keepSecret(req.body?.technical_login,existing?.technical_login,process.env.NAV_TECHNICAL_LOGIN);
-    const technicalPassword=keepSecret(req.body?.technical_password,existing?.technical_password,process.env.NAV_TECHNICAL_PASSWORD);
-    const signingKey=keepSecret(req.body?.signing_key,existing?.signing_key,process.env.NAV_SIGNING_KEY);
-    const exchangeKey=keepSecret(req.body?.exchange_key,existing?.exchange_key,process.env.NAV_EXCHANGE_KEY);
-    if(!technicalLogin||!technicalPassword||!signingKey||!exchangeKey){
+    if(existing&&String(existing.environment)!=='test'){
+      await c.query('ROLLBACK');
+      return res.status(409).json({ok:false,error:'nav_uat_live_config_protected',message:'Ehhez a telephelyhez éles NAV konfiguráció tartozik. A teszt UAT végpont ezt nem írhatja felül.'});
+    }
+
+    // Az ENV-ben tárolt secretet soha nem másoljuk át az adatbázisba.
+    // Üres/maszkolt mezőnél csak a korábban DB-ben tárolt értéket tartjuk meg;
+    // az effektív credential ellenőrzése külön, ENV overlay-jel történik.
+    const technicalLogin=keepSecret(req.body?.technical_login,existing?.technical_login);
+    const technicalPassword=keepSecret(req.body?.technical_password,existing?.technical_password);
+    const signingKey=keepSecret(req.body?.signing_key,existing?.signing_key);
+    const exchangeKey=keepSecret(req.body?.exchange_key,existing?.exchange_key);
+    const effectiveTechnicalLogin=process.env.NAV_TECHNICAL_LOGIN||technicalLogin;
+    const effectiveTechnicalPassword=process.env.NAV_TECHNICAL_PASSWORD||technicalPassword;
+    const effectiveSigningKey=process.env.NAV_SIGNING_KEY||signingKey;
+    const effectiveExchangeKey=process.env.NAV_EXCHANGE_KEY||exchangeKey;
+    if(!effectiveTechnicalLogin||!effectiveTechnicalPassword||!effectiveSigningKey||!effectiveExchangeKey){
       await c.query('ROLLBACK');
       return res.status(400).json({ok:false,message:'A NAV teszt technikai login, jelszó, aláírókulcs és cserekulcs mind szükséges. A kulcsokat ne chatben küldje; az admin felületen vagy Render környezeti változóként adja meg.'});
     }
-    if(!/^[0-9a-fA-F]{32}$/.test(String(exchangeKey))) {
+    if(!/^[0-9a-fA-F]{32}$/.test(String(effectiveExchangeKey))) {
       await c.query('ROLLBACK');
       return res.status(400).json({ok:false,message:'A NAV cserekulcsnak 32 hexadecimális karakterből kell állnia.'});
     }
