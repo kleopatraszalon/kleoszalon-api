@@ -31,6 +31,13 @@ function setFont(doc:PDFKit.PDFDocument,bold=false){
   doc.font(p|| (bold?'Helvetica-Bold':'Helvetica'));
 }
 
+function installSafeTextFallback(doc:PDFKit.PDFDocument){
+  if(fontPath(false))return;
+  const original=(doc as any).text.bind(doc);
+  const safe=(v:any)=>String(v??'').replace(/ő/g,'o').replace(/Ő/g,'O').replace(/ű/g,'u').replace(/Ű/g,'U');
+  (doc as any).text=(value:any,...args:any[])=>original(safe(value),...args);
+}
+
 function line(doc:PDFKit.PDFDocument){
   const y=doc.y+3;
   doc.moveTo(48,y).lineTo(547,y).lineWidth(.5).strokeColor('#c9c2b7').stroke();
@@ -50,7 +57,7 @@ function kv(doc:PDFKit.PDFDocument,label:string,value:any){
 }
 
 export async function loadWorkOrderArchive(workOrderId:string){
-  const q=await db.query(`SELECT * FROM work_order_archive WHERE work_order_id=$1::uuid LIMIT 1`,[workOrderId]);
+  const q=await db.query(`SELECT * FROM work_order_archive WHERE work_order_id=$1::uuid ORDER BY archived_at DESC LIMIT 1`,[workOrderId]);
   return q.rows[0]||null;
 }
 
@@ -68,6 +75,7 @@ export async function renderClosedWorkOrderPdf(archive:any):Promise<Buffer>{
   return await new Promise<Buffer>((resolve,reject)=>{
     const chunks:Buffer[]=[];
     const doc=new PDFDocument({size:'A4',margin:48,info:{Title:`Lezárt munkalap ${archive.work_order_number}`,Author:'Kleopátra Szépségszalonok',Subject:'Digitális munkalap'}});
+    installSafeTextFallback(doc);
     doc.on('data',(c:Buffer)=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
     setFont(doc,true);doc.fillColor('#2c2118').fontSize(9).text('KLEOPÁTRA SZÉPSÉGSZALONOK',{align:'center'});
     doc.moveDown(.35);doc.fontSize(21).text('LEZÁRT DIGITÁLIS MUNKALAP',{align:'center'});
