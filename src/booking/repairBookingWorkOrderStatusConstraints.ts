@@ -205,6 +205,119 @@ export async function repairBookingWorkOrderStatusConstraints(c:any){
     END $$;
   `);
 
+  // A dokumentum státusz külön életciklus. Régi adatbázisokban több eltérő CHECK
+  // maradt fenn; ezek az in_progress -> document_status='open' váltást 500-zal
+  // megakaszthatják. A live értékeket normalizáljuk és egységes CHECK-et adunk.
+  await optionalRepair(c,'work orders document status constraint',`
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS document_status text;
+    UPDATE work_orders
+       SET document_status=CASE
+         WHEN status='completed' THEN 'completed'
+         WHEN status IN('cancelled','canceled','no_show') THEN 'cancelled'
+         WHEN status='in_progress' THEN 'open'
+         ELSE 'draft'
+       END
+     WHERE document_status IS NULL
+        OR document_status NOT IN('draft','open','completed','cancelled');
+    ALTER TABLE work_orders ALTER COLUMN document_status SET DEFAULT 'draft';
+    DO $$
+    DECLARE status_att smallint; r record;
+    BEGIN
+      SELECT attnum INTO status_att
+        FROM pg_attribute
+       WHERE attrelid='work_orders'::regclass
+         AND attname='document_status'
+         AND NOT attisdropped;
+      IF status_att IS NOT NULL THEN
+        FOR r IN
+          SELECT conname
+            FROM pg_constraint
+           WHERE conrelid='work_orders'::regclass
+             AND contype='c'
+             AND status_att=ANY(conkey)
+        LOOP
+          EXECUTE format('ALTER TABLE work_orders DROP CONSTRAINT %I',r.conname);
+        END LOOP;
+      END IF;
+      ALTER TABLE work_orders ADD CONSTRAINT work_orders_document_status_chk
+        CHECK(document_status IN('draft','open','completed','cancelled')) NOT VALID;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$;
+  `);
+
+  // Pénzügyi runtime kompatibilitás. A live work_orders és work_order_payments
+  // több séma-generáció mezőit tartalmazhatja; az új pénztári folyamat csak a
+  // kanonikus mezőkre támaszkodik. Régi extra NOT NULL oszlopok ezért nem
+  // blokkolhatják a fizetési sorok rögzítését.
+  await optionalRepair(c,'work order financial runtime schema',`
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS gross_total numeric(14,2) DEFAULT 0;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS discount_amount numeric(14,2) DEFAULT 0;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS tip_amount numeric(14,2) DEFAULT 0;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS amount_due numeric(14,2) DEFAULT 0;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS amount_paid numeric(14,2) DEFAULT 0;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS payment_status text DEFAULT 'unpaid';
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS invoice_status text DEFAULT 'not_requested';
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS fully_paid boolean DEFAULT false;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS financial_closed_at timestamptz;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS financial_closed_by text;
+    ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+
+    DO $$
+    BEGIN
+      IF EXISTS(
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='work_orders'
+           AND column_name='financial_closed_by' AND data_type<>'text'
+      ) THEN
+        ALTER TABLE work_orders ALTER COLUMN financial_closed_by TYPE text USING financial_closed_by::text;
+      END IF;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS work_order_payments(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      work_order_id uuid NOT NULL REFERENCES work_orders(id),
+      payment_method text NOT NULL,
+      amount numeric(14,2) NOT NULL,
+      paid_at timestamptz NOT NULL DEFAULT now(),
+      note text,
+      financial_account_id uuid,
+      financial_movement_id uuid
+    );
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS payment_method text;
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS amount numeric(14,2);
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS paid_at timestamptz DEFAULT now();
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS note text;
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS financial_account_id uuid;
+    ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS financial_movement_id uuid;
+    ALTER TABLE work_order_payments ALTER COLUMN paid_at SET DEFAULT now();
+
+    DO $$
+    DECLARE r record;
+    BEGIN
+      IF to_regclass('public.work_order_payments') IS NOT NULL THEN
+        IF EXISTS(
+          SELECT 1 FROM information_schema.columns
+           WHERE table_schema='public' AND table_name='work_order_payments'
+             AND column_name='id' AND data_type='uuid'
+        ) THEN
+          ALTER TABLE work_order_payments ALTER COLUMN id SET DEFAULT gen_random_uuid();
+        END IF;
+
+        FOR r IN
+          SELECT column_name
+            FROM information_schema.columns
+           WHERE table_schema='public'
+             AND table_name='work_order_payments'
+             AND is_nullable='NO'
+             AND column_default IS NULL
+             AND column_name NOT IN('id','work_order_id','payment_method','amount','paid_at')
+        LOOP
+          EXECUTE format('ALTER TABLE work_order_payments ALTER COLUMN %I DROP NOT NULL',r.column_name);
+        END LOOP;
+      END IF;
+    END $$;
+  `);
+
   // Egy process élettartama alatt ne futtassuk újra minden HTTP kérésnél a DDL-t.
   repairReady=true;
 }
