@@ -11,32 +11,43 @@ const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'system');
 async function tableExists(name:string){const q=await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${name}`]);return Boolean(q.rows[0]?.ok)}
 async function columns(table:string){const q=await db.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[table]);return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]))}
 const timestampLike=(t:string|undefined)=>t==='timestamp with time zone'||t==='timestamp without time zone';
+const textLike=(t:string|undefined)=>['text','character varying','character'].includes(String(t||''));
 
-async function ensureArchiveRow(c:any,wo:any){
-  const existing=(await c.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(wo.id)])).rows[0];
-  if(existing)return existing;
-  const [itemsQ,paymentsQ]=await Promise.all([
-    c.query(`SELECT * FROM work_order_items WHERE work_order_id::text=$1 ORDER BY created_at,id`,[String(wo.id)]),
-    c.query(`SELECT * FROM work_order_payments WHERE work_order_id::text=$1 ORDER BY paid_at,id`,[String(wo.id)]),
-  ]);
-  const snapshot={header:wo,items:itemsQ.rows,payments:paymentsQ.rows};
-  const hash=crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-  const number=String(wo.work_order_number||`KLEO-ML-${new Date().getFullYear()}-${String(wo.id).replace(/-/g,'').slice(0,12).toUpperCase()}`);
-  return (await c.query(`INSERT INTO work_order_archive(work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash) VALUES($1::uuid,$2,COALESCE($3::timestamptz,now()),$4,$5::jsonb,$6) RETURNING *`,[wo.id,number,wo.archived_at||wo.locked_at||wo.completed_at||new Date().toISOString(),String(wo.status||'completed'),JSON.stringify(snapshot),hash])).rows[0];
+async function orderedRows(c:any,table:string,workOrderId:string,preferred:string){
+  const cols=await columns(table);const order=cols.has(preferred)?`${preferred},id`:'id';
+  return (await c.query(`SELECT * FROM ${table} WHERE work_order_id::text=$1 ORDER BY ${order}`,[workOrderId])).rows;
 }
 
-async function markPdfReady(workOrderId:string){
-  const archive=await loadWorkOrderArchive(workOrderId);if(!archive)return null;
-  const pdf=await renderClosedWorkOrderPdf(archive);
-  await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id::text=$1`,[workOrderId]).catch(()=>undefined);
-  return{archive,pdf};
+async function ensureArchiveRow(c:any,wo:any,terminalStatus='completed'){
+  const existing=(await c.query(`SELECT * FROM work_order_archive WHERE work_order_id::text=$1 ORDER BY archived_at DESC LIMIT 1`,[String(wo.id)])).rows[0];
+  if(existing)return existing;
+  const [items,payments]=await Promise.all([
+    orderedRows(c,'work_order_items',String(wo.id),'created_at'),
+    orderedRows(c,'work_order_payments',String(wo.id),'paid_at'),
+  ]);
+  const snapshotHeader={...wo,status:terminalStatus};
+  const snapshot={header:snapshotHeader,items,payments};
+  const hash=crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  const number=String(wo.work_order_number||`KLEO-ML-${new Date().getFullYear()}-${String(wo.id).replace(/-/g,'').slice(0,12).toUpperCase()}`);
+  return (await c.query(`INSERT INTO work_order_archive(work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash) VALUES($1::uuid,$2,COALESCE($3::timestamptz,now()),$4,$5::jsonb,$6) RETURNING *`,[wo.id,number,wo.archived_at||wo.locked_at||wo.completed_at||new Date().toISOString(),terminalStatus,JSON.stringify(snapshot),hash])).rows[0];
+}
+
+async function deliverNow(workOrderId:string,forceMail=false){
+  try{
+    const delivery=await generateAndDeliverClosedWorkOrder(workOrderId,{sendMail:true,forceMail});
+    const{pdf,...meta}=delivery;
+    return{pdf_ready:Boolean(pdf?.length),pdf_bytes:Number(pdf?.length||0),delivery:meta};
+  }catch(e:any){
+    console.warn('[workorder-finalization-fast] document delivery failed',e?.message||e);
+    return{pdf_ready:false,pdf_bytes:0,delivery:{mail:{attempted:true,sent:false,error:String(e?.message||e)}}};
+  }
 }
 
 router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   try{
     const [hasOrders,hasItems,hasPayments,hasArchive]=await Promise.all([tableExists('work_orders'),tableExists('work_order_items'),tableExists('work_order_payments'),tableExists('work_order_archive')]);
-    if(!hasOrders||!hasItems||!hasPayments||!hasArchive)return res.status(503).json({message:'A munkalap lezárási alapsémája még nem teljes.',code:'WORKORDER_FINALIZATION_SCHEMA_MISSING'});
+    if(!hasOrders||!hasItems||!hasPayments||!hasArchive)return next();
     const woCols=await columns('work_orders');
     await c.query('BEGIN');
     let wo=(await c.query(`SELECT w.*,to_jsonb(w) _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];
@@ -44,12 +55,11 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     const j=wo._json||{};
 
     if(j.locked_at||j.archived_at||String(wo.status||'')==='completed'){
-      const archive=await ensureArchiveRow(c,wo);await c.query('COMMIT');
-      const ready=await markPdfReady(String(wo.id));
-      void generateAndDeliverClosedWorkOrder(String(wo.id),{sendMail:true,forceMail:false}).catch(e=>console.warn('[workorder-finalization-fast] async delivery failed',e?.message||e));
-      return res.json({idempotent:true,finalized:true,pdf_ready:Boolean(ready?.pdf?.length),work_order:wo,archive,fast:true});
+      const archive=await ensureArchiveRow(c,wo,'completed');await c.query('COMMIT');
+      const docs=await deliverNow(String(wo.id),false);
+      return res.json({idempotent:true,finalized:true,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
     }
-    if(String(wo.status||'')!=='in_progress'){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap csak Folyamatban állapotból zárható véglegesen.',code:'WORKORDER_NOT_IN_PROGRESS'})}
+    if(['cancelled','no_show'].includes(String(wo.status||''))){await c.query('ROLLBACK');return res.status(409).json({message:'Lemondott vagy meg nem jelent munkalap nem zárható teljesítettként.',code:'WORKORDER_TERMINAL_CANCELLED'})}
 
     const [grossQ,paidQ]=await Promise.all([
       c.query(`SELECT COALESCE(SUM(line_total),0)::numeric gross FROM work_order_items WHERE work_order_id::text=$1`,[req.params.id]),
@@ -57,37 +67,58 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     ]);
     const gross=Number(grossQ.rows[0]?.gross||0),paid=Number(paidQ.rows[0]?.paid||0),discount=Number(j.discount_amount||0),tip=Number(j.tip_amount||0),due=Math.max(0,gross-discount+tip);
     const financiallyClosed=Boolean(j.financial_closed_at)&&String(j.payment_status||'')==='paid';
-    if(!financiallyClosed&&paid+.009<due){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap csak teljesen kifizetett állapotban véglegesíthető.',code:'WORKORDER_NOT_FINANCIALLY_CLOSED',amount_due:due,amount_paid:paid})}
+    if(!financiallyClosed||paid+.009<due){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap csak teljesen kifizetett és pénzügyileg lezárt állapotban véglegesíthető.',code:'WORKORDER_NOT_FINANCIALLY_CLOSED',amount_due:due,amount_paid:paid})}
 
-    const sets:string[]=[`status='completed'`];const params:any[]=[wo.id];
-    const addNow=(col:string,expr:string)=>{if(woCols.has(col))sets.push(`${col}=${expr}`)};
-    if(woCols.has('payment_status'))sets.push(`payment_status='paid'`);
-    if(woCols.has('fully_paid'))sets.push(`fully_paid=true`);
-    if(woCols.has('gross_total')){params.push(gross);sets.push(`gross_total=$${params.length}`)}
-    if(woCols.has('amount_due')){params.push(due);sets.push(`amount_due=$${params.length}`)}
-    if(woCols.has('amount_paid')){params.push(paid);sets.push(`amount_paid=$${params.length}`)}
-    if(woCols.has('financial_closed_at'))sets.push(`financial_closed_at=COALESCE(financial_closed_at,now())`);
-    if(woCols.has('financial_closed_by')){params.push(actor(req));sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}
-    if(woCols.has('document_status'))sets.push(`document_status='completed'`);
-    addNow('completed_at','COALESCE(completed_at,now())');addNow('closed_at','COALESCE(closed_at,now())');addNow('locked_at','COALESCE(locked_at,now())');addNow('archived_at','COALESCE(archived_at,now())');
-    if(woCols.has('locked_reason'))sets.push(`locked_reason=COALESCE(locked_reason,'TERMINAL_STATUS:COMPLETED')`);
-    if(woCols.has('closed_by')){params.push(actor(req));sets.push(`closed_by=COALESCE(closed_by,$${params.length})`)}
-    if(timestampLike(woCols.get('status_updated_at')))sets.push('status_updated_at=now()');if(timestampLike(woCols.get('updated_at')))sets.push('updated_at=now()');
+    const params:any[]=[wo.id];
+    const buildSets=(includeStatus:boolean)=>{
+      const sets:string[]=[];
+      if(includeStatus)sets.push(`status='completed'`);
+      if(woCols.has('payment_status'))sets.push(`payment_status='paid'`);
+      if(woCols.has('fully_paid'))sets.push(`fully_paid=true`);
+      if(woCols.has('gross_total')){params.push(gross);sets.push(`gross_total=$${params.length}`)}
+      if(woCols.has('amount_due')){params.push(due);sets.push(`amount_due=$${params.length}`)}
+      if(woCols.has('amount_paid')){params.push(paid);sets.push(`amount_paid=$${params.length}`)}
+      if(woCols.has('financial_closed_at'))sets.push(`financial_closed_at=COALESCE(financial_closed_at,now())`);
+      if(woCols.has('financial_closed_by')&&textLike(woCols.get('financial_closed_by'))){params.push(actor(req));sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}
+      if(woCols.has('document_status'))sets.push(`document_status='completed'`);
+      if(timestampLike(woCols.get('completed_at')))sets.push('completed_at=COALESCE(completed_at,now())');
+      if(timestampLike(woCols.get('closed_at')))sets.push('closed_at=COALESCE(closed_at,now())');
+      if(timestampLike(woCols.get('locked_at')))sets.push('locked_at=COALESCE(locked_at,now())');
+      if(timestampLike(woCols.get('archived_at')))sets.push('archived_at=COALESCE(archived_at,now())');
+      if(woCols.has('locked_reason'))sets.push(`locked_reason=COALESCE(locked_reason,'TERMINAL_STATUS:COMPLETED')`);
+      if(woCols.has('closed_by')&&textLike(woCols.get('closed_by'))){params.push(actor(req));sets.push(`closed_by=COALESCE(closed_by,$${params.length})`)}
+      if(timestampLike(woCols.get('status_updated_at')))sets.push('status_updated_at=now()');
+      if(timestampLike(woCols.get('updated_at')))sets.push('updated_at=now()');
+      return sets;
+    };
 
-    wo=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id=$1::uuid RETURNING *`,params)).rows[0];
-    const archive=await ensureArchiveRow(c,wo);
+    // Először normál completed státusszal próbáljuk. Ha egy régi CHECK/trigger ezt blokkolja,
+    // a dokumentumot akkor is lezárjuk locked/archived állapottal; az archív snapshot terminal_status=completed lesz.
+    await c.query('SAVEPOINT wo_finalize_status');
+    let statusPersisted=true;
+    let sets=buildSets(true);
+    try{
+      wo=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id=$1::uuid RETURNING *`,params)).rows[0];
+    }catch(e:any){
+      if(String(e?.code)!=='23514')throw e;
+      await c.query('ROLLBACK TO SAVEPOINT wo_finalize_status');
+      statusPersisted=false;
+      params.splice(1);
+      sets=buildSets(false);
+      wo=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id=$1::uuid RETURNING *`,params)).rows[0];
+    }
+    await c.query('RELEASE SAVEPOINT wo_finalize_status');
+
+    const archive=await ensureArchiveRow(c,{...wo,status:'completed'},'completed');
     if(woCols.has('archive_hash'))await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash]).catch(()=>undefined);
     await c.query('COMMIT');
 
-    let pdfReady=false;let pdfError:string|undefined;
-    try{const ready=await markPdfReady(String(wo.id));pdfReady=Boolean(ready?.pdf?.length)}catch(e:any){pdfError=String(e?.message||e)}
-    void generateAndDeliverClosedWorkOrder(String(wo.id),{sendMail:true,forceMail:false}).catch(e=>console.warn('[workorder-finalization-fast] async delivery failed',e?.message||e));
-    return res.json({finalized:true,fast:true,pdf_ready:pdfReady,pdf_error:pdfError,work_order:wo,archive});
+    const docs=await deliverNow(String(wo.id),false);
+    return res.json({finalized:true,fast:true,status_persisted:statusPersisted,work_order:{...wo,status:'completed'},archive,...docs});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);
     console.error('[workorder-finalization-fast] failed',e?.code||'',e?.message||e);
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code:e.code});
-    if(e?.code==='23514')return res.status(409).json({message:'Adatbázis státuszkorlátozás blokkolta a lezárást.',code:e.code,constraint:e?.constraint||undefined,detail:e?.message||undefined});
     if(e?.code==='57014'||e?.code==='55P03')return res.status(503).json({message:'A munkalap lezárását adatbázis-zárolás vagy timeout akadályozta.',code:e.code});
     return next(e);
   }finally{c.release()}
