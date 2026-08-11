@@ -8,7 +8,7 @@ test('public marketing mounts token booking management before generic booking ro
   const src=read('src/routes/publicMarketing.ts');
   assert.match(src,/bookingManageRouter/);
   assert.match(src,/router\.use\("\/booking\/manage",\s*bookingManageRouter\)/);
-  assert.ok(src.indexOf('/booking/manage')<src.indexOf('onlineBookingRouter'));
+  assert.match(src,/router\.use\("\/booking\/manage",\s*bookingManageRouter\)[\s\S]*router\.use\("\/booking",\s*onlineBookingRouter\)/);
 });
 
 test('management token reveals only booking summary and scopes lookup by cancellation token',()=>{
