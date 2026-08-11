@@ -7,9 +7,30 @@ import {ensureWorkOrderWorkflow} from '../workorders/ensureWorkOrderWorkflow';
 
 let ensurePromise:Promise<void>|null=null;
 
+export class FinanceNavBootstrapError extends Error{
+  stage:string;
+  dbCode:string|null;
+  constructor(stage:string,cause:any){
+    const causeMessage=String(cause?.message||cause||'ismeretlen hiba');
+    super(`Finance/NAV bootstrap hiba [${stage}]: ${causeMessage}`);
+    this.name='FinanceNavBootstrapError';
+    this.stage=stage;
+    this.dbCode=cause?.code?String(cause.code):null;
+    (this as any).cause=cause;
+  }
+}
+
 async function runSql(file:string){
   const sql=await readFile(path.join(__dirname,'..','sql',file),'utf8');
   await pool.query(sql);
+}
+
+async function step(stage:string,fn:()=>Promise<any>){
+  try{return await fn()}
+  catch(error:any){
+    if(error instanceof FinanceNavBootstrapError)throw error;
+    throw new FinanceNavBootstrapError(stage,error);
+  }
 }
 
 export function ensureFinanceNav(){
@@ -17,8 +38,8 @@ export function ensureFinanceNav(){
     ensurePromise=(async()=>{
       // A munkalap a pénzügyi folyamat tranzakciós magja, ezért a saját
       // additív sémáját még a HR/pénzügyi modulok előtt biztosítjuk.
-      await ensureWorkOrderWorkflow(pool);
-      await ensureHrV2();
+      await step('work_order_workflow',()=>ensureWorkOrderWorkflow(pool));
+      await step('hr_v2',()=>ensureHrV2());
       for(const file of [
         '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
         '20260807_CRM_AUTOMATION_V1.sql',
@@ -34,8 +55,8 @@ export function ensureFinanceNav(){
         '20260807_UAT_SANDBOX_V2.sql',
         '20260807_UAT_ISSUES_V3.sql',
         '20260809_UAT_STAGE10_V1.sql',
-      ]) await runSql(file);
-      await ensureMenuHealth();
+      ]) await step(`sql:${file}`,()=>runSql(file));
+      await step('menu_health',()=>ensureMenuHealth());
     })().catch(err=>{ensurePromise=null;throw err});
   }
   return ensurePromise;
