@@ -80,6 +80,35 @@ const asyncRoute =
 const numberOrNull = (value: unknown) =>
   value === "" || value === null || value === undefined ? null : Number(value);
 
+const HR_SCHEMA_ERROR_CODES = new Set(["42P01", "42703", "42804", "42883"]);
+
+async function listEmployees(includeInactive: boolean) {
+  return pool.query(`
+    SELECT e.id, e.location_id, l.name AS location_name, e.full_name,
+           e.first_name, e.last_name, e.email, e.phone, e.birth_date,
+           e.qualification, e.employment_type, e.position_id,
+           COALESCE(
+             p.name,
+             NULLIF(
+               CASE
+                 WHEN jsonb_typeof(to_jsonb(e.role)) = 'array'
+                   THEN trim(both '"' from (to_jsonb(e.role)->>0))
+                 ELSE trim(both '"' from to_jsonb(e.role)::text)
+               END,
+               ''
+             )
+           ) AS position_name,
+           e.monthly_wage, e.hourly_wage,
+           e.commission_percent, e.photo_url, e.active, e.login_name, e.role,
+           e.created_at, e.updated_at
+    FROM employees e
+    LEFT JOIN locations l ON l.id = e.location_id
+    LEFT JOIN hr_positions p ON p.id::text = e.position_id::text
+    ${includeInactive ? "" : "WHERE COALESCE(e.active, true) = true"}
+    ORDER BY e.active DESC, e.full_name NULLS LAST, e.last_name, e.first_name
+  `);
+}
+
 router.get(
   "/positions",
   requireAuth,
@@ -138,32 +167,15 @@ router.get(
   "/",
   requireAuth,
   asyncRoute(async (req, res) => {
-    await ensureHrSchema();
     const includeInactive = req.query.include_inactive === "1";
-    const { rows } = await pool.query(`
-      SELECT e.id, e.location_id, l.name AS location_name, e.full_name,
-             e.first_name, e.last_name, e.email, e.phone, e.birth_date,
-             e.qualification, e.employment_type, e.position_id,
-             COALESCE(
-               p.name,
-               NULLIF(
-                 CASE
-                   WHEN jsonb_typeof(to_jsonb(e.role)) = 'array'
-                     THEN trim(both '"' from (to_jsonb(e.role)->>0))
-                   ELSE trim(both '"' from to_jsonb(e.role)::text)
-                 END,
-                 ''
-               )
-             ) AS position_name,
-             e.monthly_wage, e.hourly_wage,
-             e.commission_percent, e.photo_url, e.active, e.login_name, e.role,
-             e.created_at, e.updated_at
-      FROM employees e
-      LEFT JOIN locations l ON l.id = e.location_id
-      LEFT JOIN hr_positions p ON p.id::text = e.position_id::text
-      ${includeInactive ? "" : "WHERE COALESCE(e.active, true) = true"}
-      ORDER BY e.active DESC, e.full_name NULLS LAST, e.last_name, e.first_name
-    `);
+    let result;
+    try { result = await listEmployees(includeInactive); }
+    catch (error: any) {
+      if (!HR_SCHEMA_ERROR_CODES.has(String(error?.code || ""))) throw error;
+      await ensureHrSchema();
+      result = await listEmployees(includeInactive);
+    }
+    const { rows } = result;
     res.json(rows);
   })
 );
