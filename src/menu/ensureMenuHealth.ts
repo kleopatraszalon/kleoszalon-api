@@ -6,7 +6,7 @@ export async function ensureMenuHealth(){
   await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);
 
   await safe(`UPDATE menus SET is_active=true WHERE code IN(
-    'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash','customers.loyalty_program',
+    'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash','customers.loyalty_program','customers.duplicate_review',
     'team','team.schedule','team.positions','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
   )`);
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
@@ -69,6 +69,10 @@ export async function ensureMenuHealth(){
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
   await safe(`UPDATE menus SET route='/modules/team/timetable',is_active=true WHERE code='team.schedule'`);
   await safe(`WITH p AS (SELECT id FROM menus WHERE code='customers' LIMIT 1) UPDATE menus m SET name='Törzsvásárlói program',route='/modules/customers/loyalty-program',parent_id=p.id,order_index=60,feature_key='loyalty',is_active=true FROM p WHERE m.code='customers.loyalty_program'`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='customers' LIMIT 1)
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    SELECT 'customers.duplicate_review','Duplikációk jóváhagyása','Merge','/modules/customers/duplicate-review',70,p.id,'clients',true FROM p
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='clients',is_active=true`);
   await safe(`WITH p AS (SELECT id FROM menus WHERE code='team' LIMIT 1) UPDATE menus m SET name='Munkakörök',route='/hr/positions',parent_id=p.id,order_index=30,feature_key='hr',is_active=true FROM p WHERE m.code='team.positions'`);
   await safe(`UPDATE menus SET route='/admin/vir/reports',is_active=true WHERE code='analytics.reports'`);
   await safe(`UPDATE menus SET route='/services',is_active=true WHERE code='settings.services'`);
@@ -90,7 +94,7 @@ export async function ensureMenuHealth(){
   )`);
 
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
-    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now() FROM menus m WHERE m.code IN('appointments.workorders','finance.nav_online_invoice','procurement.central_supply')
+    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now() FROM menus m WHERE m.code IN('appointments.workorders','finance.nav_online_invoice','procurement.central_supply','customers.duplicate_review')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,can_view_financial=true,can_manage_permissions=true,scope_type='all_locations',updated_at=now()`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT r.role_key,m.id,true,true,true,false,false,true,false,false,'own_location',now()
@@ -99,6 +103,13 @@ export async function ensureMenuHealth(){
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT 'salon_manager',m.id,true,false,false,false,false,false,false,false,'own_location',now() FROM menus m WHERE m.code='appointments.workorders'
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=false,can_edit=false,can_delete=false,scope_type='own_location',updated_at=now()`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,true,false,true,false,true,false,false,false,'own_location',now()
+    FROM (VALUES('manager'),('location_manager'),('salon_manager')) r(role_key) CROSS JOIN menus m WHERE m.code='customers.duplicate_review'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_edit=true,can_approve=true,can_delete=false,can_export=false,scope_type='own_location',updated_at=now()`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT 'receptionist',m.id,true,false,false,false,false,false,false,false,'own_location',now() FROM menus m WHERE m.code='customers.duplicate_review'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_edit=false,can_approve=false,can_delete=false,scope_type='own_location',updated_at=now()`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT r.role_key,m.id,false,false,false,false,false,false,false,false,'own_location',now()
     FROM (VALUES('receptionist'),('location_manager'),('salon_manager'),('employee'),('customer')) r(role_key) CROSS JOIN menus m WHERE m.code='finance.nav_online_invoice'
