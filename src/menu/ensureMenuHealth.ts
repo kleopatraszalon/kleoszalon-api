@@ -10,6 +10,10 @@ export async function ensureMenuHealth(){
     'team','team.schedule','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
   )`);
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='finance' LIMIT 1)
+    UPDATE menus m SET name='Bér- és jutalékszámítás',route='/modules/team/payroll',parent_id=p.id,order_index=80,feature_key='payroll',is_active=true
+    FROM p WHERE m.code='finance.payroll'`);
+  await safe(`UPDATE menus SET is_active=false WHERE code='team.payroll'`);
   await safe(`UPDATE menus SET route='/workorders',is_active=true WHERE code='appointments.workorders'`);
 
   // Régi és vegyes útvonalak kanonizálása. Ezek a route-ok korábban a frontend wildcardjára

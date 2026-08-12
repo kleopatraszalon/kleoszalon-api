@@ -62,7 +62,6 @@ WITH items(code, parent_code, name, route, order_index, feature_key) AS (
     ('team.employees','team','Munkatársak','/employees',10,'staff'),
     ('team.schedule','team','Munkaidő és beosztás','/timetable/update',20,'staff_schedule'),
     ('team.vacations','team','Szabadságok és távollétek','/hr/vacations',30,'staff_absence'),
-    ('team.payroll','team','Bér- és jutalékszámítás','/modules/team/payroll',40,'payroll'),
     ('team.performance','team','Teljesítmény és értékelés','/modules/team/performance',50,'staff_performance'),
     ('team.roles','team','Szerepkörök és jogosultságok','/modules/team/roles',60,'roles_access'),
 
@@ -73,6 +72,7 @@ WITH items(code, parent_code, name, route, order_index, feature_key) AS (
     ('finance.online','finance','Online fizetések','/modules/finance/online-payments',50,'online_payments'),
     ('finance.accounts','finance','Pénzügyi számlák és költséghelyek','/modules/finance/accounts',60,'accounting'),
     ('finance.workorders','finance','Munkalapok','/workorders/list',70,'workorders'),
+    ('finance.payroll','finance','Bér- és jutalékszámítás','/modules/team/payroll',80,'payroll'),
 
     ('inventory.products','inventory','Termékek','/products',10,'products'),
     ('inventory.stock','inventory','Aktuális készlet','/warehouse/list',20,'stock'),
