@@ -104,6 +104,40 @@ function matchReasons(a: any, b: any) {
   return reasons;
 }
 
+function consentMergeSnapshot(primary: any, duplicate: any) {
+  const pTime = primary?.consent_recorded_at ? Date.parse(String(primary.consent_recorded_at)) : Number.NaN;
+  const dTime = duplicate?.consent_recorded_at ? Date.parse(String(duplicate.consent_recorded_at)) : Number.NaN;
+  const pValid = Number.isFinite(pTime);
+  const dValid = Number.isFinite(dTime);
+  if (dValid && (!pValid || dTime > pTime)) {
+    return {
+      marketing_consent: Boolean(duplicate.marketing_consent), email_consent: Boolean(duplicate.email_consent),
+      sms_consent: Boolean(duplicate.sms_consent), phone_consent: Boolean(duplicate.phone_consent),
+      consent_recorded_at: duplicate.consent_recorded_at, consent_source: duplicate.consent_source || primary.consent_source || "duplicate_merge",
+      privacy_notice_version: duplicate.privacy_notice_version || primary.privacy_notice_version || null,
+    };
+  }
+  if (pValid && (!dValid || pTime > dTime)) {
+    return {
+      marketing_consent: Boolean(primary.marketing_consent), email_consent: Boolean(primary.email_consent),
+      sms_consent: Boolean(primary.sms_consent), phone_consent: Boolean(primary.phone_consent),
+      consent_recorded_at: primary.consent_recorded_at, consent_source: primary.consent_source || duplicate.consent_source || "duplicate_merge",
+      privacy_notice_version: primary.privacy_notice_version || duplicate.privacy_notice_version || null,
+    };
+  }
+  // Azonos vagy ismeretlen időpontnál nem bővítjük a marketing jogosultságot:
+  // csak az a csatorna marad engedélyezett, amelyhez mindkét profil szerint van hozzájárulás.
+  return {
+    marketing_consent: Boolean(primary.marketing_consent) && Boolean(duplicate.marketing_consent),
+    email_consent: Boolean(primary.email_consent) && Boolean(duplicate.email_consent),
+    sms_consent: Boolean(primary.sms_consent) && Boolean(duplicate.sms_consent),
+    phone_consent: Boolean(primary.phone_consent) && Boolean(duplicate.phone_consent),
+    consent_recorded_at: primary.consent_recorded_at || duplicate.consent_recorded_at || null,
+    consent_source: "duplicate_merge_conservative",
+    privacy_notice_version: primary.privacy_notice_version || duplicate.privacy_notice_version || null,
+  };
+}
+
 async function tableHasClientId(client: any, table: string) {
   const { rows } = await client.query(
     `SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name='client_id' LIMIT 1`,
@@ -253,6 +287,7 @@ router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response)
       return res.status(201).json({ ok: true, decision: "dismissed", resolution: saved[0] });
     }
 
+    const consent = consentMergeSnapshot(primary, duplicate);
     await client.query(`
       UPDATE clients p SET
         full_name=COALESCE(NULLIF(p.full_name,''),NULLIF(s.full_name,''),NULLIF(s.name,'')),
@@ -263,13 +298,6 @@ router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response)
         city=COALESCE(NULLIF(p.city,''),NULLIF(s.city,'')),address=COALESCE(NULLIF(p.address,''),NULLIF(s.address,'')),
         notes=CASE WHEN COALESCE(NULLIF(p.notes,''),'')='' THEN s.notes WHEN COALESCE(NULLIF(s.notes,''),'')='' THEN p.notes ELSE p.notes || E'\n\n[Összevont profil megjegyzése]\n' || s.notes END,
         preferred_contact=COALESCE(NULLIF(p.preferred_contact,''),NULLIF(s.preferred_contact,'')),
-        marketing_consent=COALESCE(p.marketing_consent,false) OR COALESCE(s.marketing_consent,false),
-        email_consent=COALESCE(p.email_consent,false) OR COALESCE(s.email_consent,false),
-        sms_consent=COALESCE(p.sms_consent,false) OR COALESCE(s.sms_consent,false),
-        phone_consent=COALESCE(p.phone_consent,false) OR COALESCE(s.phone_consent,false),
-        consent_recorded_at=GREATEST(p.consent_recorded_at,s.consent_recorded_at),
-        consent_source=COALESCE(NULLIF(p.consent_source,''),NULLIF(s.consent_source,'')),
-        privacy_notice_version=COALESCE(NULLIF(p.privacy_notice_version,''),NULLIF(s.privacy_notice_version,'')),
         customer_type=CASE WHEN p.customer_type='vip' OR s.customer_type='vip' THEN 'vip' ELSE COALESCE(NULLIF(p.customer_type,''),NULLIF(s.customer_type,''),'normal') END,
         profile_image_url=COALESCE(NULLIF(p.profile_image_url,''),NULLIF(s.profile_image_url,'')),
         altegio_spent=GREATEST(COALESCE(p.altegio_spent,0),COALESCE(s.altegio_spent,0)),
@@ -279,6 +307,12 @@ router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response)
         altegio_last_visit=GREATEST(p.altegio_last_visit,s.altegio_last_visit),
         updated_at=now()
       FROM clients s WHERE p.id::text=$1 AND s.id::text=$2`, [primaryId, duplicateId]);
+
+    await client.query(`
+      UPDATE clients SET marketing_consent=$2,email_consent=$3,sms_consent=$4,phone_consent=$5,
+        consent_recorded_at=$6::timestamptz,consent_source=$7,privacy_notice_version=$8,updated_at=now()
+      WHERE id::text=$1`, [primaryId, consent.marketing_consent, consent.email_consent, consent.sms_consent, consent.phone_consent,
+        consent.consent_recorded_at, consent.consent_source, consent.privacy_notice_version]);
 
     const moved: Record<string, number> = {};
     for (const table of ["appointments", "work_orders", "crm_client_notes", "crm_form_responses", "crm_consent_history", "loyalty_program_history", "booking_communications"]) {
