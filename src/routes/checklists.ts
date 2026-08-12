@@ -258,8 +258,8 @@ router.get("/admin/checklists", requireAdmin, asyncRoute(async (_req, res) => {
             COALESCE(jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,'code',p.code))
               FILTER (WHERE p.id IS NOT NULL AND a.is_active=true),'[]'::jsonb) AS positions
        FROM vir_checklists c
-       LEFT JOIN vir_checklist_position_assignments a ON a.checklist_id=c.id
-       LEFT JOIN hr_positions p ON p.id=a.position_id
+       LEFT JOIN vir_checklist_position_assignments a ON a.checklist_id::text=c.id::text
+       LEFT JOIN hr_positions p ON p.id::text=a.position_id::text
       GROUP BY c.id
       ORDER BY c.name`
   );
@@ -310,7 +310,7 @@ router.put("/admin/checklists/:id/positions", requireAdmin, asyncRoute(async (re
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(`UPDATE vir_checklist_position_assignments SET is_active=false,updated_at=now() WHERE checklist_id=$1`,[req.params.id]);
+    await client.query(`UPDATE vir_checklist_position_assignments SET is_active=false,updated_at=now() WHERE checklist_id::text=$1`,[req.params.id]);
     for(const positionId of ids) {
       await client.query(
         `INSERT INTO vir_checklist_position_assignments(checklist_id,position_id,is_active)
@@ -380,10 +380,10 @@ async function managementStatus(req: AuthRequest, res: Response) {
             ) FILTER (WHERE i.is_required=true AND COALESCE(cc.completed,false)=false) AS warning_active
        FROM employees e
        LEFT JOIN locations l ON l.id=e.location_id
-       JOIN hr_positions p ON p.id=e.position_id
-       JOIN vir_checklist_position_assignments a ON a.position_id=p.id AND a.is_active=true
-       JOIN vir_checklists c ON c.id=a.checklist_id AND c.is_active=true
-       JOIN vir_checklist_items i ON i.checklist_id=c.id AND i.is_active=true
+       JOIN hr_positions p ON p.id::text=e.position_id::text
+       JOIN vir_checklist_position_assignments a ON a.position_id::text=p.id::text AND a.is_active=true
+       JOIN vir_checklists c ON c.id::text=a.checklist_id::text AND c.is_active=true
+       JOIN vir_checklist_items i ON i.checklist_id::text=c.id::text AND i.is_active=true
        LEFT JOIN vir_checklist_completions cc
          ON cc.checklist_item_id=i.id AND cc.employee_id=e.id
         AND cc.period_start=${periodStartSql("i")}
