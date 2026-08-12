@@ -32,7 +32,7 @@ export async function bookingRecommendations(locationId:string,selectedIds:strin
     FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id
     WHERE COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true AND NOT(s.id=ANY($1::uuid[]))
       AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid))
-    ORDER BY CASE WHEN s.service_type_id=ANY($3::uuid[]) THEN 0 ELSE 1 END,COALESCE(s.promo_price,s.list_price,s.base_price,0),s.name LIMIT 3`,[selected,locationId,categoryIds])).rows:[];
+    ORDER BY CASE WHEN s.service_type_id::text=ANY($3::text[]) THEN 0 ELSE 1 END,COALESCE(s.promo_price,s.list_price,s.base_price,0),s.name LIMIT 3`,[selected,locationId,categoryIds])).rows:[];
   let recommendations:BookingRecommendation[]=services.map((s:any)=>({type:'service',service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}));
   try{
     const campaignTable=(await db.query(`SELECT to_regclass('public.loyalty_coupon_campaigns') IS NOT NULL ok`)).rows[0]?.ok;
