@@ -28,6 +28,16 @@ function ensureClientSchema() {
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS notes text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferred_contact text DEFAULT 'phone';
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS marketing_consent boolean NOT NULL DEFAULT false;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS email_consent boolean NOT NULL DEFAULT false;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS sms_consent boolean NOT NULL DEFAULT false;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone_consent boolean NOT NULL DEFAULT false;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS consent_recorded_at timestamptz;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS consent_source text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS privacy_notice_version text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS preferred_employee_id uuid;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS customer_type text DEFAULT 'normal';
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS barcode text;
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS profile_image_url text;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
         ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_spent numeric;
@@ -66,6 +76,8 @@ function ensureClientSchema() {
           client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE, status text NOT NULL DEFAULT 'completed',
           response_data jsonb NOT NULL DEFAULT '{}'::jsonb, completed_at timestamptz NOT NULL DEFAULT now()
         );
+        CREATE TABLE IF NOT EXISTS crm_consent_history(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,email_consent boolean NOT NULL,sms_consent boolean NOT NULL,phone_consent boolean NOT NULL,privacy_notice_version text,source text,changed_by text,created_at timestamptz NOT NULL DEFAULT now());
+        CREATE UNIQUE INDEX IF NOT EXISTS clients_barcode_uq ON clients(barcode) WHERE barcode IS NOT NULL AND barcode<>'';
         INSERT INTO crm_tags(name,color) VALUES
           ('VIP','#7c5ce5'),('Új vendég','#3b82f6'),('Törzsvendég','#16a085'),('Érzékeny bőr','#ec6597'),('Visszahívandó','#e6a746')
         ON CONFLICT DO NOTHING;
@@ -197,7 +209,7 @@ router.get("/", async (req: AuthRequest, res) => {
     const status = String(req.query.status || "all");
     const tagId = String(req.query.tag_id || "").trim() || null;
     const { rows } = await pool.query(`
-      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.city,c.address,c.notes,
+      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.city,c.address,c.notes,c.barcode,c.customer_type,c.preferred_employee_id,
         c.preferred_contact,c.marketing_consent,c.is_active,c.source,c.created_at,c.updated_at,l.name location_name,
         COALESCE(a.visits,0)::int visits,COALESCE(a.no_shows,0)::int no_shows,a.last_visit,a.next_visit,
         COALESCE(t.tags,'[]'::json) tags
@@ -292,26 +304,30 @@ router.get("/:id", async (req: AuthRequest, res) => {
     const locationId = effectiveLocation(req);
     const client = await pool.query(`SELECT c.*,COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'') display_name,l.name location_name FROM clients c LEFT JOIN locations l ON l.id::text=(to_jsonb(c)->>'location_id') WHERE c.id::text=$1 AND ($2::text IS NULL OR to_jsonb(c)->>'location_id'=$2::text)`, [req.params.id, locationId]);
     if (!client.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
-    const [appointments, notes, tags, forms] = await Promise.all([
+    const [appointments, notes, tags, forms,loyalty,consents] = await Promise.all([
       optionalClientRows('appointments',pool.query(`SELECT a.id,a.start_time,a.end_time,a.status,a.title,l.name location_name,COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(to_jsonb(e)->>'name',''),'') employee_name FROM appointments a LEFT JOIN locations l ON l.id::text=a.location_id::text LEFT JOIN employees e ON e.id::text=a.employee_id::text WHERE a.client_id::text=$1 ORDER BY a.start_time DESC LIMIT 100`, [req.params.id])),
       optionalClientRows('notes',pool.query(`SELECT * FROM crm_client_notes WHERE client_id::text=$1 ORDER BY created_at DESC`, [req.params.id])),
       optionalClientRows('tags',pool.query(`SELECT t.* FROM crm_client_tags ct JOIN crm_tags t ON t.id::text=ct.tag_id::text WHERE ct.client_id::text=$1 ORDER BY t.name`, [req.params.id])),
-      optionalClientRows('forms',pool.query(`SELECT r.*,f.title,f.form_type FROM crm_form_responses r JOIN crm_forms f ON f.id::text=r.form_id::text WHERE r.client_id::text=$1 ORDER BY r.completed_at DESC`, [req.params.id]))
+      optionalClientRows('forms',pool.query(`SELECT r.*,f.title,f.form_type FROM crm_form_responses r JOIN crm_forms f ON f.id::text=r.form_id::text WHERE r.client_id::text=$1 ORDER BY r.completed_at DESC`, [req.params.id])),
+      optionalClientRows('loyalty',pool.query(`SELECT pm.*,t.name tier_name,t.color,t.discount_percent FROM loyalty_program_members pm LEFT JOIN loyalty_program_tiers t ON t.code=pm.tier_code WHERE pm.client_id::text=$1`,[req.params.id])),
+      optionalClientRows('consents',pool.query(`SELECT * FROM crm_consent_history WHERE client_id::text=$1 ORDER BY created_at DESC LIMIT 20`,[req.params.id]))
     ]);
-    res.json({ client:client.rows[0],appointments,notes,tags,forms });
+    res.json({ client:client.rows[0],appointments,notes,tags,forms,loyalty:loyalty[0]||null,consents });
   } catch (error) { fail(res, error); }
 });
 
 router.patch("/:id", async (req: AuthRequest, res) => {
-  const allowed: Record<string,string> = { name:"full_name",phone:"phone",email:"email",location_id:"location_id",birth_date:"birth_date",gender:"gender",address:"address",notes:"notes",preferred_contact:"preferred_contact",marketing_consent:"marketing_consent",is_active:"is_active" };
+  const allowed: Record<string,string> = { name:"full_name",phone:"phone",email:"email",location_id:"location_id",birth_date:"birth_date",gender:"gender",address:"address",notes:"notes",preferred_contact:"preferred_contact",marketing_consent:"marketing_consent",email_consent:"email_consent",sms_consent:"sms_consent",phone_consent:"phone_consent",consent_source:"consent_source",privacy_notice_version:"privacy_notice_version",preferred_employee_id:"preferred_employee_id",customer_type:"customer_type",barcode:"barcode",profile_image_url:"profile_image_url",is_active:"is_active",source:"source" };
   const fields:string[]=[]; const values:any[]=[];
-  for (const [key,column] of Object.entries(allowed)) if (Object.prototype.hasOwnProperty.call(req.body||{},key)) { values.push(req.body[key] === "" ? null : req.body[key]); fields.push(`${column}=$${values.length}${column==="location_id"?"::uuid":column==="birth_date"?"::date":""}`); }
+  for (const [key,column] of Object.entries(allowed)) if (Object.prototype.hasOwnProperty.call(req.body||{},key)) { values.push(req.body[key] === "" ? null : req.body[key]); fields.push(`${column}=$${values.length}${["location_id","preferred_employee_id"].includes(column)?"::uuid":column==="birth_date"?"::date":""}`); }
+  if(["marketing_consent","email_consent","sms_consent","phone_consent"].some(k=>Object.prototype.hasOwnProperty.call(req.body||{},k)))fields.push(`consent_recorded_at=now()`);
   if (!fields.length) return res.status(400).json({ error: "Nincs módosítandó adat." });
   if (Object.prototype.hasOwnProperty.call(req.body||{},"name")) { values.push(req.body.name); fields.push(`name=$${values.length}`); }
   values.push(req.params.id);
   try {
     const result = await pool.query(`UPDATE clients SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length}::uuid RETURNING id`, values);
     if (!result.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
+    if(["marketing_consent","email_consent","sms_consent","phone_consent"].some(k=>Object.prototype.hasOwnProperty.call(req.body||{},k)))await pool.query(`INSERT INTO crm_consent_history(client_id,email_consent,sms_consent,phone_consent,privacy_notice_version,source,changed_by) SELECT id,email_consent,sms_consent,phone_consent,privacy_notice_version,consent_source,$2 FROM clients WHERE id=$1::uuid`,[req.params.id,req.user?.email||String(req.user?.id||"")]);
     res.json({ ok:true,id:result.rows[0].id });
   } catch (error) { fail(res, error); }
 });

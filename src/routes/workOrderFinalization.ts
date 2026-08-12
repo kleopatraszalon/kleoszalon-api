@@ -1,5 +1,6 @@
 import {Router} from 'express';
 import db from '../db';
+import {evaluateClient} from '../loyalty/loyaltyProgramService';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {generateAndDeliverClosedWorkOrder,loadWorkOrderArchive,renderClosedWorkOrderPdf} from '../workorders/workOrderDocument';
 
@@ -259,6 +260,7 @@ async function finalizeTransaction(req:AuthRequest){
 
   const invoice=await ensureInvoiceDraft(c,{...wo,...updated},actor(req));
   if(settlement)await c.query(`UPDATE loyalty_checkout_settlements SET finalized_at=COALESCE(finalized_at,now()),finalization_payload=$2::jsonb WHERE work_order_id=$1`,[wo.id,JSON.stringify({financial_account_id:defaultAccount||null,payment_accounts:mappings,finalized_by:actor(req),invoice_id:invoice.id,invoice_no:invoice.invoice_no,inventory})]);
+  if(wo.client_id)await evaluateClient(c,String(wo.client_id),'workorder_finalized',actor(req));
   await c.query('COMMIT');
   return{status:200,body:{work_order:updated,archive,invoice,inventory,finalized:true,appointment_completed:Boolean(wo.appointment_id),loyalty_settlement:Boolean(settlement)}};
  }catch(e:any){
