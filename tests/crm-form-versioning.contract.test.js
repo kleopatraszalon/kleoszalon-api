@@ -6,6 +6,7 @@ const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const route=read('src/routes/clientFormVersions.ts');
 const server=read('src/server.ts');
+const menu=read('src/menu/ensureMenuHealth.ts');
 
 test('versioned forms router is mounted before generic clients routes',()=>{
   assert.match(server,/import clientFormVersionsRouter from"\.\/routes\/clientFormVersions"/);
@@ -51,4 +52,11 @@ test('editing and publishing is management-only and draft-only',()=>{
   assert.match(route,/if \(!canEdit\(req\)\)/);
   assert.match(route,/if \(current\[0\]\.status !== "draft"\)/);
   assert.match(route,/Csak tervezet állapotú verzió tehető közzé/);
+});
+
+test('versioned forms menu stays active and points to the dedicated workspace',()=>{
+  assert.match(menu,/customers\.forms/);
+  assert.match(menu,/Kérdőívek és nyilatkozatok/);
+  assert.match(menu,/\/modules\/customers\/forms/);
+  assert.match(menu,/WHERE m\.code IN\('customers\.forms','customers\.duplicate_review'\)/);
 });
