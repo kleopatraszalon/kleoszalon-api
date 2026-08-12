@@ -1,6 +1,7 @@
 import {Router} from 'express';
 import crypto from 'crypto';
 import db from '../db';
+import {evaluateClient} from '../loyalty/loyaltyProgramService';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {generateAndDeliverClosedWorkOrder} from '../workorders/workOrderDocument';
 import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
@@ -130,6 +131,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
 
     const archive=await ensureArchiveRow(c,{...wo,status:'completed'},'completed');
     if(woCols.has('archive_hash'))await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash]).catch(()=>undefined);
+    if(wo.client_id)await evaluateClient(c,String(wo.client_id),'workorder_finalized',actor(req));
     await c.query('COMMIT');
 
     const docs=queueDelivery(String(wo.id),false);
