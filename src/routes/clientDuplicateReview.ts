@@ -38,16 +38,47 @@ function ensureDuplicateReviewSchema() {
   return schemaReady;
 }
 
-function role(req: AuthRequest) {
-  return String(req.user?.role || "").trim().toLowerCase();
+function normalizeRole(value: unknown) {
+  const role = String(value || "").trim().toLowerCase();
+  if (["üzletvezető", "uzletvezeto", "store_manager", "branch_manager"].includes(role)) return "location_manager";
+  return role;
+}
+
+function roleKeys(req: AuthRequest): string[] {
+  const raw: any = req.user?.role;
+  if (Array.isArray(raw)) return raw.map(normalizeRole).filter(Boolean);
+  const source = String(raw ?? "");
+  try {
+    const parsed = JSON.parse(source);
+    if (Array.isArray(parsed)) return parsed.map(normalizeRole).filter(Boolean);
+    if (parsed != null) return [normalizeRole(parsed)].filter(Boolean);
+  } catch {}
+  return source.split(",").map(x => normalizeRole(x.replace(/[\[\]"]/g, ""))).filter(Boolean);
+}
+
+function hasRole(req: AuthRequest, roleName: string) {
+  return roleKeys(req).includes(roleName);
+}
+
+function canApprove(req: AuthRequest) {
+  return roleKeys(req).some(value => APPROVER_ROLES.has(value));
 }
 
 function requestedLocation(req: AuthRequest) {
   const explicit = String(req.query.location_id || req.body?.location_id || "").trim();
-  if (role(req) === "admin") return explicit || null;
+  if (hasRole(req, "admin")) return explicit || null;
   return req.user?.location_id === null || req.user?.location_id === undefined
     ? null
-    : String(req.user.location_id);
+    : String(req.user.location_id).trim() || null;
+}
+
+function requireLocationScope(req: AuthRequest, res: Response) {
+  const locationId = requestedLocation(req);
+  if (!hasRole(req, "admin") && !locationId) {
+    res.status(403).json({ error: "A CRM duplikáció-kezeléshez telephely-hozzárendelés szükséges." });
+    return { ok: false as const, locationId: null };
+  }
+  return { ok: true as const, locationId };
 }
 
 function actor(req: AuthRequest) {
@@ -103,7 +134,9 @@ router.use(async (_req, res, next) => {
 
 router.get("/duplicate-review", async (req: AuthRequest, res: Response) => {
   try {
-    const locationId = requestedLocation(req);
+    const scope = requireLocationScope(req, res);
+    if (!scope.ok) return;
+    const locationId = scope.locationId;
     const { rows: pairs } = await pool.query(`
       WITH candidates AS (
         SELECT
@@ -152,7 +185,7 @@ router.get("/duplicate-review", async (req: AuthRequest, res: Response) => {
       WHERE ($1::text IS NULL OR location_id=$1)
       ORDER BY created_at DESC LIMIT 100`, [locationId]);
 
-    res.json({ pending: pairs, history, can_approve: APPROVER_ROLES.has(role(req)) });
+    res.json({ pending: pairs, history, can_approve: canApprove(req) });
   } catch (error: any) {
     console.error("CRM duplikációs lista hiba:", error);
     res.status(500).json({ error: "A duplikációs lista betöltése nem sikerült.", detail: error?.message || String(error) });
@@ -160,15 +193,17 @@ router.get("/duplicate-review", async (req: AuthRequest, res: Response) => {
 });
 
 router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response) => {
-  if (!APPROVER_ROLES.has(role(req))) {
+  if (!canApprove(req)) {
     return res.status(403).json({ error: "A duplikált ügyfélprofilok jóváhagyásához vezetői jogosultság szükséges." });
   }
 
+  const scope = requireLocationScope(req, res);
+  if (!scope.ok) return;
+  const locationId = scope.locationId;
   const primaryId = String(req.body?.primary_client_id || "").trim();
   const duplicateId = String(req.body?.duplicate_client_id || "").trim();
   const decision = String(req.body?.decision || "").trim().toLowerCase();
   const note = String(req.body?.note || "").trim() || null;
-  const locationId = requestedLocation(req);
 
   if (!primaryId || !duplicateId || primaryId === duplicateId) {
     return res.status(400).json({ error: "Két külön ügyfélprofilt kell kiválasztani." });
