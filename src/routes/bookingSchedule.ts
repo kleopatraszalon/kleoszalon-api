@@ -6,17 +6,19 @@ const router=Router();
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const asUuidList=(value:unknown)=>String(value||"").split(",").map(x=>x.trim()).filter(Boolean);
 const addMinutes=(date:Date,minutes:number)=>new Date(date.getTime()+minutes*60000);
+const configCache=new Map<string,{expires:number;value:any}>();let shiftsCache:{expires:number;value:boolean}|null=null;
 
 async function config(locationId:string){
+  const cached=configCache.get(locationId);if(cached&&cached.expires>Date.now())return cached.value;
   await ensureOnlineBooking();
   const {rows}=await db.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`,[locationId]);
-  return rows[0]||{enabled:true,slot_interval_minutes:15,opening_minute:480,closing_minute:1200,booking_horizon_days:60,minimum_notice_minutes:60};
+  const value=rows[0]||{enabled:true,slot_interval_minutes:15,opening_minute:480,closing_minute:1200,booking_horizon_days:60,minimum_notice_minutes:60};configCache.set(locationId,{expires:Date.now()+60_000,value});return value;
 }
 async function dayBounds(date:string,cfg:any){
   const {rows}=await db.query(`SELECT (($1::date+make_interval(mins=>$2::int)) AT TIME ZONE 'Europe/Budapest') starts_at,(($1::date+make_interval(mins=>$3::int)) AT TIME ZONE 'Europe/Budapest') ends_at`,[date,Number(cfg.opening_minute||480),Number(cfg.closing_minute||1200)]);
   return{from:new Date(rows[0].starts_at),to:new Date(rows[0].ends_at)};
 }
-async function hasWorkShifts(){return Boolean((await db.query(`SELECT to_regclass('public.work_shifts') IS NOT NULL ok`)).rows[0]?.ok);}
+async function hasWorkShifts(){if(shiftsCache&&shiftsCache.expires>Date.now())return shiftsCache.value;const value=Boolean((await db.query(`SELECT to_regclass('public.work_shifts') IS NOT NULL ok`)).rows[0]?.ok);shiftsCache={expires:Date.now()+5*60_000,value};return value;}
 
 async function serviceDuration(serviceIds:string[],locationId:string){
   const result=await db.query(`SELECT s.id::text id,COALESCE(s.duration_minutes,30)::int duration_minutes FROM services s WHERE s.id=ANY($1::uuid[]) AND COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid))`,[serviceIds,locationId]);
@@ -25,7 +27,7 @@ async function serviceDuration(serviceIds:string[],locationId:string){
 }
 
 async function eligibleEmployees(locationId:string,employeeId:string,serviceIds:string[]){
-  return (await db.query(`SELECT e.id::text id,COALESCE(NULLIF(e.full_name,''),NULLIF(concat_ws(' ',e.last_name,e.first_name),''),'Munkatárs') full_name FROM employees e WHERE COALESCE(e.active,true)=true AND (e.location_id=$1::uuid OR e.location_id IS NULL) AND ($2::uuid IS NULL OR e.id=$2::uuid) AND (NOT EXISTS(SELECT 1 FROM employee_service_overrides eo0 WHERE eo0.employee_id=e.id) OR NOT EXISTS(SELECT 1 FROM unnest($3::uuid[]) sid(service_id) WHERE NOT EXISTS(SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id=e.id AND eo.service_id=sid.service_id))) ORDER BY full_name`,[locationId,employeeId||null,serviceIds])).rows;
+  return (await db.query(`SELECT e.id::text id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name FROM employees e WHERE COALESCE(e.active,true)=true AND (e.location_id=$1::uuid OR e.location_id IS NULL) AND ($2::uuid IS NULL OR e.id=$2::uuid) AND (NOT EXISTS(SELECT 1 FROM employee_service_overrides eo0 WHERE eo0.employee_id=e.id) OR NOT EXISTS(SELECT 1 FROM unnest($3::uuid[]) sid(service_id) WHERE NOT EXISTS(SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id=e.id AND eo.service_id=sid.service_id))) ORDER BY full_name`,[locationId,employeeId||null,serviceIds])).rows;
 }
 
 type Interval={from:Date;to:Date};
