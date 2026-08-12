@@ -3,6 +3,7 @@ import db from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { ensureCustomerPortal } from "../customerPortal/ensureCustomerPortal";
 import customerPortalSelfServiceRouter from "./customerPortalSelfService";
+import {evaluateClient} from "../loyalty/loyaltyProgramService";
 
 const router = Router();
 router.use(requireAuth);
@@ -50,6 +51,8 @@ router.get("/dashboard",asyncRoute(async(req,res)=>{
   );
   const account=accountResult.rows[0]??null;
   const accountId=account?.id??null;
+  await evaluateClient(db,customer.id,"customer_dashboard");
+  const loyaltyProgram=(await db.query(`SELECT pm.*,t.name tier_name,t.color,t.discount_percent,(SELECT MIN(x.paid_threshold) FROM loyalty_program_tiers x WHERE x.is_active AND x.sort_order>COALESCE(t.sort_order,0)) next_paid_threshold FROM loyalty_program_members pm LEFT JOIN loyalty_program_tiers t ON t.code=pm.tier_code WHERE pm.client_id=$1::uuid`,[customer.id])).rows[0]||null;
 
   const [passes,coupons,promoServices,appointments,transactions]=await Promise.all([
     accountId?db.query(
@@ -112,6 +115,7 @@ router.get("/dashboard",asyncRoute(async(req,res)=>{
       id:String(account.id),balance:Number(account.balance||0),points:Number(account.points||0),
       card_identifier:account.card_identifier??null,status:account.status
     }:{id:null,balance:0,points:0,card_identifier:null,status:"inactive"},
+    loyalty_program:loyaltyProgram?{...loyaltyProgram,amount_to_next_tier:loyaltyProgram.next_paid_threshold==null?0:Math.max(0,Number(loyaltyProgram.next_paid_threshold)-Number(loyaltyProgram.paid_total||0))}:null,
     passes:passes.rows,
     discounts:coupons.rows,
     promotions:[
