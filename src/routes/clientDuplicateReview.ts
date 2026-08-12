@@ -117,7 +117,7 @@ router.get("/duplicate-review", async (req: AuthRequest, res: Response) => {
         JOIN clients b ON a.id::text < b.id::text
         WHERE COALESCE(a.is_active,true) AND COALESCE(b.is_active,true)
           AND COALESCE(a.merged_into_client_id,'')='' AND COALESCE(b.merged_into_client_id,'')=''
-          AND ($1::text IS NULL OR a.location_id::text=$1 OR b.location_id::text=$1)
+          AND ($1::text IS NULL OR (a.location_id::text=$1 AND b.location_id::text=$1))
           AND (
             (lower(trim(COALESCE(a.email,'')))<>'' AND lower(trim(COALESCE(a.email,'')))=lower(trim(COALESCE(b.email,''))))
             OR
@@ -198,9 +198,9 @@ router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response)
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Az ügyfélprofilok nem azonosíthatók." });
     }
-    if (locationId && primary.location_id !== locationId && duplicate.location_id !== locationId) {
+    if (locationId && (primary.location_id !== locationId || duplicate.location_id !== locationId)) {
       await client.query("ROLLBACK");
-      return res.status(403).json({ error: "A kiválasztott ügyfelek nem tartoznak a kezelhető telephelyhez." });
+      return res.status(403).json({ error: "Mindkét kiválasztott ügyfélprofilnak a kezelhető telephelyhez kell tartoznia." });
     }
 
     const reasons = matchReasons(primary, duplicate);
