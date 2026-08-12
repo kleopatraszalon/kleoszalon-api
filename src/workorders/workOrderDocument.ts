@@ -10,6 +10,15 @@ const DEFAULT_RECIPIENTS=[
   'rebeka.horvath@kleoszalon.hu',
 ];
 
+const ISSUER={
+  fullName:'Kleopátra 2003 Szépségápoló Szolgáltató és Kereskedelmi Korlátolt Felelősségű Társaság',
+  shortName:'Kleopátra 2003 Kft.',
+  taxNumber:'13094445-2-41',
+  companyNumber:'01-09-882845',
+  country:'Magyarország',
+  address:'1132 Budapest, Visegrádi utca 8. fszt. 2.',
+};
+
 const money=(v:any)=>`${Math.round(Number(v||0)).toLocaleString('hu-HU')} Ft`;
 const dateTime=(v:any)=>v?new Date(v).toLocaleString('hu-HU',{timeZone:'Europe/Budapest'}):'—';
 const text=(v:any,fallback='—')=>String(v??'').trim()||fallback;
@@ -45,6 +54,16 @@ function installSafeTextFallback(doc:PDFKit.PDFDocument){
   if(fontPath(false))return;
   const original=(doc as any).text.bind(doc);
   (doc as any).text=(value:any,...args:any[])=>original(asciiSafe(value),...args);
+}
+
+function logoPath(){
+  const candidates=[
+    process.env.WORKORDER_PDF_LOGO,
+    `${process.cwd()}/images/kleo_logo.png`,
+    `${process.cwd()}/kleopatra-landing/images/kleo_logo.png`,
+    `${__dirname}/../../images/kleo_logo.png`,
+  ].filter(Boolean) as string[];
+  return candidates.find(p=>fs.existsSync(p))||null;
 }
 
 function line(doc:PDFKit.PDFDocument){
@@ -182,65 +201,76 @@ export async function renderClosedWorkOrderPdf(archive:any):Promise<Buffer>{
 
   return await new Promise<Buffer>((resolve,reject)=>{
     const chunks:Buffer[]=[];
-    const doc=new PDFDocument({size:'A4',margin:48,info:{Title:`Lezárt munkalap ${archive.work_order_number}`,Author:'Kleopátra Szépségszalonok',Subject:'Digitális munkalap'}});
+    const doc=new PDFDocument({size:'A4',margin:42,bufferPages:true,info:{Title:`Lezárt munkalap ${archive.work_order_number}`,Author:ISSUER.shortName,Subject:'Számla megjelenésű lezárt digitális munkalap'}});
     installSafeTextFallback(doc);
     doc.on('data',(c:Buffer)=>chunks.push(c));doc.on('end',()=>resolve(Buffer.concat(chunks)));doc.on('error',reject);
-    setFont(doc,true);doc.fillColor('#2c2118').fontSize(9).text('KLEOPÁTRA SZÉPSÉGSZALONOK',{align:'center'});
-    doc.moveDown(.35);doc.fontSize(21).text('LEZÁRT DIGITÁLIS MUNKALAP',{align:'center'});
-    setFont(doc,false);doc.fillColor('#6b6158').fontSize(8.5).text('Archivált, zárolt munkalappéldány',{align:'center'});
-    doc.moveDown(1);line(doc);
+    const pageWidth=595.28,left=42,right=553.28,contentWidth=right-left;
+    const brown='#2d211b',gold='#b28a52',muted='#6f665f',pale='#f5f1eb',border='#d8d0c6';
+    const label=(value:any,x:number,y:number,w:number)=>{setFont(doc,true);doc.fillColor(muted).fontSize(7.2).text(String(value).toUpperCase(),x,y,{width:w,characterSpacing:.4})};
+    const value=(v:any,x:number,y:number,w:number,size=9)=>{setFont(doc,false);doc.fillColor('#191512').fontSize(size).text(text(v),x,y,{width:w})};
+    const box=(x:number,y:number,w:number,h:number)=>doc.roundedRect(x,y,w,h,5).lineWidth(.7).strokeColor(border).stroke();
+    const addFooter=(pageNo:number,total:number)=>{
+      const y=758;doc.save();doc.moveTo(left,y-9).lineTo(right,y-9).lineWidth(.6).strokeColor(border).stroke();
+      setFont(doc,false);doc.fillColor(muted).fontSize(6.6).text('Ez a dokumentum lezárt digitális munkalap és számviteli bizonylati melléklet. Nem minősül adóügyi számlának, nyugtának vagy NAV Online Számla adatszolgáltatásnak, és azokat nem helyettesíti.',left,y,{width:420,lineGap:1});
+      doc.text(`${pageNo} / ${total}`,right-70,y,{width:70,align:'right'});doc.restore();
+    };
+    const addContinuationHeader=()=>{
+      setFont(doc,true);doc.fillColor(brown).fontSize(8).text(ISSUER.shortName,left,34,{width:190});
+      setFont(doc,false);doc.fillColor(muted).fontSize(7.2).text(`${archive.work_order_number||header.work_order_number||header.id} - folytatás`,300,34,{width:right-300,align:'right'});
+      doc.moveTo(left,48).lineTo(right,48).lineWidth(.6).strokeColor(gold).stroke();doc.y=60;
+    };
+    const ensureSpace=(height:number)=>{if(doc.y+height>735){doc.addPage();doc.y=48}};
 
-    heading(doc,'Munkalap adatai');
-    kv(doc,'Munkalapszám',archive.work_order_number||header.work_order_number||header.id);
-    kv(doc,'Státusz',archive.terminal_status||header.status);
-    kv(doc,'Archiválva',dateTime(archive.archived_at));
-    kv(doc,'Szalon',locationName||header.location_id);
-    kv(doc,'Munkatárs',employeeName||header.employee_id);
-    kv(doc,'Munkalap címe',header.title);
-    kv(doc,'Létrehozva',dateTime(header.created_at));
-    kv(doc,'Munka kezdete',dateTime(header.started_at||header.work_started_at));
-    kv(doc,'Lezárva',dateTime(header.closed_at||header.completed_at||archive.archived_at));
+    const logo=logoPath();
+    if(logo)doc.image(logo,left,42,{fit:[175,55],valign:'center'});
+    else{setFont(doc,true);doc.fillColor(brown).fontSize(18).text('KLEOPÁTRA',left,51,{width:180});setFont(doc,false);doc.fontSize(7).fillColor(gold).text('SZÉPSÉGSZALONOK',left,73,{width:180,characterSpacing:1.4})}
+    setFont(doc,true);doc.fillColor(brown).fontSize(19).text('LEZÁRT MUNKALAP',310,45,{width:243,align:'right'});
+    setFont(doc,false);doc.fillColor(muted).fontSize(8).text('Számla megjelenésű archivált bizonylat',310,70,{width:243,align:'right'});
+    doc.moveTo(left,105).lineTo(right,105).lineWidth(1.5).strokeColor(gold).stroke();
 
-    heading(doc,'Vendég');
-    kv(doc,'Név',header.client_name);
-    kv(doc,'Telefon',header.client_phone);
-    kv(doc,'E-mail',header.client_email);
-    if(header.notes)kv(doc,'Belső megjegyzés',header.notes);
+    const metaY=120;box(left,metaY,contentWidth,57);
+    const meta=[
+      ['Bizonylatszám',archive.work_order_number||header.work_order_number||header.id],
+      ['Kiállítás / archiválás',dateTime(archive.archived_at)],
+      ['Teljesítés / lezárás',dateTime(header.closed_at||header.completed_at||archive.archived_at)],
+      ['Fizetési státusz',String(header.payment_status||'paid')==='paid'?'Kifizetve':header.payment_status||'—'],
+    ];
+    meta.forEach((m,i)=>{const x=left+14+i*(contentWidth/4);label(m[0],x,metaY+11,contentWidth/4-20);value(m[1],x,metaY+28,contentWidth/4-20,i===0?9.2:8.2)});
 
-    heading(doc,'Szolgáltatások és termékek');
-    if(!items.length){doc.text('Nincs rögzített tétel.');doc.moveDown(.5)}
+    const partyY=193,partyW=(contentWidth-12)/2,partyH=128;box(left,partyY,partyW,partyH);box(left+partyW+12,partyY,partyW,partyH);
+    label('Kibocsátó',left+14,partyY+12,partyW-28);setFont(doc,true);doc.fillColor(brown).fontSize(9.6).text(ISSUER.shortName,left+14,partyY+29,{width:partyW-28});
+    setFont(doc,false);doc.fillColor('#29231f').fontSize(7.4).text(ISSUER.fullName,left+14,partyY+45,{width:partyW-28,lineGap:1});
+    doc.fontSize(7.7).text(`${ISSUER.country}\n${ISSUER.address}\nAdószám: ${ISSUER.taxNumber}\nCégjegyzékszám: ${ISSUER.companyNumber}`,left+14,partyY+75,{width:partyW-28,lineGap:2});
+    const customerX=left+partyW+26;label('Vevő / Vendég',customerX,partyY+12,partyW-28);setFont(doc,true);doc.fillColor(brown).fontSize(10).text(text(header.client_name,'Nincs megadva'),customerX,partyY+30,{width:partyW-28});
+    setFont(doc,false);doc.fillColor('#29231f').fontSize(8).text(`E-mail: ${text(header.client_email)}\nTelefon: ${text(header.client_phone)}\nSzalon: ${text(locationName||header.location_id)}\nMunkatárs: ${text(employeeName||header.employee_id)}`,customerX,partyY+52,{width:partyW-28,lineGap:3});
+
+    doc.y=340;setFont(doc,true);doc.fillColor(brown).fontSize(11).text('Tételek',left,doc.y);doc.y+=18;
+    const cols=[left,left+260,left+316,left+389,left+453,right];
+    const drawTableHeader=()=>{const y=doc.y;doc.rect(left,y,contentWidth,24).fill(pale);setFont(doc,true);doc.fillColor(brown).fontSize(7.2);doc.text('MEGNEVEZÉS',cols[0]+7,y+8,{width:245});doc.text('MENNY.',cols[1],y+8,{width:50,align:'right'});doc.text('EGYSÉGÁR',cols[2],y+8,{width:66,align:'right'});doc.text('KEDVEZMÉNY',cols[3],y+8,{width:58,align:'right'});doc.text('ÖSSZESEN',cols[4],y+8,{width:55,align:'right'});doc.y=y+24};
+    drawTableHeader();
+    if(!items.length){setFont(doc,false);doc.fillColor(muted).fontSize(8).text('Nincs rögzített tétel.',left+7,doc.y+9);doc.y+=29}
     for(const item of items){
-      if(doc.y>735)doc.addPage();
-      const kind=String(item.item_type||'')==='service'?'Szolgáltatás':'Termék';
-      setFont(doc,true);doc.fontSize(9).fillColor('#222').text(`${kind}: ${text(item.item_name,'Tétel')}`,48,doc.y,{width:315,continued:false});
-      setFont(doc,false);doc.fontSize(8.5).fillColor('#555').text(`${Number(item.quantity||1).toLocaleString('hu-HU')} × ${money(item.unit_price)}   Kedvezmény: ${money(item.discount_amount)}   Összesen: ${money(item.line_total)}`,65,doc.y+2,{width:470});
-      doc.moveDown(.45);
+      if(doc.y>700){doc.addPage();addContinuationHeader();drawTableHeader()}
+      const y=doc.y,rowH=31;doc.moveTo(left,y+rowH).lineTo(right,y+rowH).lineWidth(.45).strokeColor(border).stroke();
+      setFont(doc,true);doc.fillColor('#211b17').fontSize(8).text(text(item.item_name,'Tétel'),cols[0]+7,y+7,{width:245,height:12,ellipsis:true});
+      setFont(doc,false);doc.fillColor(muted).fontSize(6.5).text(String(item.item_type||'')==='service'?'Szolgáltatás':'Termék',cols[0]+7,y+19,{width:245});
+      doc.fillColor('#211b17').fontSize(7.6).text(Number(item.quantity||1).toLocaleString('hu-HU'),cols[1],y+11,{width:50,align:'right'});
+      doc.text(money(item.unit_price),cols[2],y+11,{width:66,align:'right'});doc.text(money(item.discount_amount),cols[3],y+11,{width:58,align:'right'});setFont(doc,true);doc.text(money(item.line_total),cols[4],y+11,{width:55,align:'right'});doc.y=y+rowH;
     }
 
-    heading(doc,'Fizetések');
-    if(!payments.length){doc.text('Nincs rögzített fizetés.');doc.moveDown(.5)}
     const methodHu:Record<string,string>={cash:'Készpénz',card:'Bankkártya',transfer:'Átutalás',voucher:'Utalvány',other:'Egyéb'};
-    for(const p of payments){
-      if(doc.y>735)doc.addPage();
-      const method=methodHu[String(p.payment_method||'').toLowerCase()]||text(p.payment_method,'Fizetés');
-      setFont(doc,true);doc.fontSize(9).fillColor('#222').text(`${method} — ${money(p.amount)}`);
-      setFont(doc,false);doc.fontSize(8).fillColor('#666').text(`${dateTime(p.paid_at)}${p.note?` · ${p.note}`:''}`);doc.moveDown(.35);
-    }
-
-    heading(doc,'Pénzügyi összesítő');
     const gross=header.gross_total??header.total_gross??items.reduce((n:number,x:any)=>n+Number(x.line_total||0),0);
     const paid=header.amount_paid??payments.reduce((n:number,x:any)=>n+Number(x.amount||0),0);
-    kv(doc,'Bruttó tételérték',money(gross));
-    kv(doc,'Kedvezmény',money(header.discount_amount));
-    kv(doc,'Borravaló',money(header.tip_amount));
-    kv(doc,'Fizetendő',money(header.amount_due??gross));
-    kv(doc,'Kifizetve',money(paid));
-    kv(doc,'Pénzügyi státusz',header.payment_status||'paid');
-    kv(doc,'Pénzügyi zárás',dateTime(header.financial_closed_at));
+    ensureSpace(150);doc.y+=18;const sumY=doc.y,payW=300,sumX=left+318;label('Fizetés',left,sumY,payW);
+    setFont(doc,false);doc.fillColor('#29231f').fontSize(7.6);
+    if(payments.length)payments.slice(0,5).forEach((p:any,i:number)=>{const method=methodHu[String(p.payment_method||'').toLowerCase()]||text(p.payment_method,'Fizetés');doc.text(`${method}  |  ${dateTime(p.paid_at)}  |  ${money(p.amount)}`,left,sumY+17+i*14,{width:payW})});
+    else doc.text('Nincs rögzített fizetési sor.',left,sumY+17,{width:payW});
+    box(sumX,sumY-3,right-sumX,92);const totals=[['Bruttó tételérték',gross],['Kedvezmény',header.discount_amount],['Borravaló',header.tip_amount],['Fizetendő',header.amount_due??gross],['Kifizetve',paid]];
+    totals.forEach((r,i)=>{const y=sumY+8+i*15;setFont(doc,i===3||i===4);doc.fillColor(i===3?brown:muted).fontSize(i===3?9:7.7).text(r[0],sumX+12,y,{width:90});doc.fillColor(i===3?brown:'#211b17').text(money(r[1]),sumX+105,y,{width:76,align:'right'})});
 
-    heading(doc,'Archiválási ellenőrző adatok');
-    kv(doc,'Snapshot SHA-256',archive.snapshot_hash);
-    setFont(doc,false);doc.fontSize(7.5).fillColor('#777').text('A dokumentum az adatbázisban tárolt lezáráskori snapshotból készült. A lezárt munkalap közvetlenül nem módosítható.',48,doc.y+6,{width:499,align:'center'});
+    doc.y=Math.max(sumY+108,doc.y);ensureSpace(82);const auditY=doc.y;doc.rect(left,auditY,contentWidth,64).fill(pale);label('Archiválási ellenőrző adatok',left+12,auditY+10,220);setFont(doc,false);doc.fillColor(muted).fontSize(6.7).text(`Snapshot SHA-256: ${archive.snapshot_hash}`,left+12,auditY+26,{width:contentWidth-24});doc.text(`Munkalap: ${text(header.title)}  |  Létrehozva: ${dateTime(header.created_at)}  |  Pénzügyi zárás: ${dateTime(header.financial_closed_at)}`,left+12,auditY+41,{width:contentWidth-24});
+
+    const range=doc.bufferedPageRange();for(let i=0;i<range.count;i++){doc.switchToPage(range.start+i);addFooter(i+1,range.count)}
     doc.end();
   });
 }
