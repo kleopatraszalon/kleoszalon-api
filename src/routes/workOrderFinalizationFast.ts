@@ -2,7 +2,7 @@ import {Router} from 'express';
 import crypto from 'crypto';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
-import {generateAndDeliverClosedWorkOrder,loadWorkOrderArchive,renderClosedWorkOrderPdf} from '../workorders/workOrderDocument';
+import {generateAndDeliverClosedWorkOrder} from '../workorders/workOrderDocument';
 import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
 
 const router=Router();
@@ -44,6 +44,13 @@ async function deliverNow(workOrderId:string,forceMail=false){
   }
 }
 
+function queueDelivery(workOrderId:string,forceMail=false){
+  setImmediate(()=>void deliverNow(workOrderId,forceMail).then(result=>{
+    if(!result.pdf_ready)console.warn('[workorder-finalization-fast] queued document delivery was incomplete',workOrderId);
+  }));
+  return{pdf_ready:false,pdf_bytes:0,delivery_queued:true};
+}
+
 router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();
   try{
@@ -70,7 +77,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
         await c.query('RELEASE SAVEPOINT wo_repair_close_markers');
       }
       await c.query('COMMIT');
-      const docs=await deliverNow(String(wo.id),false);
+      const docs=queueDelivery(String(wo.id),false);
       return res.json({idempotent:true,repaired:true,finalized:true,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
     }
     if(['cancelled','no_show'].includes(String(wo.status||''))){await c.query('ROLLBACK');return res.status(409).json({message:'Lemondott vagy meg nem jelent munkalap nem zárható teljesítettként.',code:'WORKORDER_TERMINAL_CANCELLED'})}
@@ -125,7 +132,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     if(woCols.has('archive_hash'))await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash]).catch(()=>undefined);
     await c.query('COMMIT');
 
-    const docs=await deliverNow(String(wo.id),false);
+    const docs=queueDelivery(String(wo.id),false);
     return res.json({finalized:true,fast:true,status_persisted:statusPersisted,work_order:{...wo,status:'completed'},archive,...docs});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);
@@ -136,9 +143,8 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
   }finally{c.release()}
 });
 
-router.get('/workorders/:id/pdf',async(req,res,next)=>{
+router.get('/workorders/:id/pdf',async(req,res)=>{
   try{
-    await repairLegacyWorkOrderTriggers(db).catch((e:any)=>console.warn('[workorder-finalization-fast] trigger repair skipped',e?.code||'',e?.message||e));
     const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:false});
     const archive=delivery.archive;
     if(!archive)return res.status(409).json({message:'A PDF a munkalap végleges lezárása után tölthető le.',code:'WORKORDER_NOT_ARCHIVED'});
@@ -146,14 +152,17 @@ router.get('/workorders/:id/pdf',async(req,res,next)=>{
     await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id::text=$1`,[req.params.id]).catch(()=>undefined);
     const filename=`${archive.work_order_number||'lezart-munkalap'}.pdf`.replace(/[^A-Za-z0-9._-]/g,'_');
     res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);res.setHeader('Content-Length',String(pdf.length));return res.send(pdf);
-  }catch(e){next(e)}
+  }catch(e:any){
+    const code=String(e?.code||'');const detail=String(e?.message||e);
+    console.error('[workorder-finalization-fast] PDF generation failed',code,detail);
+    if(detail.includes('archív példánya nem található'))return res.status(409).json({message:'A PDF a munkalap végleges lezárása után tölthető le.',code:'WORKORDER_NOT_ARCHIVED'});
+    if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code});
+    return res.status(503).json({message:'A lezárt munkalap PDF előállítása átmenetileg nem sikerült.',code:'WORKORDER_PDF_RETRY_FAILED',detail});
+  }
 });
 
 router.post('/workorders/:id/email',async(req,res)=>{
   try{
-    await repairLegacyWorkOrderTriggers(db).catch((e:any)=>console.warn('[workorder-finalization-fast] trigger repair skipped',e?.code||'',e?.message||e));
-    const archive=await loadWorkOrderArchive(req.params.id);
-    if(!archive)return res.status(409).json({message:'E-mail csak véglegesen lezárt és archivált munkalapról küldhető.',code:'WORKORDER_NOT_ARCHIVED'});
     const delivery=await generateAndDeliverClosedWorkOrder(req.params.id,{sendMail:true,forceMail:true});
     const{pdf,...meta}=delivery;const mail=(delivery as any)?.mail||{};
     if(mail.sent||mail.logged||mail.already_sent)return res.json(meta);
@@ -161,6 +170,7 @@ router.post('/workorders/:id/email',async(req,res)=>{
   }catch(e:any){
     const code=String(e?.code||'');const detail=String(e?.message||e);
     console.error('[workorder-finalization-fast] email retry failed',code,detail);
+    if(detail.includes('archív példánya nem található'))return res.status(409).json({message:'E-mail csak véglegesen lezárt és archivált munkalapról küldhető.',code:'WORKORDER_NOT_ARCHIVED'});
     if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code});
     if(code==='57014'||code==='55P03')return res.status(503).json({message:'Az e-mail újraküldését adatbázis-zárolás vagy timeout akadályozta.',code,detail});
     return res.status(503).json({message:'A lezárt munkalap PDF/e-mail előállítása átmenetileg nem sikerült.',code:'WORKORDER_EMAIL_RETRY_FAILED',detail});

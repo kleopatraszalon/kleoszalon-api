@@ -19,6 +19,12 @@ const ISSUER={
   address:'1132 Budapest, Visegrádi utca 8. fszt. 2.',
 };
 
+const PDF_CACHE_TTL_MS=10*60*1000;
+const PDF_CACHE_MAX_ENTRIES=50;
+type CachedPdf={pdf:Buffer;pdfFallback:boolean;expiresAt:number};
+const pdfCache=new Map<string,CachedPdf>();
+const pdfRendering=new Map<string,Promise<CachedPdf>>();
+
 const money=(v:any)=>`${Math.round(Number(v||0)).toLocaleString('hu-HU')} Ft`;
 const dateTime=(v:any)=>v?new Date(v).toLocaleString('hu-HU',{timeZone:'Europe/Budapest'}):'—';
 const text=(v:any,fallback='—')=>String(v??'').trim()||fallback;
@@ -295,16 +301,36 @@ async function renderEmergencyClosedWorkOrderPdf(archive:any):Promise<Buffer>{
   });
 }
 
+function pdfCacheKey(archive:any){
+  return `${String(archive?.work_order_id||archive?.id||'unknown')}:${String(archive?.snapshot_hash||archive?.archived_at||'latest')}`;
+}
+
+async function cachedClosedWorkOrderPdf(archive:any):Promise<CachedPdf>{
+  const key=pdfCacheKey(archive);const now=Date.now();
+  const cached=pdfCache.get(key);
+  if(cached&&cached.expiresAt>now)return cached;
+  if(cached)pdfCache.delete(key);
+  const active=pdfRendering.get(key);if(active)return active;
+  const rendering=(async()=>{
+    let pdf:Buffer;let pdfFallback=false;
+    try{pdf=await renderClosedWorkOrderPdf(archive)}
+    catch(e:any){
+      pdfFallback=true;
+      console.warn('[workorder-document] rich PDF failed, emergency PDF used',e?.message||e);
+      pdf=await renderEmergencyClosedWorkOrderPdf(archive);
+    }
+    const result={pdf,pdfFallback,expiresAt:Date.now()+PDF_CACHE_TTL_MS};
+    if(pdfCache.size>=PDF_CACHE_MAX_ENTRIES){const oldest=pdfCache.keys().next().value;if(oldest)pdfCache.delete(oldest)}
+    pdfCache.set(key,result);return result;
+  })();
+  pdfRendering.set(key,rendering);
+  try{return await rendering}finally{pdfRendering.delete(key)}
+}
+
 export async function generateAndDeliverClosedWorkOrder(workOrderId:string,options:{sendMail?:boolean;forceMail?:boolean}={}){
   const archive=await loadWorkOrderArchive(workOrderId);
   if(!archive)throw new Error('A lezárt munkalap archív példánya nem található.');
-  let pdf:Buffer;let pdfFallback=false;
-  try{pdf=await renderClosedWorkOrderPdf(archive)}
-  catch(e:any){
-    pdfFallback=true;
-    console.warn('[workorder-document] rich PDF failed, emergency PDF used',e?.message||e);
-    pdf=await renderEmergencyClosedWorkOrderPdf(archive);
-  }
+  const{pdf,pdfFallback}=await cachedClosedWorkOrderPdf(archive);
   await db.query(`UPDATE work_order_archive SET pdf_generated_at=now() WHERE work_order_id::text=$1`,[String(workOrderId)]).catch(()=>undefined);
   const recipients=closedWorkOrderRecipients();
   let mail:any={attempted:false,sent:false,recipients};
