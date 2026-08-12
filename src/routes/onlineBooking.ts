@@ -4,6 +4,7 @@ import db from "../db";
 import ensureOnlineBooking from "../booking/ensureOnlineBooking";
 import { ensureBookingWorkOrder, ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 import bookingScheduleRouter from "./bookingSchedule";
+import {bookingRecommendations} from "../booking/bookingRecommendations";
 
 const router = Router();
 
@@ -116,6 +117,13 @@ router.get("/catalog", async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ error: "Az online foglalási adatok nem tölthetők be.", detail: error?.message || String(error) });
   }
+});
+
+router.get("/recommendations",async(req,res)=>{
+  const locationId=String(req.query.location_id||'').trim(),serviceIds=asUuidList(req.query.service_ids);
+  if(!UUID_RE.test(locationId)||!serviceIds.length||serviceIds.some(id=>!UUID_RE.test(id)))return res.status(400).json({error:'Érvényes location_id és service_ids szükséges.'});
+  try{return res.json(await bookingRecommendations(locationId,serviceIds))}
+  catch(error:any){console.error('[booking-recommendations] failed',error?.message||error);return res.json({recommendations:[],ai_used:false,selected_service_ids:serviceIds})}
 });
 
 router.get("/availability", async (req, res) => {
