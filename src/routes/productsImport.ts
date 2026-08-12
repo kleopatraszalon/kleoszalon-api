@@ -1,122 +1,34 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import * as XLSX from "xlsx";
-import { randomUUID } from "crypto";
 import pool from "../db";
+import { classifyProduct, TAXONOMY_VERSION, normalizeTaxonomyText } from "../inventory/productTaxonomy";
+import { ensureProductTaxonomySchema, ensureTaxonomyNodes } from "../inventory/ensureProductTaxonomy";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-const norm = (v: unknown) => String(v ?? "")
-  .replace(/^\uFEFF/, "")
-  .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
-  .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const text = (v: unknown) => { const s = String(v ?? "").trim(); return s || null; };
 const number = (v: unknown) => {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   const s = String(v).replace(/\s/g, "").replace(/Ft/gi, "").replace(",", ".").replace(/[^0-9.\-]/g, "");
-  const n = Number(s); return Number.isFinite(n) ? n : null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
 };
-
 function pick(row: Record<string, unknown>, aliases: string[]) {
   const entries = Object.entries(row);
   for (const alias of aliases) {
-    const n = norm(alias);
-    const hit = entries.find(([k]) => norm(k) === n);
+    const n = normalizeTaxonomyText(alias);
+    const hit = entries.find(([k]) => normalizeTaxonomyText(k) === n);
     if (hit) return hit[1];
   }
   for (const alias of aliases) {
-    const n = norm(alias);
-    const hit = entries.find(([k]) => norm(k).includes(n) || n.includes(norm(k)));
+    const n = normalizeTaxonomyText(alias);
+    const hit = entries.find(([k]) => normalizeTaxonomyText(k).includes(n) || n.includes(normalizeTaxonomyText(k)));
     if (hit) return hit[1];
   }
   return null;
-}
-
-function slugCode(value: string, prefix: string) {
-  const s = value
-    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")
-    .slice(0, 42);
-  return `${prefix}_${s || "EGYEB"}`;
-}
-
-type Taxonomy = { typeCode: string; typeName: string; groupCode: string; groupName: string };
-
-/**
- * Az Altegio termékexport egyetlen Kategória mezőt ad. A VIR-ben ebből
- * determinisztikusan építünk 4 szintű struktúrát:
- * Terméktípus -> Termékcsoport -> Altegio kategória (alkategória) -> Termék.
- * Az eredeti Altegio kategória neve és azonosítója változatlanul megmarad.
- */
-function classifyCategory(category: string | null): Taxonomy {
-  const n = norm(category || "egyeb");
-  const has = (...xs: string[]) => xs.some(x => n.includes(norm(x)));
-
-  if (has("utalvany", "ajandek", "promocio", "gift"))
-    return { typeCode: "PROMOTIONAL", typeName: "Ajándék / promóciós termék", groupCode: "GIFT_PROMO", groupName: "Ajándékok és utalványok" };
-  if (has("irodaszer", "iroda", "papiraru", "nyomtatvany"))
-    return { typeCode: "OFFICE", typeName: "Irodaszer", groupCode: "OFFICE_ADMIN", groupName: "Irodaszer és adminisztráció" };
-  if (has("tiszt", "vegyszer", "fertotlen", "higien", "moso", "ablak", "sepru", "szemetes", "air wick"))
-    return { typeCode: "CLEANING", typeName: "Tisztítószer", groupCode: "CLEANING_HYGIENE", groupName: "Tisztítás és higiénia" };
-  if (has("bufe", "kave", "tea", "ital", "asvanyviz", "udito", "cukor", "pohar"))
-    return { typeCode: "BUFFET", typeName: "Büfétermék", groupCode: "BUFFET_GUEST", groupName: "Büfé és vendéglátás" };
-  if (has("kellek", "fogyó", "fogyaszt", "eldobhato", "kesztyu", "vatta", "torlo", "alufolia", "folia", "cellux"))
-    return { typeCode: "CONSUMABLE", typeName: "Fogyóanyag", groupCode: "CONSUMABLES", groupName: "Kellékek és fogyóanyagok" };
-  if (has("gyanta", "cukorpaszta", "szortelen"))
-    return { typeCode: "PROFESSIONAL", typeName: "Professzionális felhasználású termék", groupCode: "DEPILATION", groupName: "Szőrtelenítés" };
-  if (has("korom", "gellakk", "gel lakk", "nail", "manikur", "pedikur"))
-    return { typeCode: "PROFESSIONAL_RETAIL", typeName: "Professzionális és értékesíthető termék", groupCode: "NAILS", groupName: "Köröm és kéz-/lábápolás" };
-  if (has("haj", "hair", "sampon", "balzsam"))
-    return { typeCode: "PROFESSIONAL_RETAIL", typeName: "Professzionális és értékesíthető termék", groupCode: "HAIR", groupName: "Hajápolás" };
-  if (has("smink", "alapozo", "szaj", "szem", "makeup", "dermacolor", "ben nye"))
-    return { typeCode: "PROFESSIONAL_RETAIL", typeName: "Professzionális és értékesíthető termék", groupCode: "MAKEUP", groupName: "Smink és dekor kozmetika" };
-  if (has("kozmetik", "arc", "bor", "krem", "szérum", "szerum", "maszk"))
-    return { typeCode: "PROFESSIONAL_RETAIL", typeName: "Professzionális és értékesíthető termék", groupCode: "COSMETICS", groupName: "Kozmetika és bőrápolás" };
-
-  return { typeCode: "PROFESSIONAL_RETAIL", typeName: "Professzionális és értékesíthető termék", groupCode: "BEAUTY_OTHER", groupName: "Egyéb szépségápolási termékek" };
-}
-
-async function ensureSchema() {
-  await pool.query(`
-    CREATE EXTENSION IF NOT EXISTS pgcrypto;
-    ALTER TABLE public.product_groups
-      ADD COLUMN IF NOT EXISTS name text,
-      ADD COLUMN IF NOT EXISTS product_type_code text,
-      ADD COLUMN IF NOT EXISTS product_type_name text;
-    ALTER TABLE public.product_categories
-      ADD COLUMN IF NOT EXISTS name text,
-      ADD COLUMN IF NOT EXISTS altegio_category_id bigint,
-      ADD COLUMN IF NOT EXISTS display_order integer NOT NULL DEFAULT 0;
-    ALTER TABLE public.products
-      ADD COLUMN IF NOT EXISTS altegio_product_key text,
-      ADD COLUMN IF NOT EXISTS receipt_name text,
-      ADD COLUMN IF NOT EXISTS sale_unit text,
-      ADD COLUMN IF NOT EXISTS usage_unit text,
-      ADD COLUMN IF NOT EXISTS package_unit text,
-      ADD COLUMN IF NOT EXISTS net_weight_g numeric(14,3),
-      ADD COLUMN IF NOT EXISTS gross_weight_g numeric(14,3),
-      ADD COLUMN IF NOT EXISTS critical_quantity numeric(14,3),
-      ADD COLUMN IF NOT EXISTS ordered_quantity numeric(14,3),
-      ADD COLUMN IF NOT EXISTS import_note text,
-      ADD COLUMN IF NOT EXISTS source_system text,
-      ADD COLUMN IF NOT EXISTS imported_at timestamptz;
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='public' AND table_name='products' AND column_name='unit_id' AND is_nullable='NO'
-      ) THEN
-        ALTER TABLE public.products ALTER COLUMN unit_id DROP NOT NULL;
-      END IF;
-    END $$;
-    CREATE UNIQUE INDEX IF NOT EXISTS products_altegio_product_key_uq
-      ON public.products(altegio_product_key) WHERE altegio_product_key IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS product_categories_altegio_id_uq
-      ON public.product_categories(altegio_category_id) WHERE altegio_category_id IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS product_groups_type_idx ON public.product_groups(product_type_code, sort_order, name);
-  `);
 }
 
 router.post("/import/altegio", upload.single("file"), async (req: Request, res: Response) => {
@@ -128,107 +40,103 @@ router.post("/import/altegio", upload.single("file"), async (req: Request, res: 
     if (!ws) return res.status(400).json({ error: "Az Excel munkafüzet üres." });
     raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null, raw: true });
     if (!raw.length) return res.status(400).json({ error: "Az Excel nem tartalmaz termékadatot." });
-    await ensureSchema();
   } catch (e: any) {
     return res.status(400).json({ error: "Az Altegio termék Excel nem olvasható.", detail: e?.message });
   }
 
   const client = await (pool as any).connect();
-  let created = 0, updated = 0, skipped = 0;
-  const categories = new Map<string, string>();
-  const groups = new Map<string, string>();
-  const types = new Set<string>();
-
+  let created = 0, updated = 0, skipped = 0, lowConfidence = 0;
+  const groupCodes = new Set<string>();
+  const categoryCodes = new Set<string>();
   try {
     await client.query("BEGIN");
-    let order = 0;
+    await ensureProductTaxonomySchema(client);
 
     for (const r of raw) {
-      const categoryName = text(pick(r, ["Kategória", "Kategoria"])) || "Egyéb";
-      const categoryExt = number(pick(r, ["Kategóriaazonosító", "Kategória azonosító", "Kategoriaazonosito"]));
+      const sourceCategoryName = text(pick(r, ["Kategória", "Kategoria"])) || "Egyéb";
+      const sourceCategoryIdRaw = number(pick(r, ["Kategóriaazonosító", "Kategória azonosító", "Kategoriaazonosito"]));
+      const sourceCategoryId = sourceCategoryIdRaw == null ? null : Math.trunc(sourceCategoryIdRaw);
       const name = text(pick(r, ["Megnevezés a nyugtán", "Megnevezés", "Név", "Nev"]));
       const sku = text(pick(r, ["Cikkszám", "Cikkszam"]));
       const barcode = text(pick(r, ["Vonalkód", "Vonalkod"]));
+      const brand = text(pick(r, ["Márka", "Marka", "Brand", "Gyártó", "Gyarto"]));
+      const lineName = text(pick(r, ["Termékvonal", "Termekvonal", "Termékcsalád", "Termekcsalad", "Line"]));
       if (!name) { skipped++; continue; }
 
-      const tx = classifyCategory(categoryName);
-      types.add(tx.typeCode);
-      const groupKey = `${tx.typeCode}:${tx.groupCode}`;
-      let groupId = groups.get(groupKey);
-      if (!groupId) {
-        const groupCode = slugCode(tx.groupCode, "ALTG");
-        const foundGroup = await client.query(`
-          SELECT id FROM public.product_groups
-          WHERE upper(COALESCE(code,''))=upper($1::text)
-             OR (product_type_code=$2::text AND lower(COALESCE(name,name_hu,''))=lower($3::text))
-          LIMIT 1
-        `, [groupCode, tx.typeCode, tx.groupName]);
-        if (foundGroup.rowCount) {
-          groupId = String(foundGroup.rows[0].id);
-          await client.query(`UPDATE public.product_groups SET name=$2::text,name_hu=$2::text,product_type_code=$3::text,product_type_name=$4::text,is_active=true WHERE id=$1::uuid`, [groupId, tx.groupName, tx.typeCode, tx.typeName]);
-        } else {
-          groupId = randomUUID();
-          await client.query(`
-            INSERT INTO public.product_groups(id,name,name_hu,name_en,name_ru,code,sort_order,is_active,product_type_code,product_type_name)
-            VALUES($1::uuid,$2::text,$2::text,$2::text,$2::text,$3::text,$4::integer,true,$5::text,$6::text)
-          `, [groupId, tx.groupName, groupCode, groups.size * 10 + 10, tx.typeCode, tx.typeName]);
-        }
-        groups.set(groupKey, groupId);
-      }
-
-      const catKey = categoryExt != null ? `id:${Math.trunc(categoryExt)}` : `name:${groupId}:${norm(categoryName)}`;
-      let categoryId = categories.get(catKey);
-      if (!categoryId) {
-        const found = categoryExt != null
-          ? await client.query(`SELECT id FROM public.product_categories WHERE altegio_category_id=$1::bigint LIMIT 1`, [Math.trunc(categoryExt)])
-          : await client.query(`SELECT id FROM public.product_categories WHERE product_group_id=$1::uuid AND lower(COALESCE(name,name_hu,''))=lower($2::text) LIMIT 1`, [groupId, categoryName]);
-        const categoryCode = categoryExt != null ? `ALTG_CAT_${Math.trunc(categoryExt)}` : slugCode(categoryName, "ALTG_CAT");
-        if (found.rowCount) {
-          categoryId = String(found.rows[0].id);
-          await client.query(`UPDATE public.product_categories SET product_group_id=$2::uuid,name=$3::text,name_hu=$3::text,code=COALESCE(NULLIF(code,''),$4::text),display_order=$5::integer,is_active=true WHERE id=$1::uuid`, [categoryId, groupId, categoryName, categoryCode, order++]);
-        } else {
-          categoryId = randomUUID();
-          await client.query(`INSERT INTO public.product_categories(id,product_group_id,name,name_hu,name_en,name_ru,code,altegio_category_id,display_order,sort_order,is_active)
-            VALUES($1::uuid,$2::uuid,$3::text,$3::text,$3::text,$3::text,$4::text,$5::bigint,$6::integer,$6::integer,true)`,
-            [categoryId, groupId, categoryName, categoryCode, categoryExt == null ? null : Math.trunc(categoryExt), order++]);
-        }
-        categories.set(catKey, categoryId);
-      }
+      const tx = classifyProduct({ name, category: sourceCategoryName, brand, lineName });
+      if (tx.confidence < 0.6) lowConfidence++;
+      const nodes = await ensureTaxonomyNodes(client, tx);
+      groupCodes.add(nodes.groupCode);
+      categoryCodes.add(nodes.categoryCode);
 
       const sale = number(pick(r, ["Eladási ár, Ft", "Eladási ár", "Eladasi ar"]));
       const purchase = number(pick(r, ["Beszerzési ár, Ft", "Beszerzési ár", "Beszerzesi ar"]));
-      const key = barcode ? `barcode:${barcode}` : sku ? `sku:${sku}` : `name:${norm(name)}|cat:${categoryId}`;
-      const foundProduct = await client.query(`SELECT id FROM public.products WHERE altegio_product_key=$1::text OR ($2::text IS NOT NULL AND barcode=$2::text) OR ($3::text IS NOT NULL AND internal_code=$3::text) LIMIT 1`, [key, barcode, sku]);
+      const key = barcode ? `barcode:${barcode}` : sku ? `sku:${sku}` : `name:${normalizeTaxonomyText(name)}|src:${sourceCategoryId ?? normalizeTaxonomyText(sourceCategoryName)}`;
+      const found = await client.query(
+        `SELECT id FROM public.products WHERE altegio_product_key=$1 OR ($2::text IS NOT NULL AND barcode=$2) OR ($3::text IS NOT NULL AND internal_code=$3) LIMIT 1`,
+        [key, barcode, sku],
+      );
 
       const params = [
-        name, sku, barcode, groupId, categoryId, purchase, sale,
-        text(pick(r,["Értékesítési egység","Ertekesitesi egyseg","Eladási egység"])),
-        text(pick(r,["Mértékegység felhasználáskor","Mertekegyseg felhasznalaskor","Felhasználási egység"])),
-        text(pick(r,["Felhasználható menyiségi egység (Kiszerelés)","Felhasználható mennyiségi egység (Kiszerelés)","Kiszerelés"])),
-        number(pick(r,["Nettó tömeg, g.","Nettó tömeg","Netto tomeg"])),
-        number(pick(r,["Bruttó tömeg, g.","Bruttó tömeg","Brutto tomeg"])),
-        number(pick(r,["Kritikus mennyiség","Kritikus mennyiseg"])),
-        number(pick(r,["Rendelt mennyiség","Rendelt mennyiseg"])),
-        text(pick(r,["Megjegyzés","Megjegyzes"])), key
+        name, sku, barcode, brand, lineName, nodes.groupId, nodes.categoryId, purchase, sale,
+        text(pick(r, ["Értékesítési egység", "Ertekesitesi egyseg", "Eladási egység"])),
+        text(pick(r, ["Mértékegység felhasználáskor", "Mertekegyseg felhasznalaskor", "Felhasználási egység"])),
+        text(pick(r, ["Felhasználható menyiségi egység (Kiszerelés)", "Felhasználható mennyiségi egység (Kiszerelés)", "Kiszerelés"])),
+        number(pick(r, ["Nettó tömeg, g.", "Nettó tömeg", "Netto tomeg"])),
+        number(pick(r, ["Bruttó tömeg, g.", "Bruttó tömeg", "Brutto tomeg"])),
+        number(pick(r, ["Kritikus mennyiség", "Kritikus mennyiseg"])),
+        number(pick(r, ["Rendelt mennyiség", "Rendelt mennyiseg"])),
+        text(pick(r, ["Megjegyzés", "Megjegyzes"])), key, sourceCategoryId, sourceCategoryName,
+        TAXONOMY_VERSION, tx.confidence,
+        tx.flags.is_service_material, tx.flags.is_retail, tx.flags.is_cleaning, tx.flags.is_hospitality, tx.flags.is_merchandise,
       ];
 
-      if (foundProduct.rowCount) {
-        await client.query(`UPDATE public.products SET name=$1::text,receipt_name=$1::text,internal_code=$2::text,barcode=$3::text,product_group_id=$4::uuid,product_category_id=$5::uuid,purchase_price_net=$6::numeric,retail_price_gross=$7::numeric,sale_unit=$8::text,usage_unit=$9::text,package_unit=$10::text,net_weight_g=$11::numeric,gross_weight_g=$12::numeric,critical_quantity=$13::numeric,ordered_quantity=$14::numeric,import_note=$15::text,altegio_product_key=$16::text,source_system='altegio',imported_at=now(),is_active=true WHERE id=$17::uuid`, [...params, String(foundProduct.rows[0].id)]);
+      if (found.rows[0]) {
+        await client.query(`
+          UPDATE public.products SET
+            name=$1,receipt_name=$1,internal_code=$2,barcode=$3,brand=$4,line_name=$5,
+            product_group_id=$6::uuid,product_category_id=$7::uuid,purchase_price_net=$8::numeric,retail_price_gross=$9::numeric,
+            sale_unit=$10,usage_unit=$11,package_unit=$12,net_weight_g=$13::numeric,gross_weight_g=$14::numeric,
+            critical_quantity=$15::numeric,ordered_quantity=$16::numeric,import_note=$17,altegio_product_key=$18,
+            source_category_id=$19::bigint,source_category_name=$20,source_system='altegio',imported_at=now(),
+            taxonomy_source=$21,taxonomy_confidence=$22::numeric,taxonomy_updated_at=now(),is_active=true,
+            is_service_material=$23::boolean,is_retail=$24::boolean,is_cleaning=$25::boolean,is_hospitality=$26::boolean,is_merchandise=$27::boolean
+          WHERE id=$28::uuid
+        `, [...params, found.rows[0].id]);
         updated++;
       } else {
-        await client.query(`INSERT INTO public.products(name,receipt_name,internal_code,barcode,product_group_id,product_category_id,purchase_price_net,retail_price_gross,sale_unit,usage_unit,package_unit,net_weight_g,gross_weight_g,critical_quantity,ordered_quantity,import_note,altegio_product_key,source_system,imported_at,is_active)
-          VALUES($1::text,$1::text,$2::text,$3::text,$4::uuid,$5::uuid,$6::numeric,$7::numeric,$8::text,$9::text,$10::text,$11::numeric,$12::numeric,$13::numeric,$14::numeric,$15::text,$16::text,'altegio',now(),true)`, params);
+        await client.query(`
+          INSERT INTO public.products(
+            name,receipt_name,internal_code,barcode,brand,line_name,product_group_id,product_category_id,purchase_price_net,retail_price_gross,
+            sale_unit,usage_unit,package_unit,net_weight_g,gross_weight_g,critical_quantity,ordered_quantity,import_note,altegio_product_key,
+            source_category_id,source_category_name,source_system,imported_at,taxonomy_source,taxonomy_confidence,taxonomy_updated_at,is_active,
+            is_service_material,is_retail,is_cleaning,is_hospitality,is_merchandise)
+          VALUES($1,$1,$2,$3,$4,$5,$6::uuid,$7::uuid,$8::numeric,$9::numeric,$10,$11,$12,$13::numeric,$14::numeric,$15::numeric,$16::numeric,$17,$18,
+                 $19::bigint,$20,'altegio',now(),$21,$22::numeric,now(),true,$23::boolean,$24::boolean,$25::boolean,$26::boolean,$27::boolean)
+        `, params);
         created++;
       }
     }
 
     await client.query("COMMIT");
-    return res.json({ ok: true, sourceRows: raw.length, types: types.size, groups: groups.size, categories: categories.size, created, updated, skipped });
+    return res.json({
+      ok: true,
+      taxonomy_version: TAXONOMY_VERSION,
+      sourceRows: raw.length,
+      groups: groupCodes.size,
+      categories: categoryCodes.size,
+      created,
+      updated,
+      skipped,
+      low_confidence: lowConfidence,
+    });
   } catch (e: any) {
     try { await client.query("ROLLBACK"); } catch {}
     console.error("Altegio product import error", e);
     return res.status(500).json({ error: "Az Altegio termékek importja nem sikerült.", code: e?.code || null, detail: e?.message || String(e) });
-  } finally { client.release(); }
+  } finally {
+    client.release();
+  }
 });
 
 export default router;
