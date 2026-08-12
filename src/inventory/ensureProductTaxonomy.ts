@@ -9,21 +9,44 @@ export async function ensureProductTaxonomySchema(db: DbLike = pool as any) {
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
     ALTER TABLE public.product_groups
       ADD COLUMN IF NOT EXISTS name text,
+      ADD COLUMN IF NOT EXISTS name_hu text,
+      ADD COLUMN IF NOT EXISTS name_en text,
+      ADD COLUMN IF NOT EXISTS name_ru text,
+      ADD COLUMN IF NOT EXISTS code text,
       ADD COLUMN IF NOT EXISTS product_type_code text,
       ADD COLUMN IF NOT EXISTS product_type_name text,
       ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 100,
       ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
     ALTER TABLE public.product_categories
       ADD COLUMN IF NOT EXISTS name text,
+      ADD COLUMN IF NOT EXISTS name_hu text,
+      ADD COLUMN IF NOT EXISTS name_en text,
+      ADD COLUMN IF NOT EXISTS name_ru text,
+      ADD COLUMN IF NOT EXISTS code text,
+      ADD COLUMN IF NOT EXISTS altegio_category_id bigint,
       ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 100,
       ADD COLUMN IF NOT EXISTS display_order integer NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
     ALTER TABLE public.products
+      ADD COLUMN IF NOT EXISTS altegio_product_key text,
+      ADD COLUMN IF NOT EXISTS receipt_name text,
+      ADD COLUMN IF NOT EXISTS sale_unit text,
+      ADD COLUMN IF NOT EXISTS usage_unit text,
+      ADD COLUMN IF NOT EXISTS package_unit text,
+      ADD COLUMN IF NOT EXISTS net_weight_g numeric(14,3),
+      ADD COLUMN IF NOT EXISTS gross_weight_g numeric(14,3),
+      ADD COLUMN IF NOT EXISTS critical_quantity numeric(14,3),
+      ADD COLUMN IF NOT EXISTS ordered_quantity numeric(14,3),
+      ADD COLUMN IF NOT EXISTS import_note text,
+      ADD COLUMN IF NOT EXISTS source_system text,
+      ADD COLUMN IF NOT EXISTS imported_at timestamptz,
       ADD COLUMN IF NOT EXISTS source_category_id bigint,
       ADD COLUMN IF NOT EXISTS source_category_name text,
       ADD COLUMN IF NOT EXISTS taxonomy_source text,
       ADD COLUMN IF NOT EXISTS taxonomy_confidence numeric(5,4),
       ADD COLUMN IF NOT EXISTS taxonomy_updated_at timestamptz;
+    CREATE UNIQUE INDEX IF NOT EXISTS products_altegio_product_key_uq
+      ON public.products(altegio_product_key) WHERE altegio_product_key IS NOT NULL;
     CREATE INDEX IF NOT EXISTS products_taxonomy_source_idx ON public.products(taxonomy_source);
     CREATE INDEX IF NOT EXISTS product_groups_type_idx ON public.product_groups(product_type_code,sort_order,name);
   `);
