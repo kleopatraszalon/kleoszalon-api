@@ -8,16 +8,19 @@ const outputText=(data:any)=>String(data?.output_text||data?.output?.flatMap((x:
 const recommendationCache=new Map<string,{expires:number;value:any}>();
 const CACHE_TTL_MS=10*60_000;
 const parseAiJson=(value:string)=>JSON.parse(value.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));
+type AiStatus='success'|'not_configured'|'timeout'|'rate_limited'|'unauthorized'|'upstream_error'|'invalid_output';
+let lastAiStatus:AiStatus='not_configured';
+export const bookingRecommendationAiStatus=()=>lastAiStatus;
 
 async function aiCopy(selected:string[],items:BookingRecommendation[]){
-  const key=String(process.env.OPENAI_API_KEY||'').trim();if(!key||!items.length)return null;
+  const key=String(process.env.OPENAI_API_KEY||'').trim();if(!key||!items.length){lastAiStatus='not_configured';return null}
   const allowed=items.map(x=>({service_id:x.service_id,name:x.name,price:x.price,duration_minutes:x.duration_minutes}));
   try{
     const response=await axios.post('https://api.openai.com/v1/responses',{model:process.env.BOOKING_RECOMMENDATION_MODEL||process.env.OPENAI_MODEL||'gpt-5-mini',store:false,max_output_tokens:500,text:{format:{type:'json_schema',name:'booking_recommendations',strict:true,schema:{type:'object',properties:{recommendations:{type:'array',items:{type:'object',properties:{service_id:{type:'string'},title:{type:'string'},message:{type:'string'}},required:['service_id','title','message'],additionalProperties:false}}},required:['recommendations'],additionalProperties:false}}},input:[{role:'system',content:[{type:'input_text',text:'Magyar szépségszalon foglalási ajánlószöveget írsz. Kizárólag a kapott service_id-kat használd. Árat, kedvezményt, hatást vagy elérhetőséget ne találj ki. A cím legfeljebb 45, az üzenet legfeljebb 150 karakter legyen.'}]},{role:'user',content:[{type:'input_text',text:JSON.stringify({selected_services:selected,candidates:allowed})}]}]},{headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},timeout:12_000});
-    const parsed=parseAiJson(outputText(response.data))?.recommendations;if(!Array.isArray(parsed))return null;
+    const parsed=parseAiJson(outputText(response.data))?.recommendations;if(!Array.isArray(parsed)){lastAiStatus='invalid_output';return null}
     const map=new Map(parsed.map((x:any)=>[String(x.service_id),x]));
-    return items.map(item=>{const x=map.get(String(item.service_id));return x?{...item,title:String(x.title||item.title).slice(0,45),message:String(x.message||item.message).slice(0,150),ai_generated:true}:item});
-  }catch(error:any){console.warn('[booking-recommendations] AI copy fallback',error?.response?.status||error?.message||error);return null}
+    lastAiStatus='success';return items.map(item=>{const x=map.get(String(item.service_id));return x?{...item,title:String(x.title||item.title).slice(0,45),message:String(x.message||item.message).slice(0,150),ai_generated:true}:item});
+  }catch(error:any){const status=Number(error?.response?.status||0);lastAiStatus=error?.code==='ECONNABORTED'?'timeout':status===401||status===403?'unauthorized':status===429?'rate_limited':status>0?'upstream_error':'invalid_output';console.warn('[booking-recommendations] AI copy fallback',lastAiStatus,status||error?.message||error);return null}
 }
 
 export async function bookingRecommendations(locationId:string,selectedIds:string[]){
@@ -43,7 +46,7 @@ export async function bookingRecommendations(locationId:string,selectedIds:strin
   }catch(error:any){console.warn('[booking-recommendations] campaign fallback',error?.message||error)}
   const serviceItems=recommendations.filter(x=>x.type==='service');const enhanced=await aiCopy(selectedRows.map((x:any)=>x.name),serviceItems);
   if(enhanced)recommendations=[...enhanced,...recommendations.filter(x=>x.type==='promotion')];
-  const value={recommendations:recommendations.slice(0,5),ai_used:Boolean(enhanced),selected_service_ids:selected};
+  const value={recommendations:recommendations.slice(0,5),ai_used:Boolean(enhanced),ai_status:bookingRecommendationAiStatus(),selected_service_ids:selected};
   if(recommendationCache.size>=100)recommendationCache.delete(recommendationCache.keys().next().value as string);
   recommendationCache.set(cacheKey,{expires:Date.now()+CACHE_TTL_MS,value});
   return value;
