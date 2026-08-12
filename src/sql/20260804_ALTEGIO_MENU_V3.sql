@@ -52,6 +52,7 @@ WITH items(code, parent_code, name, route, order_index, feature_key) AS (
     ('customers.forms','customers','Kérdőívek és nyilatkozatok','/modules/customers/forms',30,'client_forms'),
     ('customers.segments','customers','Címkék és ügyfélszegmensek','/modules/customers/segments',40,'crm_segments'),
     ('customers.import','customers','Importálás és duplikációkezelés','/modules/customers/import',50,'crm_import'),
+    ('customers.loyalty_program','customers','Törzsvásárlói program','/modules/customers/loyalty-program',60,'loyalty'),
 
     ('loyalty.program','loyalty','Hűségprogram','/modules/loyalty/program',10,'loyalty_program'),
     ('loyalty.memberships','loyalty','Bérletek és tagságok','/modules/loyalty/memberships',20,'memberships'),

@@ -20,6 +20,7 @@ import loyaltyCommissionRouter from "./loyaltyCommission";
 import loyaltyCustomerFinanceRouter from "./loyaltyCustomerFinance";
 import loyaltyCashierRouter from "./loyaltyCashier";
 import loyaltyAutomationRouter from "./loyaltyAutomation";
+import loyaltyProgramRouter from "./loyaltyProgram";
 import workOrderFinalizationFastRouter from "./workOrderFinalizationFast";
 import workOrderFinalizationRouter from "./workOrderFinalization";
 import workOrderFinalizationRecoveryRouter from "./workOrderFinalizationRecovery";
@@ -120,6 +121,7 @@ router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),re
 router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
 router.use("/nav-test-uat",requireManagement,ensureFinanceReady,requireFeature("finance"),navTestUatRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
+router.use("/loyalty-program",requireManagement,loyaltyProgramRouter);
 router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
 router.use("/uat",requireManagement,uatTestCenterRouter);
 router.use("/uat-issues",requireManagement,uatIssuesRouter);
