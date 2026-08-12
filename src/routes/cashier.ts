@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
+import { loyaltyDiscountForWorkOrder } from "../loyalty/loyaltyProgramService";
 import { requireFeature } from "../middleware/featureAccess";
 
 const router = Router();
@@ -120,7 +121,7 @@ router.get("/workorders/:id", async (req: AuthRequest, res, next) => {
 router.post("/workorders/:id/settle", async (req: AuthRequest, res, next) => {
   const client = await db.connect();
   try {
-    const discount = Math.max(0, money(req.body?.discount_amount));
+    const requestedDiscount = Math.max(0, money(req.body?.discount_amount));
     const tip = Math.max(0, money(req.body?.tip_amount));
     const invoiceStatus = String(req.body?.invoice_status || "not_requested");
     const closeFinancially = Boolean(req.body?.close_financially);
@@ -138,6 +139,8 @@ router.post("/workorders/:id/settle", async (req: AuthRequest, res, next) => {
     }
 
     const calc = await orderFinancials(client, req.params.id);
+    const loyalty = await loyaltyDiscountForWorkOrder(client,req.params.id,calc.grossTotal);
+    const discount = Math.max(requestedDiscount,money(loyalty.amount));
     const amountDue = Math.max(0, money(calc.grossTotal - discount + tip));
     const amountPaid = calc.paid;
     const paymentStatus = amountPaid <= 0 ? "unpaid" : amountPaid + 0.009 < amountDue ? "partial" : "paid";
@@ -149,9 +152,9 @@ router.post("/workorders/:id/settle", async (req: AuthRequest, res, next) => {
            payment_status=$7, fully_paid=($7='paid'), invoice_status=$8,
            financial_closed_at=CASE WHEN $9 THEN COALESCE(financial_closed_at,now()) ELSE financial_closed_at END,
            financial_closed_by=CASE WHEN $9 THEN COALESCE(financial_closed_by,$10) ELSE financial_closed_by END,
-           updated_at=now()
+           loyalty_tier_code=$11,loyalty_discount_percent=$12,loyalty_discount_amount=$13,updated_at=now()
        WHERE id=$1 RETURNING *`,
-      [req.params.id, calc.grossTotal, discount, tip, amountDue, amountPaid, paymentStatus, invoiceStatus, closeFinancially, req.user?.email || String(req.user?.id || "")]
+      [req.params.id, calc.grossTotal, discount, tip, amountDue, amountPaid, paymentStatus, invoiceStatus, closeFinancially, req.user?.email || String(req.user?.id || ""),loyalty.tier_code,loyalty.percent,loyalty.amount]
     );
 
     if (closeFinancially) await syncClosedWorkOrderToCrm(client, req.params.id, updated.rows[0]);
