@@ -1,6 +1,7 @@
 import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
 
 let repairReady=false;
+let repairPromise:Promise<void>|null=null;
 
 const NON_FATAL_REPAIR_CODES=new Set([
   '57014', // statement timeout
@@ -26,8 +27,7 @@ async function optionalRepair(c:any,label:string,sql:string){
   }
 }
 
-export async function repairBookingWorkOrderStatusConstraints(c:any){
-  if(repairReady)return;
+async function runBookingWorkOrderStatusRepair(c:any){
 
   await repairLegacyWorkOrderTriggers(c);
 
@@ -324,6 +324,20 @@ export async function repairBookingWorkOrderStatusConstraints(c:any){
 
   // Egy process élettartama alatt ne futtassuk újra minden HTTP kérésnél a DDL-t.
   repairReady=true;
+}
+
+export async function repairBookingWorkOrderStatusConstraints(c:any){
+  if(repairReady)return;
+  if(repairPromise)return repairPromise;
+  repairPromise=(async()=>{
+    const ready=(await c.query(`SELECT
+      EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='trg_fill_work_order_item_line_no' AND NOT tgisinternal)
+      AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders' AND column_name='document_status')
+      AND to_regclass('public.work_order_payments') IS NOT NULL ok`)).rows[0]?.ok;
+    if(ready){repairReady=true;return}
+    await runBookingWorkOrderStatusRepair(c);
+  })().catch(error=>{repairPromise=null;throw error});
+  return repairPromise;
 }
 
 export default repairBookingWorkOrderStatusConstraints;
