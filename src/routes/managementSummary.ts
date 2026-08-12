@@ -7,9 +7,10 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireFeature("management_dashboard"));
 const n = (v: unknown) => Number(v || 0);
-const emptyRevenue = { service_revenue:0, product_revenue:0, gross_revenue:0, discounts:0, tips:0, closed_workorders:0 };
+const emptyRevenue = { service_revenue:0, product_revenue:0, gross_revenue:0, discounts:0, tips:0, closed_workorders:0, service_quantity:0, product_quantity:0 };
 const emptyStock = { inventory_value:0, low_stock_count:0, out_of_stock_count:0, stocked_products:0 };
 const emptyCrm = { visits:0, unique_guests:0, guest_revenue:0, avg_guest_spend:0 };
+const emptyGuestSegments = { new_guests:0, returning_guests:0, inactive_guests:0 };
 
 function roleKeys(req: AuthRequest): string[] {
   const raw:any=req.user?.role;
@@ -61,13 +62,17 @@ router.get(["/", "/summary"], async (req: AuthRequest, res, next) => {
     const revenueRes = financialVisible ? await safeQuery(`WITH closed AS (
       SELECT wo.id,wo.employee_id,wo.location_id,COALESCE(wo.discount_amount,0) discount_amount,COALESCE(wo.tip_amount,0) tip_amount,
         COALESCE(SUM(CASE WHEN wi.item_type='service' THEN wi.line_total ELSE 0 END),0)::numeric service_revenue,
-        COALESCE(SUM(CASE WHEN wi.item_type='product' THEN wi.line_total ELSE 0 END),0)::numeric product_revenue
+        COALESCE(SUM(CASE WHEN wi.item_type='product' THEN wi.line_total ELSE 0 END),0)::numeric product_revenue,
+        COALESCE(SUM(CASE WHEN wi.item_type='service' THEN wi.quantity ELSE 0 END),0)::numeric service_quantity,
+        COALESCE(SUM(CASE WHEN wi.item_type='product' THEN wi.quantity ELSE 0 END),0)::numeric product_quantity
       FROM work_orders wo LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
       WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND ${loc}
       GROUP BY wo.id,wo.employee_id,wo.location_id,wo.discount_amount,wo.tip_amount)
       SELECT COALESCE(SUM(service_revenue),0)::numeric service_revenue,COALESCE(SUM(product_revenue),0)::numeric product_revenue,
       COALESCE(SUM(service_revenue+product_revenue),0)::numeric gross_revenue,COALESCE(SUM(discount_amount),0)::numeric discounts,
-      COALESCE(SUM(tip_amount),0)::numeric tips,COUNT(*)::int closed_workorders FROM closed`, params, emptyRevenue, "pénzügy", warnings) : {rows:[emptyRevenue]};
+      COALESCE(SUM(tip_amount),0)::numeric tips,COUNT(*)::int closed_workorders,
+      COALESCE(SUM(service_quantity),0)::numeric service_quantity,COALESCE(SUM(product_quantity),0)::numeric product_quantity
+      FROM closed`, params, emptyRevenue, "pénzügy", warnings) : {rows:[emptyRevenue]};
 
     let stockRes:any;
     try {
@@ -90,6 +95,13 @@ router.get(["/", "/summary"], async (req: AuthRequest, res, next) => {
       ${financialVisible?"COALESCE(AVG(vh.amount_paid),0)::numeric":"0::numeric"} avg_guest_spend
       FROM crm_visit_history vh WHERE vh.visited_at::date BETWEEN $1::date AND $2::date AND ($3::text IS NULL OR vh.location_id::text=$3::text)`,params,emptyCrm,"CRM",warnings);
 
+    const guestSegmentsRes = await safeQuery(`SELECT
+      COUNT(*) FILTER (WHERE gp.first_visit_at::date BETWEEN $1::date AND $2::date)::int new_guests,
+      COUNT(*) FILTER (WHERE gp.first_visit_at::date < $1::date AND gp.last_visit_at::date BETWEEN $1::date AND $2::date)::int returning_guests,
+      COUNT(*) FILTER (WHERE gp.last_visit_at < ($2::date - INTERVAL '60 days'))::int inactive_guests
+      FROM crm_guest_profiles gp
+      WHERE ($3::text IS NULL OR gp.last_location_id::text=$3::text)`,params,emptyGuestSegments,"CRM vendégszegmensek",warnings);
+
     const staffRes = await safeQuery(`SELECT wo.employee_id::text employee_id,COALESCE(e.full_name,'Nincs munkatárs') employee_name,
       COUNT(DISTINCT wo.id)::int workorder_count,${financialVisible?"COALESCE(SUM(wi.line_total),0)::numeric":"0::numeric"} revenue,
       ${financialVisible?"COALESCE(SUM(wi.line_total)/NULLIF(COUNT(DISTINCT wo.id),0),0)::numeric":"0::numeric"} avg_ticket
@@ -98,10 +110,11 @@ router.get(["/", "/summary"], async (req: AuthRequest, res, next) => {
       GROUP BY wo.employee_id,e.full_name ORDER BY ${financialVisible?"revenue":"workorder_count"} DESC LIMIT 20`,params,{},"munkatársi teljesítmény",warnings);
 
     const r = revenueRes.rows[0] || emptyRevenue, gross=n(r.gross_revenue), service=n(r.service_revenue), product=n(r.product_revenue);
+    const serviceQuantity=n(r.service_quantity),productQuantity=n(r.product_quantity),segments=guestSegmentsRes.rows[0]||emptyGuestSegments;
     res.json({ period:{from,to}, location_id:locationId, financial_visible:financialVisible,
-      revenue:{ service_revenue:service,product_revenue:product,gross_revenue:gross,discounts:n(r.discounts),tips:n(r.tips),closed_workorders:n(r.closed_workorders),service_share_percent:gross?Math.round(service/gross*1000)/10:0,product_share_percent:gross?Math.round(product/gross*1000)/10:0 },
+      revenue:{ service_revenue:service,product_revenue:product,gross_revenue:gross,discounts:n(r.discounts),tips:n(r.tips),closed_workorders:n(r.closed_workorders),service_quantity:serviceQuantity,product_quantity:productQuantity,avg_service_price:serviceQuantity?service/serviceQuantity:0,avg_product_price:productQuantity?product/productQuantity:0,service_share_percent:gross?Math.round(service/gross*1000)/10:0,product_share_percent:gross?Math.round(product/gross*1000)/10:0 },
       stock:{ inventory_value:n(stockRes.rows[0]?.inventory_value),low_stock_count:n(stockRes.rows[0]?.low_stock_count),out_of_stock_count:n(stockRes.rows[0]?.out_of_stock_count),stocked_products:n(stockRes.rows[0]?.stocked_products) },
-      crm:{ visits:n(crmRes.rows[0]?.visits),unique_guests:n(crmRes.rows[0]?.unique_guests),guest_revenue:n(crmRes.rows[0]?.guest_revenue),avg_guest_spend:n(crmRes.rows[0]?.avg_guest_spend) },
+      crm:{ visits:n(crmRes.rows[0]?.visits),unique_guests:n(crmRes.rows[0]?.unique_guests),guest_revenue:n(crmRes.rows[0]?.guest_revenue),avg_guest_spend:n(crmRes.rows[0]?.avg_guest_spend),new_guests:n(segments.new_guests),returning_guests:n(segments.returning_guests),inactive_guests:n(segments.inactive_guests),inactive_after_days:60 },
       staff:(staffRes.rows||[]).filter((x:any)=>x.employee_name).map((x:any)=>({employee_id:x.employee_id,employee_name:x.employee_name,workorder_count:n(x.workorder_count),revenue:n(x.revenue),avg_ticket:n(x.avg_ticket)})),
       source_status:{ ok:warnings.length===0, warnings }
     });
