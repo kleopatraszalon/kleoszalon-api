@@ -220,8 +220,8 @@ router.post("/duplicate-review/resolve", async (req: AuthRequest, res: Response)
 
     await client.query(`
       UPDATE clients p SET
-        full_name=COALESCE(NULLIF(p.full_name,''),NULLIF(s.full_name,''),NULLIF(s.legacy_name,'')),
-        name=COALESCE(NULLIF(p.name,''),NULLIF(s.legacy_name,''),NULLIF(s.full_name,'')),
+        full_name=COALESCE(NULLIF(p.full_name,''),NULLIF(s.full_name,''),NULLIF(s.name,'')),
+        name=COALESCE(NULLIF(p.name,''),NULLIF(s.name,''),NULLIF(s.full_name,'')),
         email=COALESCE(NULLIF(p.email,''),NULLIF(s.email,'')),
         phone=COALESCE(NULLIF(p.phone,''),NULLIF(s.phone,'')),
         birth_date=COALESCE(p.birth_date,s.birth_date),gender=COALESCE(NULLIF(p.gender,''),NULLIF(s.gender,'')),
