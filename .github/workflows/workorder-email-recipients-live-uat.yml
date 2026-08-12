@@ -13,7 +13,7 @@ permissions:
 jobs:
   live-uat:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,4 +27,6 @@ jobs:
           UAT_ADMIN_IDENTIFIER: admin1
           UAT_ADMIN_PASSWORD: Teszt1234!
           UAT_WORK_ORDER_ID: 5d1e1544-cfc8-4d8c-a469-18424483afd1
+          UAT_DEPLOY_WAIT_MS: 480000
+          UAT_POLL_MS: 15000
         run: node scripts/uat/workorder-email-recipients-live.mjs
