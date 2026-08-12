@@ -48,6 +48,7 @@ import appointmentLifecycleRouter from "./appointmentLifecycle";
 import bookingWorkOrderBridgeRouter from "./bookingWorkOrderBridge";
 import hrDevelopmentRouter from "./hrDevelopment";
 import operationsQualityRouter from "./operationsQuality";
+import newslettersRouter from "./newsletters";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
 import db from "../db";
 import { requireAuth } from "../middleware/auth";
@@ -92,6 +93,7 @@ router.use("/ai-support",aiSupportRouter);router.use("/staff-chat",collaboration
 router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-communications",bookingCommunicationsRouter);router.use("/booking-voice-stats",ensureVoiceStatsReady,requireMenuPermission("appointments.voice_stats","can_view"),bookingVoiceStatsRouter);router.use("/appointment-lifecycle",appointmentLifecycleRouter);router.use("/booking-workorder",bookingWorkOrderBridgeRouter);
 router.use("/hr-development",requireManagement,hrDevelopmentRouter);
 router.use("/operations-quality",requireManagement,operationsQualityRouter);
+router.use("/newsletters",requireManagement,newslettersRouter);
 
 router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
