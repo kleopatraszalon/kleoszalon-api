@@ -23,12 +23,22 @@ test('settlement guard no longer requires in_progress but still rejects terminal
   assert.match(transactions,/\['cancelled','no_show','completed'\]/);
 });
 
-test('finalizer creates archive PDF and awaits automatic email delivery',()=>{
+test('finalizer creates archive and queues automatic document delivery after commit',()=>{
   assert.match(finalizer,/ensureArchiveRow/);
-  assert.match(finalizer,/const docs=await deliverNow/);
+  assert.match(finalizer,/const docs=queueDelivery/);
   assert.match(finalizer,/generateAndDeliverClosedWorkOrder\(workOrderId,\{sendMail:true/);
   assert.match(finalizer,/pdf_ready/);
+  assert.match(finalizer,/delivery_queued:true/);
   assert.match(finalizer,/status_persisted/);
+});
+
+test('PDF and email hot paths avoid request-time trigger repair and duplicate archive loading',()=>{
+  const pdfRoute=finalizer.slice(finalizer.indexOf("router.get('/workorders/:id/pdf'"));
+  assert.doesNotMatch(pdfRoute,/repairLegacyWorkOrderTriggers/);
+  assert.doesNotMatch(finalizer,/loadWorkOrderArchive/);
+  assert.match(finalizer,/WORKORDER_PDF_RETRY_FAILED/);
+  assert.match(docs,/PDF_CACHE_TTL_MS/);
+  assert.match(docs,/pdfRendering/);
 });
 
 test('closed workorder document has three default recipients and font fallback',()=>{
