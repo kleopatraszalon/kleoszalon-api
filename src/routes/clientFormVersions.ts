@@ -24,8 +24,18 @@ function roleKeys(req: AuthRequest): string[] {
   return source.split(",").map(value => normalizeRole(value.replace(/[\[\]"]/g, ""))).filter(Boolean);
 }
 
+function hasRole(req: AuthRequest, roleName: string) {
+  return roleKeys(req).includes(roleName);
+}
+
 function canEdit(req: AuthRequest) {
   return roleKeys(req).some(role => EDITOR_ROLES.has(role));
+}
+
+function scopedLocation(req: AuthRequest) {
+  const requested = String(req.query.location_id || req.body?.location_id || "").trim();
+  if (hasRole(req, "admin")) return requested || null;
+  return req.user?.location_id === null || req.user?.location_id === undefined ? null : String(req.user.location_id).trim() || null;
 }
 
 function actor(req: AuthRequest) {
@@ -104,12 +114,14 @@ function ensureFormVersionSchema() {
         current_version = latest.version_no,
         current_version_id = latest.id,
         updated_at = now()
-      FROM LATERAL (
-        SELECT v.id,v.version_no FROM crm_form_versions v
-        WHERE v.form_id=f.id AND v.status='published'
-        ORDER BY v.version_no DESC LIMIT 1
+      FROM (
+        SELECT DISTINCT ON (form_id) form_id,id,version_no
+        FROM crm_form_versions
+        WHERE status='published'
+        ORDER BY form_id,version_no DESC
       ) latest
-      WHERE f.current_version_id IS NULL OR f.current_version IS DISTINCT FROM latest.version_no;
+      WHERE latest.form_id=f.id
+        AND (f.current_version_id IS NULL OR f.current_version IS DISTINCT FROM latest.version_no OR f.current_version_id IS DISTINCT FROM latest.id);
     `).then(() => undefined).catch(error => {
       schemaReady = null;
       throw error;
@@ -272,6 +284,45 @@ router.delete("/form-versions/:formId/:versionNo", async (req: AuthRequest, res:
     res.json({ ok: true, deleted: rows[0] });
   } catch (error: any) {
     res.status(500).json({ error: "A tervezet törlése nem sikerült.", detail: error?.message || String(error) });
+  }
+});
+
+router.post("/form-versions/:formId/responses", async (req: AuthRequest, res: Response) => {
+  const clientId = String(req.body?.client_id || "").trim();
+  if (!clientId) return res.status(400).json({ error: "Az ügyfélazonosító kötelező." });
+  const locationId = scopedLocation(req);
+  if (!hasRole(req, "admin") && !locationId) return res.status(403).json({ error: "A kitöltés rögzítéséhez telephely-hozzárendelés szükséges." });
+  try {
+    const { rows: clients } = await pool.query(`
+      SELECT id::text id,location_id::text location_id FROM clients WHERE id::text=$1 AND COALESCE(is_active,true)
+    `, [clientId]);
+    if (!clients.length) return res.status(404).json({ error: "Az ügyfél nem található." });
+    if (locationId && clients[0].location_id !== locationId) return res.status(403).json({ error: "Az ügyfél nem tartozik a kezelhető telephelyhez." });
+
+    const { rows: versions } = await pool.query(`
+      SELECT v.*,f.is_active FROM crm_form_versions v JOIN crm_forms f ON f.id=v.form_id
+      WHERE v.form_id=$1::uuid AND v.status='published' AND f.is_active=true
+      ORDER BY v.version_no DESC LIMIT 1
+    `, [req.params.formId]);
+    if (!versions.length) return res.status(409).json({ error: "Ehhez a dokumentumhoz nincs közzétett, kitölthető verzió." });
+    const version = versions[0];
+    const snapshot = {
+      version_id: version.id,
+      version_no: version.version_no,
+      title: version.title,
+      description: version.description,
+      form_type: version.form_type,
+      privacy_notice_version: version.privacy_notice_version,
+      content_schema: version.content_schema,
+      effective_from: version.effective_from,
+    };
+    const { rows } = await pool.query(`
+      INSERT INTO crm_form_responses(form_id,client_id,status,response_data,completed_at,form_version_id,form_version_no,form_snapshot)
+      VALUES($1::uuid,$2::uuid,$3,$4::jsonb,now(),$5::uuid,$6,$7::jsonb) RETURNING *
+    `, [req.params.formId, clientId, String(req.body?.status || "completed"), JSON.stringify(req.body?.response_data || {}), version.id, version.version_no, JSON.stringify(snapshot)]);
+    res.status(201).json(rows[0]);
+  } catch (error: any) {
+    res.status(500).json({ error: "A kitöltés rögzítése nem sikerült.", detail: error?.message || String(error) });
   }
 });
 
