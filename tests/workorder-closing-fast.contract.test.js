@@ -41,10 +41,10 @@ test('PDF and email hot paths avoid request-time trigger repair and duplicate ar
   assert.match(docs,/pdfRendering/);
 });
 
-test('closed workorder document has three default recipients and font fallback',()=>{
-  assert.match(docs,/Birtalan\.zoltan1975@gmail\.com/i);
+test('closed workorder document has the two configured default recipients and font fallback',()=>{
+  assert.match(docs,/birtalan\.zoltan1975@gmail\.com/i);
   assert.match(docs,/h\.n\.andrea@kleoszalon\.hu/i);
-  assert.match(docs,/rebeka\.horvath@kleoszalon\.hu/i);
+  assert.doesNotMatch(docs,/rebeka\.horvath@kleoszalon\.hu/i);
   assert.match(docs,/installSafeTextFallback/);
   assert.match(docs,/attachments:\[\{filename:/);
 });
