@@ -9,11 +9,12 @@ const transactions=read('src/routes/transactions.ts');
 const fastFinalization=read('src/routes/workOrderFinalizationFast.ts');
 const fastEditor=read('src/routes/workOrderEditorFast.ts');
 
-test('the first live PDF and email router repairs legacy trigger types',()=>{
+test('the first live PDF and email router avoids schema repair on the hot path',()=>{
   assert.ok(transactions.indexOf('workOrderFinalizationFastRouter')<transactions.indexOf('workOrderFinalizationRecoveryRouter'));
-  assert.match(fastFinalization,/router\.get\('\/workorders\/:id\/pdf'[\s\S]*await repairLegacyWorkOrderTriggers\(db\)/);
   assert.match(fastFinalization,/generateAndDeliverClosedWorkOrder\(req\.params\.id,\{sendMail:false\}\)/);
-  assert.match(fastFinalization,/router\.post\('\/workorders\/:id\/email'[\s\S]*await repairLegacyWorkOrderTriggers\(db\)/);
+  const documentRoutes=fastFinalization.slice(fastFinalization.indexOf("router.get('/workorders/:id/pdf'"));
+  assert.doesNotMatch(documentRoutes,/repairLegacyWorkOrderTriggers/);
+  assert.match(documentRoutes,/WORKORDER_PDF_RETRY_FAILED/);
 });
 
 test('fast editor options isolate optional legacy catalogue query failures',()=>{
