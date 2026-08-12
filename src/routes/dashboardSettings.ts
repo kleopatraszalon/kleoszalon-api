@@ -65,6 +65,7 @@ function cleanSettings(incoming: any) {
       ? (DEFAULT_DASHBOARD_SETTINGS as any)[key]
       : Boolean(incoming[key]);
   }
+  clean.live_business = true;
   return clean;
 }
 
@@ -72,7 +73,7 @@ function cleanOrder(incoming: any): string[] {
   const requested = Array.isArray(incoming) ? incoming.map(String).filter(key => validKeys.has(key)) : [];
   const unique = Array.from(new Set(requested));
   for (const key of DEFAULT_DASHBOARD_ORDER) if (!unique.includes(key)) unique.push(key);
-  return unique;
+  return ["live_business",...unique.filter(key=>key!=="live_business")];
 }
 
 async function hasProfilesTable() {
@@ -84,7 +85,7 @@ async function legacyLayout() {
   try {
     const { rows } = await db.query(`SELECT settings FROM dashboard_settings WHERE id = 1`);
     const saved = rows[0]?.settings && typeof rows[0].settings === "object" ? rows[0].settings : {};
-    return { settings: { ...DEFAULT_DASHBOARD_SETTINGS, ...saved }, order: [...DEFAULT_DASHBOARD_ORDER] };
+    return { settings: cleanSettings(saved), order: cleanOrder(DEFAULT_DASHBOARD_ORDER) };
   } catch {
     return { settings: { ...DEFAULT_DASHBOARD_SETTINGS }, order: [...DEFAULT_DASHBOARD_ORDER] };
   }
@@ -124,7 +125,7 @@ router.get("/", async (req: AuthRequest, res, next) => {
 
     const savedSettings = rows[0].settings && typeof rows[0].settings === "object" ? rows[0].settings : {};
     res.json({
-      settings: { ...DEFAULT_DASHBOARD_SETTINGS, ...savedSettings },
+      settings: cleanSettings(savedSettings),
       order: cleanOrder(rows[0].widget_order),
       role_key: roleKey,
       location_id: locationKey === "*" ? null : locationKey,
@@ -159,7 +160,7 @@ router.put("/", adminOnly, async (req: AuthRequest, res, next) => {
       [roleKey, locationKey, JSON.stringify(clean), JSON.stringify(order), actor]
     );
     res.json({
-      settings: { ...DEFAULT_DASHBOARD_SETTINGS, ...(rows[0]?.settings || {}) },
+      settings: cleanSettings(rows[0]?.settings || {}),
       order: cleanOrder(rows[0]?.widget_order),
       role_key: rows[0]?.role_key,
       location_id: rows[0]?.location_key === "*" ? null : rows[0]?.location_key,
