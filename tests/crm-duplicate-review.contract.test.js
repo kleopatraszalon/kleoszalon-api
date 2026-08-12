@@ -38,6 +38,16 @@ test('merge transfers core customer relations and recalculates loyalty',()=>{
   assert.match(route,/evaluateClient\(client, primaryId, "duplicate_merge"/);
 });
 
+test('duplicate merge uses the newest consent snapshot and fails conservative when chronology is unknown',()=>{
+  assert.match(route,/function consentMergeSnapshot/);
+  assert.match(route,/dTime > pTime/);
+  assert.match(route,/pTime > dTime/);
+  assert.match(route,/Boolean\(primary\.email_consent\) && Boolean\(duplicate\.email_consent\)/);
+  assert.match(route,/duplicate_merge_conservative/);
+  assert.match(route,/UPDATE clients SET marketing_consent=\$2,email_consent=\$3,sms_consent=\$4,phone_consent=\$5/);
+  assert.doesNotMatch(route,/marketing_consent=COALESCE\(p\.marketing_consent,false\) OR/);
+});
+
 test('approval permissions and customer menu entry are explicit',()=>{
   assert.match(route,/APPROVER_ROLES = new Set\(\["admin", "manager", "location_manager", "salon_manager"\]\)/);
   assert.match(route,/if \(!canApprove\(req\)\)/);
