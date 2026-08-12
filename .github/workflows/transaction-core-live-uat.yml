@@ -1,0 +1,29 @@
+name: Transaction core live UAT
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/uat/transaction-core-live.mjs'
+      - '.github/workflows/transaction-core-live-uat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  transaction-core-uat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate UAT script syntax
+        run: node --check scripts/uat/transaction-core-live.mjs
+      - name: Run live transaction core UAT
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_ADMIN_IDENTIFIER: admin1
+          UAT_ADMIN_PASSWORD: Teszt1234!
+        run: node scripts/uat/transaction-core-live.mjs
