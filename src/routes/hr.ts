@@ -9,6 +9,8 @@ router.use(requireAuth);
 const asyncRoute = (handler: (req: any, res: Response) => Promise<any>) =>
   (req: Request, res: Response, next: NextFunction) => handler(req, res).catch(next);
 const n = (value: unknown) => value === "" || value == null ? null : Number(value);
+function roleKeys(req:AuthRequest){const raw:any=req.user?.role;if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||""));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||"").replace(/[\[\]"]/g,"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean)}
+function requireHrManagement(req:AuthRequest,res:Response){const allowed=roleKeys(req).some(x=>["admin","administrator","manager","vezető","vezeto","superadmin","super_admin"].includes(x));if(!allowed){res.status(403).json({error:"A munkakörök módosításához vezetői jogosultság szükséges."});return false}return true}
 
 async function audit(client: any, req: AuthRequest, action: string, entityType: string, entityId: string | null, oldData: any, newData: any) {
   await client.query(
@@ -19,6 +21,26 @@ async function audit(client: any, req: AuthRequest, action: string, entityType: 
      JSON.stringify(newData ?? null), String(req.headers["x-request-id"] ?? "") || null, req.ip || ""]
   );
 }
+
+router.get("/positions",asyncRoute(async(_req,res)=>{
+  await ensureHrV2();
+  const{rows}=await pool.query(`SELECT p.*,COUNT(e.id)::int employee_count FROM hr_positions p LEFT JOIN employees e ON e.position_id=p.id AND COALESCE(e.active,true)=true GROUP BY p.id ORDER BY p.is_active DESC,p.name`);
+  res.json(rows);
+}));
+
+router.post("/positions",asyncRoute(async(req:AuthRequest,res)=>{
+  if(!requireHrManagement(req,res))return;
+  await ensureHrV2();const b=req.body||{},name=String(b.name||"").trim(),code=String(b.code||"").trim()||null;
+  if(!name)return res.status(400).json({error:"A munkakör megnevezése kötelező."});
+  try{const{rows}=await pool.query(`INSERT INTO hr_positions(code,name,description,department_name,management_level,is_active) VALUES($1,$2,$3,$4,COALESCE($5,0),COALESCE($6,true)) RETURNING *`,[code,name,String(b.description||"").trim()||null,String(b.department_name||"").trim()||null,n(b.management_level),b.is_active]);await audit(pool,req,"create","hr_position",rows[0].id,null,rows[0]);res.status(201).json(rows[0])}catch(e:any){if(e?.code==="23505")return res.status(409).json({error:"Ez a munkakörkód már használatban van."});throw e}
+}));
+
+router.patch("/positions/:id",asyncRoute(async(req:AuthRequest,res)=>{
+  if(!requireHrManagement(req,res))return;
+  await ensureHrV2();const old=(await pool.query(`SELECT * FROM hr_positions WHERE id=$1::uuid`,[req.params.id])).rows[0];if(!old)return res.status(404).json({error:"A munkakör nem található."});
+  const b=req.body||{},name=Object.prototype.hasOwnProperty.call(b,"name")?String(b.name||"").trim():old.name;if(!name)return res.status(400).json({error:"A munkakör megnevezése kötelező."});
+  try{const{rows}=await pool.query(`UPDATE hr_positions SET code=$2,name=$3,description=$4,department_name=$5,management_level=COALESCE($6,management_level),is_active=COALESCE($7,is_active),updated_at=now() WHERE id=$1::uuid RETURNING *`,[req.params.id,String(b.code??old.code??"").trim()||null,name,String(b.description??old.description??"").trim()||null,String(b.department_name??old.department_name??"").trim()||null,n(b.management_level),b.is_active]);await audit(pool,req,"update","hr_position",req.params.id,old,rows[0]);res.json(rows[0])}catch(e:any){if(e?.code==="23505")return res.status(409).json({error:"Ez a munkakörkód már használatban van."});throw e}
+}));
 
 router.get("/employment-types", asyncRoute(async (_req, res) => {
   await ensureHrV2();

@@ -61,6 +61,7 @@ WITH items(code, parent_code, name, route, order_index, feature_key) AS (
 
     ('team.employees','team','Munkatársak','/employees',10,'staff'),
     ('team.schedule','team','Munkaidő és beosztás','/timetable/update',20,'staff_schedule'),
+    ('team.positions','team','Munkakörök','/hr/positions',30,'hr'),
     ('team.vacations','team','Szabadságok és távollétek','/hr/vacations',30,'staff_absence'),
     ('team.performance','team','Teljesítmény és értékelés','/modules/team/performance',50,'staff_performance'),
     ('team.roles','team','Szerepkörök és jogosultságok','/modules/team/roles',60,'roles_access'),
