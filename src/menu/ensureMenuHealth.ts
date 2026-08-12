@@ -77,6 +77,7 @@ export async function ensureMenuHealth(){
   await safe(`WITH p AS (SELECT id FROM menus WHERE code='operations' LIMIT 1), items(code,name,route,ord) AS (VALUES ('operations.audits','Minőségellenőrzések és auditok','/operations/audits',70),('operations.incidents','Események és eltérések','/operations/incidents',80)) INSERT INTO menus(code,name,route,order_index,parent_id,feature_key,is_active) SELECT i.code,i.name,i.route,i.ord,p.id,'operations',true FROM p CROSS JOIN items i ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='operations',is_active=true`);
   await safe(`UPDATE menus SET name='Hírlevelek',route='/marketing/newsletter',feature_key='newsletter',is_active=true WHERE code='marketing.newsletter'`);
   await safe(`UPDATE menus SET name='Hírlevelek és kampányok',is_active=true WHERE code='marketing'`);
+  await safe(`UPDATE menus SET name='Napi akciók',route='/marketing/daily-deals',feature_key='daily_deals',is_active=true WHERE code='marketing.daily-deals'`);
   await safe(`UPDATE menus SET route='/admin/vir/reports',is_active=true WHERE code='analytics.reports'`);
   await safe(`UPDATE menus SET route='/services',is_active=true WHERE code='settings.services'`);
 
