@@ -7,6 +7,9 @@ import bookingScheduleRouter from "./bookingSchedule";
 import bookingManageRouter from "./bookingManage";
 import bookingVoiceRateLimit from "../booking/voiceRateLimit";
 import { publicDailyActionsRouter } from "./dailyActions";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import JWT_SECRET from "../security/jwtSecret";
 
 const router = Router();
 router.use("/daily-actions", publicDailyActionsRouter);
@@ -18,6 +21,78 @@ router.use("/booking/voice", bookingVoiceRateLimit, bookingVoiceRouter);
 router.use("/booking/manage", bookingManageRouter);
 router.use("/booking", bookingScheduleRouter);
 router.use("/booking", onlineBookingRouter);
+
+let appCustomerSchemaPromise: Promise<void> | null = null;
+function ensureAppCustomerSchema() {
+  if (!appCustomerSchemaPromise) appCustomerSchemaPromise = pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name text;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS full_name text;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS name text;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS phone text;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS email text;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS marketing_consent boolean NOT NULL DEFAULT false;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+    CREATE TABLE IF NOT EXISTS crm_tags (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,color text NOT NULL DEFAULT '#b69861',is_active boolean NOT NULL DEFAULT true,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_name_uq ON crm_tags ((lower(name)));
+    CREATE TABLE IF NOT EXISTS crm_client_tags (client_id uuid NOT NULL REFERENCES clients(id) ON DELETE CASCADE,tag_id uuid NOT NULL REFERENCES crm_tags(id) ON DELETE CASCADE,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(client_id,tag_id));
+  `).then(() => undefined).catch(error => { appCustomerSchemaPromise = null; throw error; });
+  return appCustomerSchemaPromise;
+}
+
+const clean = (value: unknown, max = 240) => String(value ?? "").trim().slice(0, max);
+const validEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+async function saveAppClient(dbClient: any, data: any, registered: boolean) {
+  const fullName = clean(data.full_name, 160), email = clean(data.email, 200).toLowerCase(), phone = clean(data.phone, 60);
+  const existing = await dbClient.query(`SELECT id::text FROM clients WHERE ($1<>'' AND lower(COALESCE(email,''))=$1) OR ($2<>'' AND regexp_replace(COALESCE(phone,''),'[^0-9]','','g')=regexp_replace($2,'[^0-9]','','g')) ORDER BY updated_at DESC NULLS LAST LIMIT 1`, [email, phone]);
+  let clientId = existing.rows[0]?.id;
+  if (clientId) {
+    await dbClient.query(`UPDATE clients SET full_name=$2,name=$2,email=COALESCE(NULLIF($3,''),email),phone=COALESCE(NULLIF($4,''),phone),marketing_consent=marketing_consent OR $5,is_active=true,source=CASE WHEN $6 THEN 'kleopatra_app_registered' ELSE COALESCE(NULLIF(source,''),'kleopatra_app_guest') END,updated_at=now() WHERE id=$1::uuid`, [clientId, fullName, email, phone, Boolean(data.marketing_consent), registered]);
+  } else {
+    const inserted = await dbClient.query(`INSERT INTO clients(full_name,name,email,phone,marketing_consent,is_active,source,created_at,updated_at) VALUES($1,$1,NULLIF($2,''),NULLIF($3,''),$4,true,$5,now(),now()) RETURNING id::text`, [fullName, email, phone, Boolean(data.marketing_consent), registered ? "kleopatra_app_registered" : "kleopatra_app_guest"]);
+    clientId = inserted.rows[0].id;
+  }
+  if (!registered) {
+    const tag = await dbClient.query(`INSERT INTO crm_tags(name,color) VALUES('Nem regisztrált','#8b8177') ON CONFLICT ((lower(name))) DO UPDATE SET is_active=true RETURNING id`);
+    await dbClient.query(`INSERT INTO crm_client_tags(client_id,tag_id) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING`, [clientId, tag.rows[0].id]);
+  } else {
+    await dbClient.query(`DELETE FROM crm_client_tags WHERE client_id=$1::uuid AND tag_id IN (SELECT id FROM crm_tags WHERE lower(name)=lower('Nem regisztrált'))`, [clientId]);
+  }
+  return clientId;
+}
+
+router.post("/app/register", async (req: Request, res: Response, next) => {
+  const fullName = clean(req.body?.full_name, 160), email = clean(req.body?.email, 200).toLowerCase(), phone = clean(req.body?.phone, 60), password = String(req.body?.password || "");
+  if (fullName.length < 2 || !validEmail(email) || password.length < 8) return res.status(400).json({ error: "Név, érvényes e-mail és legalább 8 karakteres jelszó szükséges." });
+  const client = await pool.connect();
+  try {
+    await ensureAppCustomerSchema(); await client.query("BEGIN");
+    const exists = await client.query(`SELECT id FROM users WHERE lower(COALESCE(email,''))=$1 LIMIT 1`, [email]);
+    if (exists.rowCount) { await client.query("ROLLBACK"); return res.status(409).json({ error: "Ezzel az e-mail címmel már létezik fiók. Jelentkezzen be." }); }
+    const roleType = await client.query(`SELECT udt_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='role' LIMIT 1`);
+    const hash = await bcrypt.hash(password, 12); let user;
+    if (roleType.rows[0]?.udt_name === "jsonb") user = await client.query(`INSERT INTO users(full_name,email,password_hash,role) VALUES($1,$2,$3,to_jsonb('customer'::text)) RETURNING id::text`, [fullName,email,hash]);
+    else if (roleType.rows[0]?.udt_name === "json") user = await client.query(`INSERT INTO users(full_name,email,password_hash,role) VALUES($1,$2,$3,to_json('customer'::text)) RETURNING id::text`, [fullName,email,hash]);
+    else user = await client.query(`INSERT INTO users(full_name,email,password_hash,role) VALUES($1,$2,$3,'customer') RETURNING id::text`, [fullName,email,hash]);
+    const customerId = await saveAppClient(client,{...req.body,full_name:fullName,email,phone}, true);
+    await client.query("COMMIT");
+    const token = jwt.sign({id:user.rows[0].id,userId:user.rows[0].id,email,role:"customer",customer_id:customerId}, JWT_SECRET, {expiresIn:"30d"});
+    res.status(201).json({success:true,token,role:"customer",account_type:"customer",full_name:fullName,email,customer_id:customerId});
+  } catch (error) { await client.query("ROLLBACK").catch(()=>{}); next(error); } finally { client.release(); }
+});
+
+router.post("/app/guest", async (req: Request, res: Response, next) => {
+  const fullName = clean(req.body?.full_name, 160), email = clean(req.body?.email, 200).toLowerCase(), phone = clean(req.body?.phone, 60);
+  if (fullName.length < 2 || (!phone && !validEmail(email))) return res.status(400).json({ error: "Név és legalább telefonszám vagy érvényes e-mail szükséges." });
+  const client = await pool.connect();
+  try { await ensureAppCustomerSchema(); await client.query("BEGIN"); const customerId = await saveAppClient(client,{...req.body,full_name:fullName,email,phone}, false); await client.query("COMMIT"); res.status(201).json({success:true,customer_id:customerId,guest:{full_name:fullName,email,phone,marketing_consent:Boolean(req.body?.marketing_consent)},tag:"Nem regisztrált"}); }
+  catch(error){await client.query("ROLLBACK").catch(()=>{});next(error)} finally{client.release()}
+});
 
 const PUBLIC_SALONS = [
   { id: "budapest-ix", slug: "budapest-ix", city_label: "Budapest IX.", address: "1095 Budapest, Mester u. 1.", latitude: 47.4829, longitude: 19.0691, phone: "+36 30 905 7765", hours: "H-P 07:00-21:00, Szo 07:00-16:00" },
