@@ -7,7 +7,7 @@ export async function ensureMenuHealth(){
 
   await safe(`UPDATE menus SET is_active=true WHERE code IN(
     'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash',
-    'team','team.schedule','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
+    'team','team.schedule','team.positions','inventory','procurement','settings','commerce.webshop','screens.signage','screens.kiosk','analytics.reports'
   )`);
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
   await safe(`WITH p AS (SELECT id FROM menus WHERE code='finance' LIMIT 1)
@@ -68,6 +68,7 @@ export async function ensureMenuHealth(){
   await safe(`UPDATE menus SET route='/kiosk',is_active=true WHERE code='screens.kiosk'`);
   await safe(`UPDATE menus SET route='/finance',is_active=true WHERE code IN('finance.dashboard','finance.checkout','finance.cash')`);
   await safe(`UPDATE menus SET route='/modules/team/timetable',is_active=true WHERE code='team.schedule'`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='team' LIMIT 1) UPDATE menus m SET name='Munkakörök',route='/hr/positions',parent_id=p.id,order_index=30,feature_key='hr',is_active=true FROM p WHERE m.code='team.positions'`);
   await safe(`UPDATE menus SET route='/admin/vir/reports',is_active=true WHERE code='analytics.reports'`);
   await safe(`UPDATE menus SET route='/services',is_active=true WHERE code='settings.services'`);
 
