@@ -1,4 +1,5 @@
 let schemaReady=false;
+let schemaPromise:Promise<void>|null=null;
 let savepointCounter=0;
 
 export type BookingWorkOrderResult={appointment_id:string;work_order_id:string|null;work_order_number:string|null;created:boolean;status:string;skipped?:boolean;error_code?:string;error_message?:string;error_column?:string;error_table?:string};
@@ -49,8 +50,7 @@ async function safeReferenceId(c:any,table:string,value:any):Promise<string|null
   }
 }
 
-export async function ensureBookingWorkOrderSchema(c:any){
-  if(schemaReady)return;
+async function migrateBookingWorkOrderSchema(c:any){
   const hasAppointments=await tableExists(c,'appointments');
   const hasWorkOrders=await tableExists(c,'work_orders');
   if(!hasAppointments||!hasWorkOrders){const e:any=new Error('A foglalás/munkalap alaptáblák hiányoznak a live adatbázisból.');e.httpStatus=503;e.publicCode='booking_schema_missing';throw e;}
@@ -162,6 +162,20 @@ export async function ensureBookingWorkOrderSchema(c:any){
   await safeIndex(c,`CREATE UNIQUE INDEX IF NOT EXISTS work_orders_official_number_uq ON work_orders(work_order_number) WHERE work_order_number IS NOT NULL`,'number');
   await safeIndex(c,`CREATE INDEX IF NOT EXISTS appointments_work_order_idx ON appointments(work_order_id)`,'appointment-link');
   schemaReady=true;
+}
+
+export async function ensureBookingWorkOrderSchema(c:any){
+  if(schemaReady)return;
+  if(schemaPromise)return schemaPromise;
+  schemaPromise=(async()=>{
+    const ready=(await c.query(`SELECT
+      to_regprocedure('next_official_work_order_number(timestamp with time zone)') IS NOT NULL
+      AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='appointments' AND column_name='work_order_id')
+      AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders' AND column_name='work_order_number') ok`)).rows[0]?.ok;
+    if(ready){schemaReady=true;return}
+    await migrateBookingWorkOrderSchema(c);
+  })().catch(error=>{schemaPromise=null;throw error});
+  return schemaPromise;
 }
 
 async function appointmentRow(c:any,id:string){
