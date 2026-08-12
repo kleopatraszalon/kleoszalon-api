@@ -34,11 +34,13 @@ export async function bookingRecommendations(locationId:string,selectedIds:strin
       AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid))
     ORDER BY CASE WHEN s.service_type_id=ANY($3::uuid[]) THEN 0 ELSE 1 END,COALESCE(s.promo_price,s.list_price,s.base_price,0),s.name LIMIT 3`,[selected,locationId,categoryIds])).rows:[];
   let recommendations:BookingRecommendation[]=services.map((s:any)=>({type:'service',service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}));
-  const campaignTable=(await db.query(`SELECT to_regclass('public.loyalty_coupon_campaigns') IS NOT NULL ok`)).rows[0]?.ok;
-  if(campaignTable){
-    const campaigns=(await db.query(`SELECT id::text,name,discount_type,discount_value::numeric,valid_until FROM loyalty_coupon_campaigns WHERE COALESCE(active,true)=true AND (valid_from IS NULL OR valid_from<=now()) AND (valid_until IS NULL OR valid_until>=now()) AND COALESCE(applies_to_all,true)=true ORDER BY valid_until NULLS LAST,created_at DESC LIMIT 2`)).rows;
-    recommendations.push(...campaigns.map((c:any)=>({type:'promotion' as const,service_id:null,campaign_id:String(c.id),title:'Aktuális ajánlat',message:`${c.name}: ${c.discount_type==='percent'?`${Number(c.discount_value)}% kedvezmény`:`${Number(c.discount_value).toLocaleString('hu-HU')} Ft kedvezmény`}.`,discount_type:c.discount_type,discount_value:Number(c.discount_value),valid_until:c.valid_until||null,ai_generated:false})));
-  }
+  try{
+    const campaignTable=(await db.query(`SELECT to_regclass('public.loyalty_coupon_campaigns') IS NOT NULL ok`)).rows[0]?.ok;
+    if(campaignTable){
+      const campaigns=(await db.query(`SELECT id::text,name,discount_type,discount_value::numeric,valid_until FROM loyalty_coupon_campaigns WHERE COALESCE(active,true)=true AND (valid_from IS NULL OR valid_from<=now()) AND (valid_until IS NULL OR valid_until>=now()) AND COALESCE(applies_to_all,true)=true ORDER BY valid_until NULLS LAST LIMIT 2`)).rows;
+      recommendations.push(...campaigns.map((c:any)=>({type:'promotion' as const,service_id:null,campaign_id:String(c.id),title:'Aktuális ajánlat',message:`${c.name}: ${c.discount_type==='percent'?`${Number(c.discount_value)}% kedvezmény`:`${Number(c.discount_value).toLocaleString('hu-HU')} Ft kedvezmény`}.`,discount_type:c.discount_type,discount_value:Number(c.discount_value),valid_until:c.valid_until||null,ai_generated:false})));
+    }
+  }catch(error:any){console.warn('[booking-recommendations] campaign fallback',error?.message||error)}
   const serviceItems=recommendations.filter(x=>x.type==='service');const enhanced=await aiCopy(selectedRows.map((x:any)=>x.name),serviceItems);
   if(enhanced)recommendations=[...enhanced,...recommendations.filter(x=>x.type==='promotion')];
   const value={recommendations:recommendations.slice(0,5),ai_used:Boolean(enhanced),selected_service_ids:selected};
