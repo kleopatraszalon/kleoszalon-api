@@ -1,0 +1,68 @@
+name: CRM test diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/crm-spec-v2-20260812
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  individual-contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests individually and publish statuses
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          failed=0
+          shopt -s nullglob
+          files=(tests/*.test.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No tests/*.test.js files found"
+            exit 1
+          fi
+
+          for f in "${files[@]}"; do
+            name="$(basename "$f")"
+            echo "::group::$name"
+            node --test "$f"
+            code=$?
+            echo "::endgroup::"
+
+            if [ "$code" -eq 0 ]; then
+              state="success"
+              description="passed"
+            else
+              state="failure"
+              description="failed"
+              failed=1
+            fi
+
+            payload="$(node -e 'const [state,context,description]=process.argv.slice(1); process.stdout.write(JSON.stringify({state,context,description}))' "$state" "test/$name" "$description")"
+            curl -sSf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -d "$payload"
+          done
+
+          exit "$failed"
