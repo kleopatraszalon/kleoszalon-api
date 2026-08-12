@@ -1,0 +1,30 @@
+name: Workorder email recipients live UAT
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/uat/workorder-email-recipients-live.mjs'
+      - '.github/workflows/workorder-email-recipients-live-uat.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  live-uat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate UAT script syntax
+        run: node --check scripts/uat/workorder-email-recipients-live.mjs
+      - name: Verify live workorder recipients
+        env:
+          UAT_API_BASE: https://kleoszalon-api-1.onrender.com
+          UAT_ADMIN_IDENTIFIER: admin1
+          UAT_ADMIN_PASSWORD: Teszt1234!
+          UAT_WORK_ORDER_ID: 5d1e1544-cfc8-4d8c-a469-18424483afd1
+        run: node scripts/uat/workorder-email-recipients-live.mjs
