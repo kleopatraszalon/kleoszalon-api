@@ -49,6 +49,7 @@ import bookingWorkOrderBridgeRouter from "./bookingWorkOrderBridge";
 import hrDevelopmentRouter from "./hrDevelopment";
 import operationsQualityRouter from "./operationsQuality";
 import newslettersRouter from "./newsletters";
+import dailyActionsRouter from "./dailyActions";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
 import db from "../db";
 import { requireAuth } from "../middleware/auth";
@@ -94,6 +95,7 @@ router.use("/booking-operations",bookingOperationsRouter);router.use("/booking-c
 router.use("/hr-development",requireManagement,hrDevelopmentRouter);
 router.use("/operations-quality",requireManagement,operationsQualityRouter);
 router.use("/newsletters",requireManagement,newslettersRouter);
+router.use("/daily-actions",requireManagement,dailyActionsRouter);
 
 router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
