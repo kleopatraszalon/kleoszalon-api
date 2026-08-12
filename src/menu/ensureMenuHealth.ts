@@ -74,6 +74,9 @@ export async function ensureMenuHealth(){
   await safe(`UPDATE menus SET name='Hírlevelek',route='/marketing/newsletter',feature_key='newsletter',is_active=true WHERE code='marketing.newsletter'`);
   await safe(`UPDATE menus SET name='Hírlevelek és kampányok',is_active=true WHERE code='marketing'`);
   await safe(`UPDATE menus SET name='Napi akciók',route='/marketing/daily-deals',feature_key='daily_deals',is_active=true WHERE code='marketing.daily-deals'`);
+  await safe(`UPDATE menus SET name='Tudásbázis',route='/knowledge-base/library',is_active=true WHERE code='knowledge.base'`);
+  await safe(`UPDATE menus SET name='Folyamatok és szabályzatok',route='/knowledge-base/processes',is_active=true WHERE code='knowledge.procedures'`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='knowledge' LIMIT 1) INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active) SELECT 'knowledge.quiz','Ellenőrző kvíz','GraduationCap','/knowledge-base/quiz',30,p.id,'knowledge_base',true FROM p ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,route=EXCLUDED.route,parent_id=EXCLUDED.parent_id,is_active=true`);
   await safe(`UPDATE menus SET route='/admin/vir/reports',is_active=true WHERE code='analytics.reports'`);
   await safe(`UPDATE menus SET route='/services',is_active=true WHERE code='settings.services'`);
 
