@@ -22,6 +22,7 @@ const asUuidList = (value: unknown) => String(value || "").split(",").map((x) =>
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const dayStart = (date: string) => new Date(`${date}T00:00:00`);
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60000);
+const publicCache=new Map<string,{expires:number;value:any}>();
 
 type VoiceValidation={ok:true;id:string;intent:string}|{ok:false;status:number;error:string};
 async function validateVoiceEvent(cx:any,id:string,allowedIntents:string[]):Promise<VoiceValidation>{
@@ -42,9 +43,10 @@ async function validateVoiceEvent(cx:any,id:string,allowedIntents:string[]):Prom
 }
 
 async function settings(locationId: string) {
+  const cacheKey=`settings:${locationId}`,cached=publicCache.get(cacheKey);if(cached&&cached.expires>Date.now())return cached.value;
   await ensureOnlineBooking();
   const { rows } = await db.query(`SELECT * FROM online_booking_settings WHERE location_id=$1::uuid`, [locationId]);
-  return rows[0] || {
+  const value=rows[0] || {
     enabled: true,
     online_discount_percent: 5,
     slot_interval_minutes: 15,
@@ -53,7 +55,7 @@ async function settings(locationId: string) {
     booking_horizon_days: 60,
     minimum_notice_minutes: 60,
     require_staff_confirmation: true,
-  };
+  };publicCache.set(cacheKey,{expires:Date.now()+60_000,value});return value;
 }
 
 const serviceLocationClause = `
@@ -63,6 +65,7 @@ const serviceLocationClause = `
   )`;
 
 router.get("/health", async (_req, res) => {
+  const cached=publicCache.get("health");if(cached&&cached.expires>Date.now())return res.json(cached.value);
   try {
     await ensureOnlineBooking();
     const [locations, services, employees] = await Promise.all([
@@ -70,14 +73,14 @@ router.get("/health", async (_req, res) => {
       db.query(`SELECT count(*)::int count FROM services WHERE COALESCE(is_active,true)=true AND COALESCE(online_bookable,true)=true`),
       db.query(`SELECT count(*)::int count FROM employees WHERE COALESCE(active,true)=true`),
     ]);
-    res.json({
+    const value={
       ok: true,
       database: true,
       locations: locations.rows[0]?.count || 0,
       services: services.rows[0]?.count || 0,
       employees: employees.rows[0]?.count || 0,
       voice_event_correlation:true,
-    });
+    };publicCache.set("health",{expires:Date.now()+30_000,value});res.json(value);
   } catch (error: any) {
     res.status(500).json({ ok: false, database: false, error: error?.message || String(error) });
   }
@@ -87,8 +90,9 @@ router.get("/catalog", async (req, res) => {
   try {
     await ensureOnlineBooking();
     const locationId = String(req.query.location_id || "").trim();
+    const cacheKey=`catalog:${locationId||"all"}`,cached=publicCache.get(cacheKey);if(cached&&cached.expires>Date.now())return res.json(cached.value);
     const locations = await db.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name`);
-    if (!locationId) return res.json({ locations: locations.rows, services: [], employees: [], settings: null });
+    if (!locationId){const value={locations:locations.rows,services:[],employees:[],settings:null};publicCache.set(cacheKey,{expires:Date.now()+5*60_000,value});return res.json(value)}
 
     const [serviceRows, employeeRows, cfg] = await Promise.all([
       db.query(
@@ -104,7 +108,7 @@ router.get("/catalog", async (req, res) => {
         [locationId]
       ),
       db.query(
-        `SELECT id,COALESCE(NULLIF(full_name,''),NULLIF(concat_ws(' ',last_name,first_name),''),'Munkatárs') full_name,photo_url
+        `SELECT id,COALESCE(NULLIF(btrim(full_name),''),NULLIF(btrim(concat_ws(' ',last_name,first_name)),''),'Munkatárs') full_name,photo_url
          FROM employees
          WHERE active=true AND (location_id=$1::uuid OR location_id IS NULL)
          ORDER BY COALESCE(NULLIF(full_name,''),last_name,first_name,'')`,
@@ -113,7 +117,7 @@ router.get("/catalog", async (req, res) => {
       settings(locationId),
     ]);
 
-    res.json({ locations: locations.rows, services: serviceRows.rows, employees: employeeRows.rows, settings: cfg });
+    const value={locations:locations.rows,services:serviceRows.rows,employees:employeeRows.rows,settings:cfg};publicCache.set(cacheKey,{expires:Date.now()+5*60_000,value});res.json(value);
   } catch (error: any) {
     res.status(500).json({ error: "Az online foglalási adatok nem tölthetők be.", detail: error?.message || String(error) });
   }
@@ -155,7 +159,7 @@ router.get("/availability", async (req, res) => {
     const duration = serviceResult.rows.reduce((sum: number, row: any) => sum + Number(row.duration_minutes || 30), 0);
 
     const employees = await db.query(
-      `SELECT e.id,COALESCE(NULLIF(e.full_name,''),NULLIF(concat_ws(' ',e.last_name,e.first_name),''),'Munkatárs') full_name
+      `SELECT e.id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name
        FROM employees e
        WHERE e.active=true
          AND (e.location_id=$1::uuid OR e.location_id IS NULL)
