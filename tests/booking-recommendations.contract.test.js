@@ -6,3 +6,4 @@ test('recommendations only use active bookable location services',()=>{assert.ma
 test('AI is copy-only and candidate ids are validated',()=>{assert.match(source,/Kizárólag a kapott service_id-kat használd/);assert.match(source,/const map=new Map/);assert.match(source,/timeout:4500/)});
 test('only currently active campaigns are shown',()=>{assert.match(source,/valid_from IS NULL OR valid_from<=now\(\)/);assert.match(source,/valid_until IS NULL OR valid_until>=now\(\)/)});
 test('legacy campaign schema cannot suppress service recommendations',()=>{assert.match(source,/campaign fallback/);assert.match(source,/try\{\s*const campaignTable/)});
+test('legacy text service categories are compared without uuid operator errors',()=>{assert.match(source,/service_type_id::text=ANY\(\$3::text\[\]\)/)});
