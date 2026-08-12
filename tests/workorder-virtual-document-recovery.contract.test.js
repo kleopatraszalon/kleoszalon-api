@@ -16,7 +16,8 @@ test('closed document delivery has an in-memory archive fallback',()=>{
 });
 
 test('fast document routes do not fail solely because trigger repair is unavailable',()=>{
-  assert.match(fast,/repairLegacyWorkOrderTriggers\(db\)\.catch/);
+  const documentRoutes=fast.slice(fast.indexOf("router.get('/workorders/:id/pdf'"));
+  assert.doesNotMatch(documentRoutes,/repairLegacyWorkOrderTriggers/);
 });
 
 test('guest client context tolerates optional legacy CRM schema failures',()=>{
