@@ -5,10 +5,10 @@ import db from '../db';
 import {sendEmail} from '../mailer';
 
 const DEFAULT_RECIPIENTS=[
-  'Birtalan.zoltan1975@gmail.com',
+  'birtalan.zoltan1975@gmail.com',
   'h.n.andrea@kleoszalon.hu',
-  'rebeka.horvath@kleoszalon.hu',
 ];
+const LEGACY_DEMO_RECIPIENT='demo.ugyfel@kleoszalon.hu';
 
 const ISSUER={
   fullName:'Kleopátra 2003 Szépségápoló Szolgáltató és Kereskedelmi Korlátolt Felelősségű Társaság',
@@ -32,7 +32,14 @@ const text=(v:any,fallback='—')=>String(v??'').trim()||fallback;
 export function closedWorkOrderRecipients(){
   const configured=String(process.env.WORKORDER_CLOSE_EMAILS||'').trim();
   const raw=configured?configured.split(/[;,]/):DEFAULT_RECIPIENTS;
-  return Array.from(new Set(raw.map(x=>x.trim()).filter(x=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))));
+  const expanded=raw.flatMap(x=>x.trim().toLowerCase()===LEGACY_DEMO_RECIPIENT?DEFAULT_RECIPIENTS:[x.trim()]);
+  const seen=new Set<string>();
+  return expanded.filter(x=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x)).filter(x=>{
+    const key=x.toLowerCase();
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function fontPath(bold=false){
