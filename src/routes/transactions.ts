@@ -5,6 +5,7 @@ import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
 import cashierRegisterRouter from "./cashierRegister";
+import cashierShiftRouter from "./cashierShift";
 import workOrderCashierFastRouter from "./workOrderCashierFast";
 import financeOperationsRouter from "./financeOperations";
 import financeAltegioRouter from "./financeAltegio";
@@ -83,6 +84,27 @@ const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
 };
 const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT w.work_order_number,w.status,NULLIF(to_jsonb(w)->>'locked_at','')::timestamptz locked_at,NULLIF(to_jsonb(w)->>'archived_at','')::timestamptz archived_at,NULLIF(to_jsonb(w)->>'financial_closed_at','')::timestamptz financial_closed_at FROM work_orders w WHERE w.id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(['cancelled','no_show','completed'].includes(String(wo.status||'')))return res.status(409).json({message:'Megszakított vagy lezárt munkalap pénzügyileg nem módosítható.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
+const guardOpenCashierShift=async(req:Request,res:Response,next:NextFunction)=>{try{
+  if(req.method!=='POST')return next();
+  const path=String(req.path||'');
+  const needsShift=/^\/workorders\/[^/]+\/settle\/?$/.test(path)||/^\/register-movements(?:\/[^/]+\/void)?\/?$/.test(path);
+  if(!needsShift)return next();
+  const locationId=String((req.query as any)?.location_id??req.body?.location_id??res.locals.workOrderFinanceLocationId??'').trim();
+  if(!locationId)return res.status(400).json({message:'Ehhez a pénztári művelethez telephely és nyitott pénztári műszak szükséges.'});
+  const exists=(await db.query(`SELECT to_regclass('public.cash_register_shifts') IS NOT NULL ok`)).rows[0]?.ok;
+  if(!exists)return res.status(409).json({message:'A pénztári műszak nincs megnyitva. Előbb rögzítsd a nyitópénzt.'});
+  const shift=(await db.query(`SELECT id,status,current_cashier FROM cash_register_shifts WHERE location_id=$1 AND status='open' ORDER BY opened_at DESC LIMIT 1`,[locationId])).rows[0];
+  if(!shift)return res.status(409).json({message:'A művelet csak nyitott pénztári műszakban végezhető. Függő átadás-átvétel esetén előbb fogadd el az átvételt.'});
+  res.locals.cashierShift=shift;next();
+}catch(error){next(error)}};
+const parseRoles=(raw:any)=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||''));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
+const guardCashierHistoryRole=(req:Request,res:Response,next:NextFunction)=>{
+  if(req.method!=='GET'||!/^\/shift-history\/?$/.test(String(req.path||'')))return next();
+  const roles=parseRoles((req as any).user?.role);
+  const allowed=new Set(['admin','administrator','rendszergazda','superadmin','super_admin','location_manager','salon_manager','szalonvezető','szalonvezeto','üzletvezető','uzletvezeto','store_manager','branch_manager']);
+  if(roles.some(role=>allowed.has(role)))return next();
+  return res.status(403).json({message:'A vezetői kasszatörténet csak adminisztrátor, szalonvezető vagy üzletvezető számára érhető el.'});
+};
 
 router.use(requireAuth);
 
@@ -105,9 +127,10 @@ router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
-router.use("/cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
 router.use("/finance-dashboard",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeDashboardRouter);
@@ -120,8 +143,8 @@ router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
 
-router.use("/loyalty-cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
-router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
 
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
