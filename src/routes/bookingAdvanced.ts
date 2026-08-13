@@ -90,7 +90,7 @@ async function buildPlan(cx:any,payload:any,lock=false){
    const busy=(await cx.query(`SELECT id::text,title,start_time,end_time FROM appointments WHERE employee_id=$1::uuid AND status=ANY($4::text[]) AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`,[employeeId,p.start_time,p.end_time,ACTIVE_STATUSES])).rows[0];
    const secondary=(await cx.query(`SELECT a.id::text,a.title,asa.start_time,asa.end_time FROM appointment_staff_assignments asa JOIN appointments a ON a.id=asa.appointment_id WHERE asa.employee_id=$1::uuid AND a.status=ANY($4::text[]) AND asa.start_time<$3::timestamptz AND asa.end_time>$2::timestamptz LIMIT 1`,[employeeId,p.start_time,p.end_time,ACTIVE_STATUSES])).rows[0];
    const br=(await cx.query(`SELECT id::text,title,start_time,end_time FROM appointment_technical_breaks WHERE employee_id=$1::uuid AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`,[employeeId,p.start_time,p.end_time])).rows[0];
-   if(busy||secondary||br)conflicts.push({type:'staff',employee_id,service_id:p.service_id,start_time:p.start_time,end_time:p.end_time,message:`${p.employee_name} ebben az időszakban foglalt vagy technikai szüneten van.`});
+   if(busy||secondary||br)conflicts.push({type:'staff',employee_id:employeeId,service_id:p.service_id,start_time:p.start_time,end_time:p.end_time,message:`${p.employee_name} ebben az időszakban foglalt vagy technikai szüneten van.`});
  }}
  if(conflicts.length)return{ok:false,booking_mode:mode,start_time:start.toISOString(),end_time:overallEnd.toISOString(),services:planned,conflicts};
 
