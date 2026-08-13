@@ -3,6 +3,7 @@ import path from 'path';
 import pool from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
 import {ensureMenuHealth} from '../menu/ensureMenuHealth';
+import {ensureFinanceV5Menu} from './ensureFinanceV5Menu';
 import {ensureWorkOrderWorkflow} from '../workorders/ensureWorkOrderWorkflow';
 
 let ensurePromise:Promise<void>|null=null;
@@ -63,6 +64,7 @@ export function ensureFinanceNav(){
         '20260809_UAT_STAGE10_V1.sql',
       ]) await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
+      await step('finance_v5_menu',()=>ensureFinanceV5Menu());
     })().catch(err=>{ensurePromise=null;throw err});
   }
   return ensurePromise;
