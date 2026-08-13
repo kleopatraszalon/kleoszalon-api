@@ -3,6 +3,7 @@ import { requireAuth } from "../middleware/auth";
 import { requireAdmin, requireManagement } from "../middleware/requireRoles";
 import {
   alertRuleSummary,
+  collectRuleDrivenAlerts,
   listAlertDeliveryLog,
   listAlertRules,
   removeAlertRuleOverride,
@@ -31,6 +32,9 @@ router.post("/deliveries/:id/retry", requireAdmin, async (req, res, next) => {
 });
 router.get("/summary", requireManagement, async (req: any, res, next) => {
   try { res.json(await alertRuleSummary(req.user?.location_id || req.query.location_id)); } catch (error) { next(error); }
+});
+router.get("/items", requireManagement, async (req: any, res, next) => {
+  try { res.json({ items: await collectRuleDrivenAlerts(req.user?.location_id || req.query.location_id) }); } catch (error) { next(error); }
 });
 router.post("/run", requireManagement, async (_req, res, next) => {
   try { res.json({ ok: true, ...(await runAlertRuleAutomation()) }); } catch (error) { next(error); }
