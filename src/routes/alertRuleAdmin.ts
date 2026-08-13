@@ -35,10 +35,11 @@ router.post("/deliveries/:id/retry", requireAdmin, async (req, res, next) => {
 router.get("/summary", requireManagement, async (req: any, res, next) => {
   try { res.json(await alertRuleSummary(req.user?.location_id || req.query.location_id)); } catch (error) { next(error); }
 });
-router.get("/items", requireManagement, async (req: AuthRequest, res, next) => {
+router.get("/items", async (req: AuthRequest, res, next) => {
   try {
+    const locationId=req.user?.location_id==null?null:String(req.user.location_id);
     const [alerts,state]=await Promise.all([
-      collectRuleDrivenAlerts(req.user?.location_id || req.query.location_id as string|undefined),
+      collectRuleDrivenAlerts(locationId),
       db.query(`SELECT notification_key,read_at,dismissed_at FROM notification_read_state WHERE user_key=$1`,[userKey(req)]),
     ]);
     const states=new Map(state.rows.map((x:any)=>[String(x.notification_key),x]));
