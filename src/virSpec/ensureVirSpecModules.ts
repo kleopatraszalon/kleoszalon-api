@@ -50,6 +50,7 @@ export function ensureVirSpecModules() {
       await runSqlFile("20260807_MASTERDATA_SERVICES_MENU.sql");
       await runSqlFile("20260810_MASTERDATA_RBAC_STAGE1.sql");
       await runSqlFile("20260813_CENTRAL_MASTERDATA_MENU_V1.sql");
+      await runSqlFile("20260813_SYSTEM_SETTINGS_CENTER_V1.sql");
       await runSqlFile("20260808_CHECKLIST_MENU_V1.sql");
       await runSqlFile("20260808_EMPLOYEE_SELF_MENU_V1.sql");
       await runSqlFile("20260810_BOOKING_VOICE_STATS_V1.sql");
