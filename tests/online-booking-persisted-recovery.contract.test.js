@@ -18,3 +18,11 @@ test('recovery runs only after rollback and keeps the real 500 fallback',()=>{
   const fallback=source.indexOf('res.status(500).json({ error: "Az online foglalás mentése sikertelen.',recovery);
   assert.ok(rollback>=0&&recovery>rollback&&fallback>recovery);
 });
+
+test('appointment commit precedes best-effort work-order generation',()=>{
+  const durable=source.indexOf('Az időpont a foglalás üzleti eredménye');
+  const commit=source.lastIndexOf('await cx.query("COMMIT")',durable);
+  const workOrder=source.indexOf('work order deferred',durable);
+  assert.ok(commit>=0&&durable>commit&&workOrder>durable);
+  assert.match(source,/persisted:true/);
+});
