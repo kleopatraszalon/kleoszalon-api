@@ -98,7 +98,7 @@ router.post("/", async (req, res, n) => {
     if ("error" in input) return res.status(400).json({ message: input.error });
     const
       { rows } = await db.query(
-        `INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until,audience,channels,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft')RETURNING *`,
+        `INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until,audience,channels,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'draft')RETURNING *`,
         [
           input.name,
           input.headline,
@@ -109,8 +109,8 @@ router.post("/", async (req, res, n) => {
           b.discount_text || null,
           input.validFrom,
           input.validUntil,
-          b.audience || { type: "all" },
-          input.channels,
+          JSON.stringify(b.audience || { type: "all" }),
+          JSON.stringify(input.channels),
         ],
       );
     res.status(201).json(rows[0]);
@@ -134,24 +134,32 @@ router.post("/", async (req, res, n) => {
 router.patch("/:id", async (req, res, n) => {
   try {
     const b = req.body,
+      input = campaignInput(b);
+    if ("error" in input) return res.status(400).json({ message: input.error });
+    const
       { rows } = await db.query(
-        `UPDATE daily_action_campaigns SET name=COALESCE($2,name),headline=COALESCE($3,headline),description_html=COALESCE($4,description_html),image_url=COALESCE($5,image_url),discount_text=COALESCE($6,discount_text),valid_from=COALESCE($7,valid_from),valid_until=COALESCE($8,valid_until),audience=COALESCE($9,audience),channels=COALESCE($10,channels),updated_at=now()WHERE id=$1::uuid RETURNING *`,
+        `UPDATE daily_action_campaigns SET name=$2,headline=$3,description_html=$4,image_url=$5,cta_label=$6,cta_url=$7,discount_text=$8,valid_from=$9,valid_until=$10,audience=$11::jsonb,channels=$12::jsonb,updated_at=now() WHERE id=$1::uuid RETURNING *`,
         [
           req.params.id,
-          b.name || null,
-          b.headline || null,
-          b.description_html || null,
+          input.name,
+          input.headline,
+          input.descriptionHtml,
           b.image_url || null,
+          b.cta_label || "Foglalok",
+          b.cta_url || "/foglalas",
           b.discount_text || null,
-          b.valid_from || null,
-          b.valid_until || null,
-          b.audience || null,
-          b.channels || null,
+          input.validFrom,
+          input.validUntil,
+          JSON.stringify(b.audience || { type: "all" }),
+          JSON.stringify(input.channels),
         ],
       );
+    if (!rows[0]) return res.status(404).json({ message: "Az akció nem található." });
     res.json(rows[0]);
-  } catch (e) {
-    n(e);
+  } catch (e: any) {
+    const diagnosticId = `DA-${Date.now().toString(36).toUpperCase()}`;
+    console.error("[daily-action-update]", diagnosticId, e?.code, e?.message, e?.detail);
+    res.status(500).json({code:"DAILY_ACTION_UPDATE_FAILED",message:"Az akció módosítása nem sikerült. A hibát naplóztuk.",diagnostic_id:diagnosticId,database_code:e?.code||null});
   }
 });
 router.post("/:id/publish", async (req, res, n) => {
