@@ -209,21 +209,33 @@ router.get("/", async (req: AuthRequest, res) => {
     const status = String(req.query.status || "all");
     const tagId = String(req.query.tag_id || "").trim() || null;
     const { rows } = await pool.query(`
-      SELECT c.id,c.location_id,COALESCE(NULLIF(c.full_name,''),c.name) name,c.phone,c.email,c.birth_date,c.gender,c.city,c.address,c.notes,c.barcode,c.customer_type,c.preferred_employee_id,
-        c.preferred_contact,c.marketing_consent,c.is_active,c.source,c.created_at,c.updated_at,l.name location_name,
+      SELECT c.id,(to_jsonb(c)->>'location_id') location_id,
+        COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','Névtelen ügyfél') name,
+        to_jsonb(c)->>'phone' phone,to_jsonb(c)->>'email' email,to_jsonb(c)->>'birth_date' birth_date,
+        to_jsonb(c)->>'gender' gender,to_jsonb(c)->>'city' city,to_jsonb(c)->>'address' address,
+        to_jsonb(c)->>'notes' notes,to_jsonb(c)->>'barcode' barcode,
+        COALESCE(to_jsonb(c)->>'customer_type','normal') customer_type,
+        to_jsonb(c)->>'preferred_employee_id' preferred_employee_id,
+        COALESCE(to_jsonb(c)->>'preferred_contact','phone') preferred_contact,
+        COALESCE((to_jsonb(c)->>'marketing_consent')::boolean,false) marketing_consent,
+        COALESCE((to_jsonb(c)->>'is_active')::boolean,true) is_active,
+        COALESCE(to_jsonb(c)->>'source','legacy') source,
+        to_jsonb(c)->>'created_at' created_at,to_jsonb(c)->>'updated_at' updated_at,l.name location_name,
         COALESCE(a.visits,0)::int visits,COALESCE(a.no_shows,0)::int no_shows,a.last_visit,a.next_visit,
-        COALESCE(t.tags,'[]'::json) tags
-      FROM clients c LEFT JOIN locations l ON l.id=c.location_id
+        '[]'::json tags
+      FROM clients c LEFT JOIN locations l ON l.id::text=(to_jsonb(c)->>'location_id')
       LEFT JOIN LATERAL (SELECT COUNT(*) FILTER(WHERE status IN ('completed','paid','confirmed')) visits,
         COUNT(*) FILTER(WHERE status='no_show') no_shows,MAX(start_time) FILTER(WHERE start_time<=now()) last_visit,
-        MIN(start_time) FILTER(WHERE start_time>now() AND status NOT IN ('cancelled','no_show')) next_visit FROM appointments WHERE client_id=c.id) a ON true
-      LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id',x.id,'name',x.name,'color',x.color) ORDER BY x.name) tags
-        FROM crm_client_tags ct JOIN crm_tags x ON x.id=ct.tag_id WHERE ct.client_id=c.id) t ON true
-      WHERE ($1::uuid IS NULL OR c.location_id=$1::uuid)
-        AND ($2='%%' OR COALESCE(c.full_name,c.name,'') ILIKE $2 OR COALESCE(c.email,'') ILIKE $2 OR COALESCE(c.phone,'') ILIKE $2 OR COALESCE(c.city,'') ILIKE $2 OR COALESCE(c.address,'') ILIKE $2 OR EXISTS(SELECT 1 FROM crm_client_tags ctz JOIN crm_tags tz ON tz.id=ctz.tag_id WHERE ctz.client_id=c.id AND tz.name ILIKE $2))
-        AND ($3='all' OR ($3='active' AND c.is_active) OR ($3='inactive' AND NOT c.is_active))
-        AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM crm_client_tags z WHERE z.client_id=c.id AND z.tag_id=$4::uuid))
-      ORDER BY lower(COALESCE(NULLIF(c.full_name,''),c.name)) ASC
+        MIN(start_time) FILTER(WHERE start_time>now() AND status NOT IN ('cancelled','no_show')) next_visit
+        FROM appointments WHERE client_id::text=c.id::text) a ON true
+      WHERE ($1::text IS NULL OR (to_jsonb(c)->>'location_id')=$1::text)
+        AND ($2='%%' OR COALESCE(to_jsonb(c)->>'full_name',to_jsonb(c)->>'name','') ILIKE $2
+          OR COALESCE(to_jsonb(c)->>'email','') ILIKE $2 OR COALESCE(to_jsonb(c)->>'phone','') ILIKE $2
+          OR COALESCE(to_jsonb(c)->>'city','') ILIKE $2 OR COALESCE(to_jsonb(c)->>'address','') ILIKE $2)
+        AND ($3='all' OR ($3='active' AND COALESCE((to_jsonb(c)->>'is_active')::boolean,true))
+          OR ($3='inactive' AND NOT COALESCE((to_jsonb(c)->>'is_active')::boolean,true)))
+        AND ($4::text IS NULL)
+      ORDER BY lower(COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','')) ASC
       LIMIT 20000`, [locationId, q, status, tagId]);
     res.json(rows);
   } catch (error) { fail(res, error); }

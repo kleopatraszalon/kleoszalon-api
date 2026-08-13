@@ -133,7 +133,13 @@ router.get("/intelligence/grouped-suggestions", requireMenuPermission("procureme
       groups[key].total_expected_cost += n(row.expected_cost);
     }
     res.json(Object.values(groups));
-  } catch (err) { next(err); }
+  } catch (err: any) {
+    if (["42P01","42703","42883","22P02"].includes(String(err?.code || ""))) {
+      console.warn("[supplier-suggestions] optional procurement data unavailable", err?.code, err?.message);
+      return res.json([]);
+    }
+    next(err);
+  }
 });
 
 export default router;

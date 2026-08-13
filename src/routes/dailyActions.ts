@@ -22,9 +22,10 @@ function campaignInput(body: any) {
   const descriptionHtml = String(b.description_html || "").trim();
   const validFrom = new Date(b.valid_from);
   const validUntil = new Date(b.valid_until);
-  const channels = Array.isArray(b.channels)
-    ? b.channels.filter((x: unknown) => ["email", "sms", "app"].includes(String(x)))
-    : [];
+  const rawChannels = Array.isArray(b.channels) ? b.channels : [];
+  const channels = Array.from(new Set(rawChannels
+    .map((x: unknown) => String(x) === "push" ? "app" : String(x))
+    .filter((x: string) => ["email", "sms", "app"].includes(x))));
   if (!name || !headline || !descriptionHtml)
     return { error: "A kampánynév, a főcím és az akció leírása kötelező." };
   if (Number.isNaN(validFrom.getTime()) || Number.isNaN(validUntil.getTime()))
@@ -133,7 +134,9 @@ router.post("/", async (req, res, n) => {
 });
 router.patch("/:id", async (req, res, n) => {
   try {
-    const b = req.body,
+    const current = (await db.query(`SELECT * FROM daily_action_campaigns WHERE id=$1::uuid`, [req.params.id])).rows[0];
+    if (!current) return res.status(404).json({ message: "Az akció nem található." });
+    const b = {...current,...req.body,channels:req.body?.channels ?? current.channels ?? ["app"]},
       input = campaignInput(b);
     if ("error" in input) return res.status(400).json({ message: input.error });
     const
