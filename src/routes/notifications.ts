@@ -2,13 +2,30 @@ import { Router } from "express";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
 import { getLoyaltyNotifications } from "../services/loyaltyNotificationSource";
+import {
+  collectOperationalAlerts,
+  createEmployeeDocument,
+  createSupplierExpiryBatch,
+  getAlertPreferences,
+  listEmployeeDocuments,
+  listSupplierExpiryBatches,
+  operationalAlertSummary,
+  runOperationalAlertAutomation,
+  startOperationalAlertScheduler,
+  subscribeStaffPush,
+  unsubscribeStaffPush,
+  updateAlertPreferences,
+  updateEmployeeDocument,
+  updateSupplierExpiryBatch,
+} from "../services/operationalAlertAutomation";
 
 const router = Router();
 router.use(requireAuth);
+startOperationalAlertScheduler();
 
 type NotificationItem = {
   key: string;
-  type: "chat" | "stock" | "no_show" | "task" | "ai" | "finance" | "workorder" | "loyalty";
+  type: "chat" | "stock" | "no_show" | "task" | "ai" | "finance" | "workorder" | "loyalty" | "supplier_expiry" | "employee_document" | "complaint_sla";
   severity: "info" | "warning" | "critical";
   title: string;
   detail: string;
@@ -16,8 +33,25 @@ type NotificationItem = {
   created_at: string;
 };
 
-function userKey(req: AuthRequest) {
+function notificationUserKey(req: AuthRequest) {
   return req.user?.email ? `email:${String(req.user.email).toLowerCase()}` : `user:${String(req.user?.id ?? "unknown")}`;
+}
+
+function roles(req: AuthRequest) {
+  const raw: any = req.user?.role;
+  if (Array.isArray(raw)) return raw.map(String).map(x => x.toLowerCase());
+  try {
+    const parsed = JSON.parse(String(raw || ""));
+    if (Array.isArray(parsed)) return parsed.map(String).map(x => x.toLowerCase());
+  } catch {}
+  return String(raw || "").replace(/[\[\]"]/g, "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+}
+
+function managementOnly(req: AuthRequest, res: any) {
+  const allowed = new Set(["admin","administrator","superadmin","super_admin","manager","vezető","vezeto","location_manager","salon_manager","szalonvezető","szalonvezeto","üzletvezető","uzletvezeto"]);
+  if (roles(req).some(role => allowed.has(role))) return true;
+  res.status(403).json({ message: "Ehhez a művelethez vezetői jogosultság szükséges." });
+  return false;
 }
 
 async function safeRows(sql: string, params: any[] = []) {
@@ -28,13 +62,104 @@ async function safeRows(sql: string, params: any[] = []) {
   }
 }
 
+router.get("/preferences", async (req: AuthRequest, res, next) => {
+  try { res.json(await getAlertPreferences(req.user)); }
+  catch (err) { next(err); }
+});
+
+router.put("/preferences", async (req: AuthRequest, res, next) => {
+  try { res.json(await updateAlertPreferences(req.user, req.body || {})); }
+  catch (err) { next(err); }
+});
+
+router.post("/push-subscriptions", async (req: AuthRequest, res, next) => {
+  try { res.status(201).json(await subscribeStaffPush(req.user, req.body?.subscription || req.body)); }
+  catch (err) { next(err); }
+});
+
+router.delete("/push-subscriptions", async (req: AuthRequest, res, next) => {
+  try { res.json(await unsubscribeStaffPush(req.user, req.body?.endpoint || req.query?.endpoint as string | undefined)); }
+  catch (err) { next(err); }
+});
+
+router.get("/automation/summary", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await operationalAlertSummary(req.user?.location_id == null ? null : String(req.user.location_id)));
+  } catch (err) { next(err); }
+});
+
+router.post("/automation/run", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json({ ok: true, ...(await runOperationalAlertAutomation()) });
+  } catch (err) { next(err); }
+});
+
+router.get("/automation/employee-documents", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await listEmployeeDocuments(String(req.query.employee_id || "") || null));
+  } catch (err) { next(err); }
+});
+
+router.post("/automation/employee-documents", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.status(201).json(await createEmployeeDocument(req.body || {}));
+  } catch (err) { next(err); }
+});
+
+router.patch("/automation/employee-documents/:id", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await updateEmployeeDocument(req.params.id, req.body || {}));
+  } catch (err) { next(err); }
+});
+
+router.delete("/automation/employee-documents/:id", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await updateEmployeeDocument(req.params.id, { active: false }));
+  } catch (err) { next(err); }
+});
+
+router.get("/automation/supplier-expiry-batches", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    const locationId = String(req.query.location_id || req.user?.location_id || "") || null;
+    res.json(await listSupplierExpiryBatches(locationId));
+  } catch (err) { next(err); }
+});
+
+router.post("/automation/supplier-expiry-batches", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.status(201).json(await createSupplierExpiryBatch(req.body || {}));
+  } catch (err) { next(err); }
+});
+
+router.patch("/automation/supplier-expiry-batches/:id", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await updateSupplierExpiryBatch(req.params.id, req.body || {}));
+  } catch (err) { next(err); }
+});
+
+router.delete("/automation/supplier-expiry-batches/:id", async (req: AuthRequest, res, next) => {
+  try {
+    if (!managementOnly(req, res)) return;
+    res.json(await updateSupplierExpiryBatch(req.params.id, { active: false }));
+  } catch (err) { next(err); }
+});
+
 router.get("/", async (req: AuthRequest, res, next) => {
   try {
-    const key = userKey(req);
+    const key = notificationUserKey(req);
     const locationId = req.user?.location_id == null ? null : String(req.user.location_id);
     const notifications: NotificationItem[] = [];
 
-    const [chatRows, stockRows, noShowRows, taskRows, financeRows, workorderRows, aiRows, stateRows] = await Promise.all([
+    const [chatRows, stockRows, noShowRows, taskRows, financeRows, workorderRows, aiRows, stateRows, operationalAlerts] = await Promise.all([
       safeRows(`SELECT COUNT(*)::int AS count, MAX(m.created_at) AS last_at
                 FROM staff_chat_messages m
                 JOIN staff_chat_members sm ON sm.conversation_id=m.conversation_id
@@ -72,6 +197,7 @@ router.get("/", async (req: AuthRequest, res, next) => {
                 FROM ai_usage_log
                 WHERE created_at>=date_trunc('month',now())`),
       safeRows(`SELECT notification_key,read_at,dismissed_at FROM notification_read_state WHERE user_key=$1`, [key]),
+      collectOperationalAlerts(locationId).catch((err: any) => { console.warn("operational alerts skipped:", err?.message || err); return []; }),
     ]);
 
     const now = new Date().toISOString();
@@ -97,6 +223,8 @@ router.get("/", async (req: AuthRequest, res, next) => {
     const aiCost = Number(aiRows[0]?.cost || 0);
     if (budget > 0 && aiCost / budget >= 0.8) notifications.push({ key:"ai:budget", type:"ai", severity:aiCost >= budget ? "critical" : "warning", title:aiCost >= budget ? "Az AI havi kerete elfogyott" : "Az AI havi keret 80% fölött jár", detail:`Becsült felhasználás: $${aiCost.toFixed(2)} / $${budget.toFixed(2)}`, route:"/dashboard/notifications", created_at:now });
 
+    for (const alert of operationalAlerts) notifications.push(alert as NotificationItem);
+
     try { notifications.push(...await getLoyaltyNotifications()); }
     catch (err: any) { console.warn("loyalty notifications skipped:", String(err?.message || err)); }
 
@@ -104,7 +232,11 @@ router.get("/", async (req: AuthRequest, res, next) => {
     const items = notifications
       .filter(n => !states.get(n.key)?.dismissed_at)
       .map(n => ({ ...n, read: Boolean(states.get(n.key)?.read_at) }))
-      .sort((a,b) => +new Date(b.created_at)-+new Date(a.created_at));
+      .sort((a,b) => {
+        const sev = { critical: 0, warning: 1, info: 2 } as const;
+        const d = sev[a.severity] - sev[b.severity];
+        return d || (+new Date(b.created_at)-+new Date(a.created_at));
+      });
 
     res.json({ items, unread_count: items.filter(x=>!x.read).length, generated_at: now });
   } catch (err) { next(err); }
@@ -114,7 +246,7 @@ router.post("/:notificationKey/read", async (req: AuthRequest, res, next) => {
   try {
     await db.query(`INSERT INTO notification_read_state(user_key,notification_key,read_at,updated_at)
                     VALUES($1,$2,now(),now())
-                    ON CONFLICT(user_key,notification_key) DO UPDATE SET read_at=now(),dismissed_at=NULL,updated_at=now()`, [userKey(req), req.params.notificationKey]);
+                    ON CONFLICT(user_key,notification_key) DO UPDATE SET read_at=now(),dismissed_at=NULL,updated_at=now()`, [notificationUserKey(req), req.params.notificationKey]);
     res.json({ ok:true });
   } catch (err) { next(err); }
 });
@@ -123,12 +255,12 @@ router.post("/:notificationKey/dismiss", async (req: AuthRequest, res, next) => 
   try {
     await db.query(`INSERT INTO notification_read_state(user_key,notification_key,dismissed_at,updated_at)
                     VALUES($1,$2,now(),now())
-                    ON CONFLICT(user_key,notification_key) DO UPDATE SET dismissed_at=now(),updated_at=now()`, [userKey(req), req.params.notificationKey]);
+                    ON CONFLICT(user_key,notification_key) DO UPDATE SET dismissed_at=now(),updated_at=now()`, [notificationUserKey(req), req.params.notificationKey]);
     res.json({ ok:true });
   } catch (err) { next(err); }
 });
 
-router.post("/read-all", async (req: AuthRequest, res) => {
+router.post("/read-all", async (_req: AuthRequest, res) => {
   res.json({ ok:true, note:"A látható értesítéseket a kliens egyenként jelöli olvasottnak." });
 });
 
