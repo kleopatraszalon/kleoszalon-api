@@ -164,6 +164,14 @@ router.get("/warehouses", async (req: any, res, next) => {
   } catch (err) { sendError(err, res, next); }
 });
 
+router.get("/transfer-targets", async (req: any, res, next) => {
+  try {
+    ensureOperator(req);
+    const { rows } = await db.query(`SELECT w.id,w.name,w.location_id,l.name AS location_name,w.warehouse_type FROM inventory_warehouses w LEFT JOIN locations l ON l.id::text=w.location_id WHERE w.active=true ORDER BY COALESCE(l.name,'Központ'),w.sort_order,w.name`);
+    res.json(rows);
+  } catch (err) { sendError(err, res, next); }
+});
+
 router.post("/warehouses", async (req: any, res, next) => {
   const client = await db.connect();
   try {

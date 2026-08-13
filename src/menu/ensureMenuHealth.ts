@@ -4,8 +4,8 @@ import { ensureInventoryOperationsMenu } from "./ensureInventoryOperationsMenu";
 async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)}catch(error:any){console.warn('Menü önjavítási részlépés kihagyva:',error?.message||error)}}
 
 export async function ensureMenuHealth(){
-  await ensureInventoryOperationsMenu();
   await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);
+  await ensureInventoryOperationsMenu();
 
   await safe(`UPDATE menus SET is_active=true WHERE code IN(
     'dashboard','appointments','appointments.workorders','finance','finance.dashboard','finance.checkout','finance.cash','customers.loyalty_program',
