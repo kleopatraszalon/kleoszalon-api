@@ -142,6 +142,11 @@ router.use(async (_req, _res, next) => {
   try { await ensureInventoryOperationsSchema(); next(); } catch (err) { next(err); }
 });
 
+router.use((req: any, res, next) => {
+  if (hasAnyRole(req.user?.role, ["admin", "manager", "location_manager", "salon_manager", "receptionist"])) return next();
+  return res.status(403).json({ message: "Ehhez a készletgazdálkodási modulhoz nincs jogosultsága.", code: "inventory_operations_forbidden" });
+});
+
 router.get("/warehouses", async (req: any, res, next) => {
   try {
     const params: any[] = [];
@@ -162,6 +167,20 @@ router.get("/warehouses", async (req: any, res, next) => {
       WHERE ${filters.join(" AND ")} ORDER BY COALESCE(l.name,'Központ'),w.sort_order,w.name`, params);
     res.json(rows);
   } catch (err) { sendError(err, res, next); }
+});
+
+router.get("/catalog/products", async (_req, res, next) => {
+  try {
+    const { rows } = await db.query(`SELECT p.id::text,p.name,p.internal_code,p.barcode,p.brand,p.product_category_id::text,c.name AS product_category_name FROM products p LEFT JOIN product_categories c ON c.id=p.product_category_id WHERE COALESCE(p.is_active,true)=true ORDER BY p.name`);
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
+router.get("/catalog/categories", async (_req, res, next) => {
+  try {
+    const { rows } = await db.query(`SELECT c.id::text,c.name,c.product_group_id::text,g.name AS product_group_name FROM product_categories c LEFT JOIN product_groups g ON g.id=c.product_group_id WHERE COALESCE(c.is_active,true)=true ORDER BY COALESCE(g.sort_order,999),COALESCE(c.sort_order,999),c.name`);
+    res.json(rows);
+  } catch (err) { next(err); }
 });
 
 router.get("/transfer-targets", async (req: any, res, next) => {
@@ -354,6 +373,10 @@ router.get("/operations", async (req: any, res, next) => {
     if (!isGlobal(req)) {
       const own = ownLocation(req); if (!own) return res.json([]);
       params.push(own); filters.push(`w.location_id=$${params.length}::text`);
+    } else if (req.query.location_id !== undefined) {
+      const locationId = String(req.query.location_id || "").trim() || null;
+      if (locationId === null) filters.push("w.location_id IS NULL");
+      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }
     }
     if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`m.warehouse_id=$${params.length}`); }
     if (req.query.type) { params.push(String(req.query.type)); filters.push(`m.movement_type=$${params.length}`); }
@@ -441,6 +464,10 @@ router.get("/stocktakes", async (req: any, res, next) => {
     if (!isGlobal(req)) {
       const own = ownLocation(req); if (!own) return res.json([]);
       params.push(own); filters.push(`w.location_id=$${params.length}::text`);
+    } else if (req.query.location_id !== undefined) {
+      const locationId = String(req.query.location_id || "").trim() || null;
+      if (locationId === null) filters.push("w.location_id IS NULL");
+      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }
     }
     if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`s.warehouse_id=$${params.length}`); }
     const { rows } = await db.query(`SELECT s.*,w.name AS warehouse_name,w.location_id,l.name AS location_name,c.name AS category_name,
@@ -616,6 +643,10 @@ router.get("/transfers", async (req: any, res, next) => {
     if (!isGlobal(req)) {
       const own = ownLocation(req); if (!own) return res.json([]);
       params.push(own); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`);
+    } else if (req.query.location_id !== undefined) {
+      const locationId = String(req.query.location_id || "").trim() || null;
+      if (locationId === null) filters.push("(sw.location_id IS NULL OR dw.location_id IS NULL)");
+      else { params.push(locationId); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`); }
     }
     const { rows } = await db.query(`SELECT t.*,sw.name AS source_warehouse_name,sw.location_id AS source_location_id,sl.name AS source_location_name,
       dw.name AS destination_warehouse_name,dw.location_id AS destination_location_id,dl.name AS destination_location_name,
