@@ -1,32 +1,22 @@
 const fs=require('fs');
+const assert=require('assert');
 const path=require('path');
 const read=(p)=>fs.readFileSync(path.join(process.cwd(),p),'utf8');
 
-describe('Master data live menu contract',()=>{
-  test('migration activates requested master data menus',()=>{
-    const sql=read('src/sql/20260813_MASTERDATA_LIVE_MENUS_V2.sql');
-    expect(sql).toContain("masterdata.user-groups");
-    expect(sql).toContain("/admin/access-control");
-    expect(sql).toContain("masterdata.users");
-    expect(sql).toContain("/employees");
-    expect(sql).toContain("masterdata.discounts");
-    expect(sql).toContain("/spec/discounts");
-    expect(sql).toContain("masterdata.warehouses");
-    expect(sql).toContain("/masterdata/warehouses");
-    expect(sql).toContain("Vendégszámla-tranzakciótípusok");
-    expect(sql).toContain("/spec/guest-account-transaction-types");
-  });
+const sql=read('src/sql/20260813_MASTERDATA_LIVE_MENUS_V2.sql');
+const bootstrap=read('src/virSpec/ensureVirSpecModules.ts');
 
-  test('discount and guest account type modules carry specification fields',()=>{
-    const sql=read('src/sql/20260813_MASTERDATA_LIVE_MENUS_V2.sql');
-    for(const field of ['discount_type','service_value','product_value','service_category','product_type','valid_from','valid_until','time_from','time_to']) expect(sql).toContain(field);
-    expect(sql).toContain('financial_transaction_type');
-    expect(sql).toContain('Spec. 3.12. Kedvezmények');
-    expect(sql).toContain('Spec. 3.21. Vendég számla tranzakciók');
-  });
+for(const marker of [
+  'masterdata.user-groups','/admin/access-control',
+  'masterdata.users','/employees',
+  'masterdata.discounts','/spec/discounts',
+  'masterdata.warehouses','/masterdata/warehouses',
+  'Vendégszámla-tranzakciótípusok','/spec/guest-account-transaction-types',
+  'discount_type','service_value','product_value','service_category','product_type',
+  'valid_from','valid_until','time_from','time_to','financial_transaction_type',
+  'Spec. 3.12. Kedvezmények','Spec. 3.21. Vendég számla tranzakciók'
+]) assert(sql.includes(marker),`missing master data marker: ${marker}`);
 
-  test('bootstrap runs the live menu migration',()=>{
-    const bootstrap=read('src/virSpec/ensureVirSpecModules.ts');
-    expect(bootstrap).toContain('20260813_MASTERDATA_LIVE_MENUS_V2.sql');
-  });
-});
+assert(bootstrap.includes('20260813_MASTERDATA_LIVE_MENUS_V2.sql'),'master data live menu migration missing from bootstrap');
+assert(bootstrap.includes('20260813_NOTIFICATION_CENTER_MENU_V1.sql'),'notification center menu migration missing from bootstrap');
+console.log('Master data live menu contract OK');
