@@ -812,9 +812,4 @@ router.delete("/bom/:id", async (req: any, res, next) => {
   } catch (err) { sendError(err, res, next); }
 });
 
-router.get("/reports/balance", async (req: any, res, next) => {
-  req.query.critical_only = req.query.critical_only || "";
-  return router.handle({ ...req, url: "/balances", originalUrl: req.originalUrl } as any, res, next);
-});
-
 export default router;

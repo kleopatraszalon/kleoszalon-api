@@ -200,7 +200,7 @@ export function ensureInventoryOperationsSchema(): Promise<void> {
         v_warehouse bigint;
       BEGIN
         IF current_setting('kleo.inventory_sync',true)='warehouse_to_legacy' THEN
-          RETURN COALESCE(NEW,OLD);
+          IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
         END IF;
         v_product:=COALESCE(NEW.product_id,OLD.product_id);
         v_location:=COALESCE(NEW.location_id,OLD.location_id)::text;
@@ -215,7 +215,7 @@ export function ensureInventoryOperationsSchema(): Promise<void> {
         SELECT iw.id INTO v_warehouse FROM inventory_warehouses iw
          WHERE iw.active=true AND ((v_location IS NULL AND iw.location_id IS NULL) OR iw.location_id=v_location)
          ORDER BY CASE WHEN v_is_material THEN iw.is_default_consumption ELSE iw.is_default_sale END DESC,iw.sort_order,iw.id LIMIT 1;
-        IF v_warehouse IS NULL THEN RETURN COALESCE(NEW,OLD); END IF;
+        IF v_warehouse IS NULL THEN IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF; END IF;
         INSERT INTO inventory_warehouse_balances(warehouse_id,product_id,quantity,min_quantity,optimal_quantity,unit_cost)
         VALUES(v_warehouse,v_product,v_delta,v_min,CASE WHEN v_opt>0 THEN v_opt ELSE v_min*2 END,v_cost)
         ON CONFLICT(warehouse_id,product_id) DO UPDATE SET
@@ -224,7 +224,7 @@ export function ensureInventoryOperationsSchema(): Promise<void> {
           optimal_quantity=CASE WHEN TG_OP='DELETE' THEN inventory_warehouse_balances.optimal_quantity ELSE EXCLUDED.optimal_quantity END,
           unit_cost=CASE WHEN TG_OP='DELETE' THEN inventory_warehouse_balances.unit_cost ELSE EXCLUDED.unit_cost END,
           updated_at=now();
-        RETURN COALESCE(NEW,OLD);
+        IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
       END $$;
 
       DO $$ BEGIN
