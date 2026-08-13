@@ -15,6 +15,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           p=Path('src/menu/ensureMenuHealth.ts')
           s=p.read_text()
@@ -26,27 +27,9 @@ jobs:
 
           p=Path('src/inventory/ensureInventoryOperationsSchema.ts')
           s=p.read_text()
-          old='''        v_product:=COALESCE(NEW.product_id,OLD.product_id);
-        v_location:=COALESCE(NEW.location_id,OLD.location_id)::text;
-        IF TG_OP='INSERT' THEN
-          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
-        ELSIF TG_OP='UPDATE' THEN
-          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
-        ELSE
-          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);
-        END IF;'''
-          new='''        IF TG_OP='INSERT' THEN
-          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
-          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
-        ELSIF TG_OP='UPDATE' THEN
-          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
-          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
-        ELSE
-          v_product:=OLD.product_id; v_location:=OLD.location_id::text;
-          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);
-        END IF;'''
-          if old in s:
-              s=s.replace(old,new,1)
+          pattern=r"        v_product:=COALESCE\(NEW\.product_id,OLD\.product_id\);\n        v_location:=COALESCE\(NEW\.location_id,OLD\.location_id\)::text;\n        IF TG_OP='INSERT' THEN\n          v_delta:=COALESCE\(NEW\.quantity,0\); v_min:=COALESCE\(NEW\.min_quantity,0\); v_opt:=COALESCE\(NEW\.optimal_quantity,0\); v_cost:=COALESCE\(NEW\.unit_cost,0\);\n        ELSIF TG_OP='UPDATE' THEN\n          v_delta:=COALESCE\(NEW\.quantity,0\)-COALESCE\(OLD\.quantity,0\); v_min:=COALESCE\(NEW\.min_quantity,0\); v_opt:=COALESCE\(NEW\.optimal_quantity,0\); v_cost:=COALESCE\(NEW\.unit_cost,0\);\n        ELSE\n          v_delta:=-COALESCE\(OLD\.quantity,0\); v_min:=0; v_opt:=0; v_cost:=COALESCE\(OLD\.unit_cost,0\);\n        END IF;"
+          replacement="        IF TG_OP='INSERT' THEN\n          v_product:=NEW.product_id; v_location:=NEW.location_id::text;\n          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);\n        ELSIF TG_OP='UPDATE' THEN\n          v_product:=NEW.product_id; v_location:=NEW.location_id::text;\n          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);\n        ELSE\n          v_product:=OLD.product_id; v_location:=OLD.location_id::text;\n          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);\n        END IF;"
+          s=re.sub(pattern,replacement,s,count=1)
           p.write_text(s)
 
           p=Path('src/routes/inventoryOperations.ts')
