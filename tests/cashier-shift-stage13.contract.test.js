@@ -45,7 +45,17 @@ test('cashier shift router is mounted before legacy cashier routers',()=>{
   assert.ok(registerMount>shiftMount);
 });
 
-test('salon managers are part of scoped cashier finance access',()=>{
+test('payments and manual register movements require an open shift server-side',()=>{
+  assert.match(tx,/guardOpenCashierShift/);
+  assert.match(tx,/register-movements/);
+  assert.match(tx,/cash_register_shifts/);
+  assert.match(tx,/status='open'/);
+  assert.match(tx,/Függő átadás-átvétel/);
+});
+
+test('salon managers are part of scoped cashier finance access and admin workorder location is inferred',()=>{
   assert.match(scope,/salon_manager/);
   assert.match(scope,/szalonvezető/);
+  assert.match(scope,/workOrderFinanceLocationId/);
+  assert.match(scope,/SELECT location_id FROM work_orders/);
 });
