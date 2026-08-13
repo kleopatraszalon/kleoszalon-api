@@ -1,0 +1,87 @@
+name: Cashier stage14 integration
+
+on:
+  pull_request:
+    paths:
+      - 'src/routes/cashierAltegioParity.ts'
+      - 'src/routes/cashierShift.ts'
+      - 'src/routes/workOrderCashierFast.ts'
+      - 'src/routes/transactions.ts'
+      - 'src/finance/ensureFinanceNav.ts'
+      - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql'
+      - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql'
+      - 'tests/cashier_stage14.integration.js'
+      - '.github/workflows/cashier-stage14-integration.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/cashierAltegioParity.ts'
+      - 'src/routes/cashierShift.ts'
+      - 'src/routes/workOrderCashierFast.ts'
+      - 'src/routes/transactions.ts'
+      - 'src/finance/ensureFinanceNav.ts'
+      - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql'
+      - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql'
+      - 'tests/cashier_stage14.integration.js'
+      - '.github/workflows/cashier-stage14-integration.yml'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_cashier_stage14
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_cashier_stage14"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/kleo_cashier_stage14
+      PGSSL: off
+      JWT_SECRET: cashier_stage14_secret
+      NODE_ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+      - name: Build API
+        run: npm run build
+      - name: Create cashier integration schema
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/workorder_stage8_integration_schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260807_CASHIER_FINANCIAL_CLOSE_V1.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS cash_register_movements (
+            id bigserial PRIMARY KEY,
+            location_id text NOT NULL,
+            business_date date NOT NULL DEFAULT CURRENT_DATE,
+            direction varchar(8) NOT NULL CHECK (direction IN ('in','out')),
+            amount numeric(14,2) NOT NULL CHECK (amount > 0),
+            reason_code varchar(40) NOT NULL DEFAULT 'other',
+            note text,
+            created_by text,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            voided_at timestamptz,
+            voided_by text,
+            void_reason text
+          );
+          SQL
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql
+      - name: Run cashier stage14 integration
+        run: node tests/cashier_stage14.integration.js
