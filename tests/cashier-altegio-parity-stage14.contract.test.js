@@ -79,6 +79,12 @@ test('partial and full refunds are auditable and reduce net paid total',()=>{
  assert.match(fast,/amount-COALESCE\(refunded_amount,0\)/);
 });
 
+test('cash drawer expected total does not double subtract cash refunds',()=>{
+ assert.match(route,/SUM\(wp\.amount\) FILTER\(WHERE wp\.payment_method='cash'\)/);
+ assert.doesNotMatch(route,/SUM\(wp\.amount-COALESCE\(wp\.refunded_amount,0\)\) FILTER\(WHERE wp\.payment_method='cash'\)/);
+ assert.match(route,/reason_code[^\n]*refund|refund/);
+});
+
 test('existing Altegio finance category partner cancellation and fee model remains intact',()=>{
  for(const marker of ['finance_partners','finance_document_types','finance_payment_methods','fee_percent','fee_fixed','brand_fees',"router.post('/operations/:id/cancel'"])assert.ok(finance.includes(marker),`missing ${marker}`);
 });
