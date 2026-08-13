@@ -23,7 +23,14 @@ CREATE INDEX IF NOT EXISTS cash_register_sessions_register_date_idx
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_register_one_open_session
   ON cash_register_sessions(register_id) WHERE status='open';
 
+ALTER TABLE cash_register_closings
+  ADD COLUMN IF NOT EXISTS register_id bigint;
+ALTER TABLE cash_register_closings DROP CONSTRAINT IF EXISTS cash_register_closings_location_id_business_date_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_register_closings_register_date
+  ON cash_register_closings(register_id,business_date) WHERE register_id IS NOT NULL;
+
 ALTER TABLE cash_movements
+  ADD COLUMN IF NOT EXISTS register_id bigint,
   ADD COLUMN IF NOT EXISTS movement_type varchar(30) NOT NULL DEFAULT 'manual',
   ADD COLUMN IF NOT EXISTS reference_no text,
   ADD COLUMN IF NOT EXISTS partner_id bigint,
@@ -35,6 +42,7 @@ ALTER TABLE cash_movements
 ALTER TABLE work_order_payments
   ADD COLUMN IF NOT EXISTS register_id bigint,
   ADD COLUMN IF NOT EXISTS register_session_id bigint,
+  ADD COLUMN IF NOT EXISTS payment_method_code text,
   ADD COLUMN IF NOT EXISTS refunded_amount numeric(14,2) NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS card_brand text,
   ADD COLUMN IF NOT EXISTS fee_amount numeric(14,2) NOT NULL DEFAULT 0;
