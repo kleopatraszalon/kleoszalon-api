@@ -1,0 +1,21 @@
+name: Finance v5 sync main
+on:
+  push:
+    branches: [feature/finance-v5-altegio-20260813]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/finance-v5-altegio-20260813
+          fetch-depth: 0
+      - name: Merge current main
+        run: |
+          git config user.name "kleopatraszalon"
+          git config user.email "birtalan.zoltan1975@gmail.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+          git push origin HEAD:feature/finance-v5-altegio-20260813
