@@ -576,7 +576,7 @@ router.post("/stocktakes/:id/approve", async (req: any, res, next) => {
       const diff = counted - current;
       if (Math.abs(diff) > EPS) {
         await client.query(`UPDATE inventory_warehouse_balances SET quantity=$2,updated_at=now() WHERE id=$1`, [bal.id, counted]);
-        await addMovement(client, { productId: String(item.product_id), warehouse: stocktake, movementType: "stocktake_adjustment", quantity: diff, balanceAfter: counted, unitCost: Number(bal.unit_cost || item.unit_cost || 0), note: `Leltár #${stocktake.id} jóváhagyott eltérés`, createdBy: actor(req), operationGroupId: group, documentNumber: `ST-${stocktake.id}` });
+        await addMovement(client, { productId: String(item.product_id), warehouse: { id: stocktake.warehouse_id, location_id: stocktake.location_id }, movementType: "stocktake_adjustment", quantity: diff, balanceAfter: counted, unitCost: Number(bal.unit_cost || item.unit_cost || 0), note: `Leltár #${stocktake.id} jóváhagyott eltérés`, createdBy: actor(req), operationGroupId: group, documentNumber: `ST-${stocktake.id}` });
         await syncLegacyAggregate(client, String(item.product_id), stocktake.location_id == null ? null : String(stocktake.location_id));
       }
     }

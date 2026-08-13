@@ -202,13 +202,14 @@ export function ensureInventoryOperationsSchema(): Promise<void> {
         IF current_setting('kleo.inventory_sync',true)='warehouse_to_legacy' THEN
           IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
         END IF;
-        v_product:=COALESCE(NEW.product_id,OLD.product_id);
-        v_location:=COALESCE(NEW.location_id,OLD.location_id)::text;
         IF TG_OP='INSERT' THEN
+          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
           v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
         ELSIF TG_OP='UPDATE' THEN
+          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
           v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
         ELSE
+          v_product:=OLD.product_id; v_location:=OLD.location_id::text;
           v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);
         END IF;
         SELECT COALESCE((to_jsonb(p)->>'is_service_material')::boolean,false) INTO v_is_material FROM products p WHERE p.id=v_product;
