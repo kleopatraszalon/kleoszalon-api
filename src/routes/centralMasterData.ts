@@ -28,9 +28,14 @@ type EntityDef = {
   listFields: string[];
   route: string;
 };
+type CatalogPayload = { entities: Array<Omit<EntityDef, "table" | "searchColumns" | "orderBy" | "systemColumn"> & { hasSystemRows: boolean; lockSystemEdit: boolean }>; counts: Record<string, number> };
 
 const router = Router();
 let schemaReady: Promise<void> | null = null;
+const CATALOG_CACHE_TTL_MS = 60 * 1000;
+let catalogGeneration = 0;
+let catalogCache: { value: CatalogPayload; expiresAt: number; generation: number } | null = null;
+let catalogInFlight: { generation: number; promise: Promise<CatalogPayload> } | null = null;
 
 const opt = (...values: Array<[string, string]>) => values.map(([value, label]) => ({ value, label }));
 
@@ -308,6 +313,7 @@ const entities: EntityDef[] = [
 ];
 
 const byKey = new Map(entities.map((entity) => [entity.key, entity]));
+const publicEntities = entities.map(({ table, searchColumns, orderBy, systemColumn, lockSystemEdit, ...publicDef }) => ({ ...publicDef, hasSystemRows: Boolean(systemColumn), lockSystemEdit: Boolean(lockSystemEdit) }));
 
 function actor(req: AuthRequest) {
   return req.user?.email || String(req.user?.id || "");
@@ -316,6 +322,31 @@ function actor(req: AuthRequest) {
 function safeIdentifier(value: string) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error("Érvénytelen SQL azonosító.");
   return value;
+}
+
+function invalidateCatalogCache() {
+  catalogGeneration += 1;
+  catalogCache = null;
+  catalogInFlight = null;
+}
+
+async function getCatalogPayload(): Promise<CatalogPayload> {
+  const generation = catalogGeneration;
+  if (catalogCache && catalogCache.generation === generation && catalogCache.expiresAt > Date.now()) return catalogCache.value;
+  if (catalogInFlight && catalogInFlight.generation === generation) return catalogInFlight.promise;
+  const countSql = entities.map((def, index) => `(SELECT COUNT(*)::int FROM ${safeIdentifier(def.table)} WHERE ${safeIdentifier(def.activeColumn)}=true) AS c${index}`).join(",");
+  const request = db.query(`SELECT ${countSql}`).then((result) => {
+    const row = result.rows[0] || {};
+    const counts: Record<string, number> = {};
+    entities.forEach((def, index) => { counts[def.key] = Number(row[`c${index}`] || 0); });
+    const value: CatalogPayload = { entities: publicEntities, counts };
+    if (catalogGeneration === generation) catalogCache = { value, expiresAt: Date.now() + CATALOG_CACHE_TTL_MS, generation };
+    return value;
+  }).finally(() => {
+    if (catalogInFlight?.generation === generation) catalogInFlight = null;
+  });
+  catalogInFlight = { generation, promise: request };
+  return request;
 }
 
 function dbValue(field: FieldDef, value: unknown) {
@@ -645,14 +676,7 @@ router.use(async (_req, _res, next) => {
 
 router.get("/catalog", async (_req: AuthRequest, res, next) => {
   try {
-    const counts: Record<string, number> = {};
-    for (const def of entities) {
-      const table = safeIdentifier(def.table);
-      const active = safeIdentifier(def.activeColumn);
-      const result = await db.query(`SELECT COUNT(*)::int count FROM ${table} WHERE ${active}=true`);
-      counts[def.key] = Number(result.rows[0]?.count || 0);
-    }
-    res.json({ entities: entities.map(({ table, searchColumns, orderBy, systemColumn, lockSystemEdit, ...publicDef }) => ({ ...publicDef, hasSystemRows: Boolean(systemColumn), lockSystemEdit: Boolean(lockSystemEdit) })), counts });
+    res.json(await getCatalogPayload());
   } catch (error) {
     next(error);
   }
@@ -722,6 +746,7 @@ router.post("/:entity", async (req: AuthRequest, res: Response, next) => {
     const created = rows[0];
     if (def.key === "warehouses") await normalizeWarehouseDefault(created);
     await audit(req, def.key, String(created.id), "create", null, created);
+    invalidateCatalogCache();
     res.status(201).json(created);
   } catch (error: any) {
     if (error?.code === "23505") return res.status(409).json({ message: "Ezzel a kóddal vagy névvel már létezik törzsadat." });
@@ -753,6 +778,7 @@ router.patch("/:entity/:id", async (req: AuthRequest, res: Response, next) => {
     const updated = rows[0];
     if (def.key === "warehouses") await normalizeWarehouseDefault(updated);
     await audit(req, def.key, req.params.id, "update", before, updated);
+    invalidateCatalogCache();
     res.json(updated);
   } catch (error: any) {
     if (error?.code === "23505") return res.status(409).json({ message: "Ezzel a kóddal vagy névvel már létezik törzsadat." });
@@ -775,6 +801,7 @@ router.delete("/:entity/:id", async (req: AuthRequest, res: Response, next) => {
       [req.params.id],
     );
     await audit(req, def.key, req.params.id, "deactivate", before, rows[0]);
+    invalidateCatalogCache();
     res.json(rows[0]);
   } catch (error) {
     next(error);
