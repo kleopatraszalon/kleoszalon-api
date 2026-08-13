@@ -32,7 +32,7 @@ async function ensure() {
 ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS headline text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS description_html text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS image_url text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_label text DEFAULT 'Foglalok';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_url text DEFAULT '/foglalas';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_text text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_from timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_until timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS audience jsonb DEFAULT '{"type":"all"}'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS channels jsonb DEFAULT '["app"]'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS status text DEFAULT 'draft';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS recipient_count int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_email int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_sms int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_push int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 ALTER TABLE daily_action_campaigns ALTER COLUMN image_url TYPE text USING image_url::text;ALTER TABLE daily_action_campaigns ALTER COLUMN description_html TYPE text USING description_html::text;ALTER TABLE daily_action_campaigns ALTER COLUMN headline TYPE text USING headline::text;
 ALTER TABLE daily_action_campaigns DROP CONSTRAINT IF EXISTS daily_action_campaign_name_uq;DROP INDEX IF EXISTS daily_action_campaign_name_uq;
-CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;`).then(()=>undefined).catch(error=>{ensurePromise=null;throw error});
+CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_offer_notification_id uuid;`).then(()=>undefined).catch(error=>{ensurePromise=null;throw error});
   return ensurePromise;
 }
 function campaignInput(body: any) {
@@ -284,11 +284,18 @@ publicDailyActionsRouter.post("/subscribe", async (req, res, n) => {
       return res
         .status(400)
         .json({ message: "Érvénytelen push-feliratkozás." });
-    await db.query(
-      `INSERT INTO app_push_subscriptions(endpoint,subscription,last_seen_at)VALUES($1,$2,now())ON CONFLICT(endpoint)DO UPDATE SET subscription=$2,active=true,last_seen_at=now(),updated_at=now()`,
+    const saved=await db.query(
+      `INSERT INTO app_push_subscriptions(endpoint,subscription,last_seen_at)VALUES($1,$2,now())ON CONFLICT(endpoint)DO UPDATE SET subscription=$2,active=true,last_seen_at=now(),updated_at=now() RETURNING id,last_offer_notification_id`,
       [s.endpoint, s],
     );
-    res.json({ ok: true });
+    const current=(await db.query(`SELECT id,headline,discount_text,image_url FROM daily_action_campaigns WHERE status='published' AND valid_from<=now() AND valid_until>=now() ORDER BY updated_at DESC LIMIT 1`)).rows[0];
+    let currentOfferSent=false;
+    if(current&&String(saved.rows[0]?.last_offer_notification_id||"")!==String(current.id))try{
+      const vapid=await vapidConfig();webpush.setVapidDetails(process.env.VAPID_SUBJECT||"mailto:info@kleoszalon.hu",vapid.publicKey,vapid.privateKey);
+      await webpush.sendNotification(s,JSON.stringify({title:current.headline,body:current.discount_text||"Aktuális Kleopátra ajánlat",image:current.image_url,url:"/kleopatra-app",tag:`kleopatra-offer-${current.id}`}));
+      await db.query(`UPDATE app_push_subscriptions SET last_offer_notification_id=$2 WHERE id=$1`,[saved.rows[0].id,current.id]);currentOfferSent=true;
+    }catch(error:any){console.warn("[daily-action-subscribe-current]",error?.statusCode||"",error?.message||error)}
+    res.json({ ok: true,current_offer_sent:currentOfferSent });
   } catch (e) {
     n(e);
   }
