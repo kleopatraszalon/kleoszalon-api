@@ -53,6 +53,12 @@ test('payments and manual register movements require an open shift server-side',
   assert.match(tx,/Függő átadás-átvétel/);
 });
 
+test('cashier history is server-side manager only',()=>{
+  assert.match(tx,/guardCashierHistoryRole/);
+  assert.match(tx,/shift-history/);
+  assert.match(tx,/A vezetői kasszatörténet csak adminisztrátor/);
+});
+
 test('salon managers are part of scoped cashier finance access and admin workorder location is inferred',()=>{
   assert.match(scope,/salon_manager/);
   assert.match(scope,/szalonvezető/);
