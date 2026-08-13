@@ -1,0 +1,104 @@
+import {Router} from 'express';
+import db from '../db';
+import {requireAuth,type AuthRequest} from '../middleware/auth';
+import {requireFeature} from '../middleware/featureAccess';
+
+const router=Router();
+router.use(requireAuth);
+router.use(requireFeature('finance'));
+
+const money=(v:any)=>{const n=Number(v??0);return Number.isFinite(n)?Math.round(n*100)/100:0};
+const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
+const businessDate=(v:any)=>{const s=String(v||'').trim();return validDate(s)?s:new Date().toISOString().slice(0,10)};
+const locationFrom=(req:AuthRequest)=>String(req.body?.location_id||req.query.location_id||'').trim();
+const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
+
+async function cashSales(client:any,date:string,locationId:string){
+ const q=await client.query(`SELECT
+  COALESCE(SUM(CASE WHEN wp.payment_method='cash' THEN wp.amount ELSE 0 END),0)::numeric cash_sales,
+  COALESCE(SUM(CASE WHEN wp.payment_method='card' THEN wp.amount ELSE 0 END),0)::numeric card_sales,
+  COALESCE(SUM(CASE WHEN wp.payment_method='transfer' THEN wp.amount ELSE 0 END),0)::numeric transfer_sales,
+  COALESCE(SUM(CASE WHEN wp.payment_method='voucher' THEN wp.amount ELSE 0 END),0)::numeric voucher_sales,
+  COALESCE(SUM(CASE WHEN wp.payment_method='other' THEN wp.amount ELSE 0 END),0)::numeric other_sales
+ FROM work_order_payments wp JOIN work_orders wo ON wo.id=wp.work_order_id
+ WHERE wp.paid_at::date=$1::date AND wo.location_id::text=$2`,[date,locationId]);
+ const r=q.rows[0]||{};return{cash_sales:money(r.cash_sales),card_sales:money(r.card_sales),transfer_sales:money(r.transfer_sales),voucher_sales:money(r.voucher_sales),other_sales:money(r.other_sales)};
+}
+
+async function movementTotals(client:any,sessionId:string|number){
+ const q=await client.query(`SELECT
+  COALESCE(SUM(amount) FILTER(WHERE direction='in'),0)::numeric cash_in,
+  COALESCE(SUM(amount) FILTER(WHERE direction='out'),0)::numeric cash_out
+ FROM cash_movements WHERE session_id=$1`,[sessionId]);
+ return{cash_in:money(q.rows[0]?.cash_in),cash_out:money(q.rows[0]?.cash_out)};
+}
+
+router.get('/register-state',async(req:AuthRequest,res,next)=>{
+ try{
+  const locationId=locationFrom(req);if(!locationId)return res.status(400).json({message:'A pénztár használatához válasszon telephelyet.'});
+  const date=businessDate(req.query.date);
+  const sessionQ=await db.query(`SELECT * FROM cash_register_sessions WHERE location_id=$1 AND business_date=$2::date ORDER BY id DESC LIMIT 1`,[locationId,date]);
+  const session=sessionQ.rows[0]||null;
+  const registerQ=await db.query(`SELECT * FROM cash_registers WHERE location_id=$1 LIMIT 1`,[locationId]);
+  const register=registerQ.rows[0]||null;
+  const movements=session?(await db.query(`SELECT id,session_id,direction,amount,reason,created_by,created_at FROM cash_movements WHERE session_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100`,[session.id])).rows:[];
+  const sales=await cashSales(db,date,locationId);
+  const mt=session?await movementTotals(db,session.id):{cash_in:0,cash_out:0};
+  const expected=money((session?money(session.opening_cash):0)+sales.cash_sales+mt.cash_in-mt.cash_out);
+  const closeQ=await db.query(`SELECT * FROM cash_register_closings WHERE location_id=$1 AND business_date=$2::date ORDER BY closed_at DESC LIMIT 1`,[locationId,date]);
+  res.json({business_date:date,location_id:locationId,register,session,movements,sales,...mt,expected_cash:expected,closing:closeQ.rows[0]||null});
+ }catch(e){next(e)}
+});
+
+router.post('/sessions/open',async(req:AuthRequest,res,next)=>{
+ const c=await db.connect();
+ try{
+  const locationId=locationFrom(req);if(!locationId)return res.status(400).json({message:'A pénztárnyitáshoz válasszon telephelyet.'});
+  const date=businessDate(req.body?.business_date);const openingCash=Math.max(0,money(req.body?.opening_cash));
+  await c.query('BEGIN');
+  const existing=(await c.query(`SELECT * FROM cash_register_sessions WHERE location_id=$1 AND business_date=$2::date FOR UPDATE`,[locationId,date])).rows[0];
+  if(existing){await c.query('ROLLBACK');if(existing.status==='open')return res.status(409).json({message:'A pénztár erre a napra már nyitva van.',session:existing});return res.status(409).json({message:'A pénztár erre a napra már le van zárva.',session:existing})}
+  const register=(await c.query(`INSERT INTO cash_registers(location_id,name) VALUES($1,$2) ON CONFLICT(location_id) DO UPDATE SET is_active=true,updated_at=now() RETURNING *`,[locationId,String(req.body?.register_name||'Főpénztár').trim()||'Főpénztár'])).rows[0];
+  const session=(await c.query(`INSERT INTO cash_register_sessions(register_id,location_id,business_date,opening_cash,status,opened_by,note) VALUES($1,$2,$3,$4,'open',$5,$6) RETURNING *`,[register.id,locationId,date,openingCash,actor(req),req.body?.note||null])).rows[0];
+  await c.query('COMMIT');res.status(201).json({register,session});
+ }catch(e){await c.query('ROLLBACK').catch(()=>undefined);next(e)}finally{c.release()}
+});
+
+router.post('/cash-movements',async(req:AuthRequest,res,next)=>{
+ const c=await db.connect();
+ try{
+  const locationId=locationFrom(req);const sessionId=String(req.body?.session_id||'').trim();const direction=String(req.body?.direction||'').trim().toLowerCase();const amount=money(req.body?.amount);const reason=String(req.body?.reason||'').trim();
+  if(!locationId||!sessionId)return res.status(400).json({message:'Aktív pénztár szükséges a készpénzmozgáshoz.'});
+  if(!['in','out'].includes(direction))return res.status(400).json({message:'A készpénzmozgás iránya csak bevét vagy kivét lehet.'});
+  if(!(amount>0))return res.status(400).json({message:'A készpénzmozgás összege legyen nagyobb nullánál.'});
+  if(reason.length<3)return res.status(400).json({message:'Adja meg a készpénzmozgás okát.'});
+  await c.query('BEGIN');
+  const session=(await c.query(`SELECT * FROM cash_register_sessions WHERE id=$1 AND location_id=$2 FOR UPDATE`,[sessionId,locationId])).rows[0];
+  if(!session){await c.query('ROLLBACK');return res.status(404).json({message:'A pénztárműszak nem található.'})}
+  if(session.status!=='open'){await c.query('ROLLBACK');return res.status(409).json({message:'Lezárt pénztárhoz nem rögzíthető készpénzmozgás.'})}
+  const row=(await c.query(`INSERT INTO cash_movements(session_id,location_id,direction,amount,reason,created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[session.id,locationId,direction,amount,reason,actor(req)])).rows[0];
+  await c.query('COMMIT');res.status(201).json(row);
+ }catch(e){await c.query('ROLLBACK').catch(()=>undefined);next(e)}finally{c.release()}
+});
+
+router.post('/register-daily-close',async(req:AuthRequest,res,next)=>{
+ const c=await db.connect();
+ try{
+  const locationId=locationFrom(req);if(!locationId)return res.status(400).json({message:'A napi pénztárzáráshoz válasszon telephelyet.'});
+  const date=businessDate(req.body?.business_date);const countedCash=Math.max(0,money(req.body?.counted_cash));
+  await c.query('BEGIN');
+  const session=(await c.query(`SELECT * FROM cash_register_sessions WHERE location_id=$1 AND business_date=$2::date FOR UPDATE`,[locationId,date])).rows[0];
+  if(!session){await c.query('ROLLBACK');return res.status(409).json({message:'A napi zárás előtt nyissa meg a pénztárt.'})}
+  if(session.status!=='open'){await c.query('ROLLBACK');return res.status(409).json({message:'A pénztár erre a napra már le van zárva.',session})}
+  const sales=await cashSales(c,date,locationId);const mt=await movementTotals(c,session.id);
+  const expectedCash=money(money(session.opening_cash)+sales.cash_sales+mt.cash_in-mt.cash_out);const difference=money(countedCash-expectedCash);
+  const td=(await c.query(`SELECT COALESCE(SUM(tip_amount),0)::numeric tips,COALESCE(SUM(discount_amount),0)::numeric discounts FROM work_orders WHERE financial_closed_at::date=$1::date AND location_id::text=$2`,[date,locationId])).rows[0]||{};
+  const closing=(await c.query(`INSERT INTO cash_register_closings(location_id,business_date,opening_cash,cash_sales,card_sales,transfer_sales,voucher_sales,other_sales,tips,discounts,expected_cash,counted_cash,difference,note,closed_by,session_id,cash_in,cash_out)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+   ON CONFLICT(location_id,business_date) DO UPDATE SET opening_cash=EXCLUDED.opening_cash,cash_sales=EXCLUDED.cash_sales,card_sales=EXCLUDED.card_sales,transfer_sales=EXCLUDED.transfer_sales,voucher_sales=EXCLUDED.voucher_sales,other_sales=EXCLUDED.other_sales,tips=EXCLUDED.tips,discounts=EXCLUDED.discounts,expected_cash=EXCLUDED.expected_cash,counted_cash=EXCLUDED.counted_cash,difference=EXCLUDED.difference,note=EXCLUDED.note,closed_by=EXCLUDED.closed_by,closed_at=now(),session_id=EXCLUDED.session_id,cash_in=EXCLUDED.cash_in,cash_out=EXCLUDED.cash_out RETURNING *`,[locationId,date,money(session.opening_cash),sales.cash_sales,sales.card_sales,sales.transfer_sales,sales.voucher_sales,sales.other_sales,money(td.tips),money(td.discounts),expectedCash,countedCash,difference,req.body?.note||null,actor(req),session.id,mt.cash_in,mt.cash_out])).rows[0];
+  const closed=(await c.query(`UPDATE cash_register_sessions SET status='closed',counted_cash=$2,expected_cash=$3,difference=$4,note=COALESCE($5,note),closed_by=$6,closed_at=now() WHERE id=$1 RETURNING *`,[session.id,countedCash,expectedCash,difference,req.body?.note||null,actor(req)])).rows[0];
+  await c.query('COMMIT');res.status(201).json({closing,session:closed,sales,...mt});
+ }catch(e){await c.query('ROLLBACK').catch(()=>undefined);next(e)}finally{c.release()}
+});
+
+export default router;
