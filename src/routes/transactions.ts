@@ -97,6 +97,14 @@ const guardOpenCashierShift=async(req:Request,res:Response,next:NextFunction)=>{
   if(!shift)return res.status(409).json({message:'A művelet csak nyitott pénztári műszakban végezhető. Függő átadás-átvétel esetén előbb fogadd el az átvételt.'});
   res.locals.cashierShift=shift;next();
 }catch(error){next(error)}};
+const parseRoles=(raw:any)=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||''));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
+const guardCashierHistoryRole=(req:Request,res:Response,next:NextFunction)=>{
+  if(req.method!=='GET'||!/^\/shift-history\/?$/.test(String(req.path||'')))return next();
+  const roles=parseRoles((req as any).user?.role);
+  const allowed=new Set(['admin','administrator','rendszergazda','superadmin','super_admin','location_manager','salon_manager','szalonvezető','szalonvezeto','üzletvezető','uzletvezeto','store_manager','branch_manager']);
+  if(roles.some(role=>allowed.has(role)))return next();
+  return res.status(403).json({message:'A vezetői kasszatörténet csak adminisztrátor, szalonvezető vagy üzletvezető számára érhető el.'});
+};
 
 router.use(requireAuth);
 
@@ -119,7 +127,7 @@ router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
