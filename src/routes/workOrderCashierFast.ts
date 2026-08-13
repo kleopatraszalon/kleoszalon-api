@@ -56,12 +56,18 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
       const names=['work_order_id','payment_method','amount'];const values=['$1::uuid','$2','$3'];const params:any[]=[req.params.id,method,amount];
       if(paymentCols.has('paid_at')){names.push('paid_at');values.push('now()')}
       if(paymentCols.has('note')){names.push('note');params.push(p?.note||null);values.push(`$${params.length}`)}
+      if(paymentCols.has('register_id')){names.push('register_id');params.push(p?.register_id||req.body?.register_id||null);values.push(`$${params.length}`)}
+      if(paymentCols.has('register_session_id')){names.push('register_session_id');params.push(p?.register_session_id||req.body?.register_session_id||null);values.push(`$${params.length}`)}
+      if(paymentCols.has('payment_method_code')){names.push('payment_method_code');params.push(p?.payment_method_code||method);values.push(`$${params.length}`)}
+      if(paymentCols.has('card_brand')){names.push('card_brand');params.push(p?.card_brand||null);values.push(`$${params.length}`)}
+      if(paymentCols.has('fee_amount')){names.push('fee_amount');params.push(money(p?.fee_amount));values.push(`$${params.length}`)}
       await c.query(`INSERT INTO work_order_payments(${names.join(',')}) VALUES(${values.join(',')})`,params);
     }
 
+    const paidExpr=paymentCols.has('refunded_amount')?'amount-COALESCE(refunded_amount,0)':'amount';
     const [grossQ,paidQ]=await Promise.all([
       c.query(`SELECT COALESCE(SUM(line_total),0)::numeric gross FROM work_order_items WHERE work_order_id::text=$1`,[req.params.id]),
-      c.query(`SELECT COALESCE(SUM(amount),0)::numeric paid FROM work_order_payments WHERE work_order_id::text=$1`,[req.params.id]),
+      c.query(`SELECT COALESCE(SUM(${paidExpr}),0)::numeric paid FROM work_order_payments WHERE work_order_id::text=$1`,[req.params.id]),
     ]);
     const gross=money(grossQ.rows[0]?.gross),paid=money(paidQ.rows[0]?.paid);
     const loyalty=await loyaltyDiscountForWorkOrder(c,req.params.id,gross);
