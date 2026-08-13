@@ -8,6 +8,23 @@ export const publicDailyActionsRouter = Router();
 const router = Router();
 const publicFrontendUrl = (process.env.FRONTEND_URL || "https://kleoszalon-frontend.onrender.com").replace(/\/$/, "");
 const kleopatraLogoUrl = `${publicFrontendUrl}/kleopatra-logo.png`;
+let vapidPromise: Promise<{publicKey:string;privateKey:string}> | null = null;
+async function vapidConfig() {
+  const envPublic=String(process.env.VAPID_PUBLIC_KEY||"").trim(),envPrivate=String(process.env.VAPID_PRIVATE_KEY||"").trim();
+  if(envPublic&&envPrivate)return{publicKey:envPublic,privateKey:envPrivate};
+  if(!vapidPromise)vapidPromise=(async()=>{
+    await db.query(`CREATE TABLE IF NOT EXISTS app_runtime_secrets(secret_key text PRIMARY KEY,secret_value text NOT NULL,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now())`);
+    const existing=await db.query(`SELECT secret_key,secret_value FROM app_runtime_secrets WHERE secret_key IN('vapid_public_key','vapid_private_key')`);
+    const values=Object.fromEntries(existing.rows.map((x:any)=>[x.secret_key,x.secret_value]));
+    if(values.vapid_public_key&&values.vapid_private_key)return{publicKey:values.vapid_public_key,privateKey:values.vapid_private_key};
+    const generated=webpush.generateVAPIDKeys();
+    await db.query(`INSERT INTO app_runtime_secrets(secret_key,secret_value) VALUES('vapid_public_key',$1),('vapid_private_key',$2) ON CONFLICT(secret_key) DO NOTHING`,[generated.publicKey,generated.privateKey]);
+    const saved=await db.query(`SELECT secret_key,secret_value FROM app_runtime_secrets WHERE secret_key IN('vapid_public_key','vapid_private_key')`);
+    const final=Object.fromEntries(saved.rows.map((x:any)=>[x.secret_key,x.secret_value]));
+    return{publicKey:final.vapid_public_key,privateKey:final.vapid_private_key};
+  })().catch(error=>{vapidPromise=null;throw error});
+  return vapidPromise;
+}
 async function ensure() {
   await db.query(`CREATE TABLE IF NOT EXISTS daily_action_campaigns(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,headline text NOT NULL,description_html text NOT NULL,image_url text,cta_label text DEFAULT 'Foglalok',cta_url text DEFAULT '/foglalas',discount_text text,valid_from timestamptz NOT NULL,valid_until timestamptz NOT NULL,audience jsonb DEFAULT '{"type":"all"}'::jsonb,channels jsonb DEFAULT '["app"]'::jsonb,status text DEFAULT 'draft',recipient_count int DEFAULT 0,sent_email int DEFAULT 0,sent_sms int DEFAULT 0,sent_push int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
 ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS headline text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS description_html text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS image_url text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_label text DEFAULT 'Foglalok';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_url text DEFAULT '/foglalas';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_text text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_from timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_until timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS audience jsonb DEFAULT '{"type":"all"}'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS channels jsonb DEFAULT '["app"]'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS status text DEFAULT 'draft';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS recipient_count int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_email int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_sms int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_push int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
@@ -68,13 +85,14 @@ publicDailyActionsRouter.use(async (_q, _s, n) => {
 });
 router.get("/", async (_q, res, n) => {
   try {
+    const vapid=await vapidConfig();
     res.json({
       campaigns: (
         await db.query(
           `SELECT * FROM daily_action_campaigns ORDER BY created_at DESC`,
         )
       ).rows,
-      vapid_public_key: process.env.VAPID_PUBLIC_KEY || null,
+      vapid_public_key: vapid.publicKey,
     });
   } catch (e) {
     n(e);
@@ -199,15 +217,12 @@ router.post("/:id/publish", async (req, res, n) => {
           sms++;
         } catch {}
     }
-    if (
-      channels.includes("app") &&
-      process.env.VAPID_PUBLIC_KEY &&
-      process.env.VAPID_PRIVATE_KEY
-    ) {
+    const vapid=await vapidConfig();
+    if (channels.includes("app")) {
       webpush.setVapidDetails(
         process.env.VAPID_SUBJECT || "mailto:info@kleoszalon.hu",
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY,
+        vapid.publicKey,
+        vapid.privateKey,
       );
       for (const s of (
         await db.query(`SELECT * FROM app_push_subscriptions WHERE active=true`)
@@ -240,19 +255,20 @@ router.post("/:id/publish", async (req, res, n) => {
       [c.id, r.rowCount, email, sms, push],
     );
     const activeDevices=Number((await db.query(`SELECT COUNT(*)::int count FROM app_push_subscriptions WHERE active=true`)).rows[0]?.count||0);
-    res.json({ recipients: r.rowCount, email, sms, push, push_failures:pushFailures, active_devices:activeDevices, push_configured:Boolean(process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY) });
+    res.json({ recipients: r.rowCount, email, sms, push, push_failures:pushFailures, active_devices:activeDevices, push_configured:Boolean(vapid.publicKey&&vapid.privateKey) });
   } catch (e) {
     n(e);
   }
 });
 publicDailyActionsRouter.get("/", async (_q, res, n) => {
   try {
+    const vapid=await vapidConfig();
     const { rows } = await db.query(
       `SELECT id,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until FROM daily_action_campaigns WHERE status='published' AND valid_from<=now() AND valid_until>=now() ORDER BY valid_until`,
     );
     res.json({
       actions: rows,
-      vapid_public_key: process.env.VAPID_PUBLIC_KEY || null,
+      vapid_public_key: vapid.publicKey,
     });
   } catch (e) {
     n(e);
@@ -280,6 +296,6 @@ const fallbackAssistant=(q:string)=>{const s=q.toLowerCase();if(s.includes("haj"
 publicDailyActionsRouter.post("/assistant",async(req,res,n)=>{try{const question=String(req.body?.question||"").trim().slice(0,500);if(question.length<3)return res.status(400).json({message:"Írjon legalább néhány szót."});const key=String(process.env.OPENAI_API_KEY||"").trim();if(!key)return res.json({answer:fallbackAssistant(question),ai_used:false});try{const r:any=await axios.post("https://api.openai.com/v1/responses",{model:process.env.BOOKING_RECOMMENDATION_MODEL||"gpt-5-mini",store:false,max_output_tokens:220,input:[{role:"system",content:[{type:"input_text",text:"Te a Kleopátra Beauty App magyar nyelvű szépségsegédje vagy. Röviden, kedvesen válaszolj. Ne diagnosztizálj, ne ígérj egészségügyi eredményt, és ne találj ki árat vagy akciót. Foglaláshoz és aktuális ajánlatokhoz irányíts az app katalógusába."}]},{role:"user",content:[{type:"input_text",text:question}]}]},{headers:{Authorization:`Bearer ${key}`},timeout:10000});const answer=String(r.data?.output?.flatMap((x:any)=>x.content||[]).find((x:any)=>x.type==="output_text")?.text||"").trim();return res.json({answer:answer||fallbackAssistant(question),ai_used:Boolean(answer)})}catch{return res.json({answer:fallbackAssistant(question),ai_used:false})}}catch(e){n(e)}});
 
 let reminderRunning=false;
-async function sendInactiveReminders(){if(reminderRunning||!process.env.VAPID_PUBLIC_KEY||!process.env.VAPID_PRIVATE_KEY)return;reminderRunning=true;try{await ensure();webpush.setVapidDetails(process.env.VAPID_SUBJECT||"mailto:info@kleoszalon.hu",process.env.VAPID_PUBLIC_KEY,process.env.VAPID_PRIVATE_KEY);const{rows}=await db.query(`SELECT id,subscription FROM app_push_subscriptions WHERE active=true AND last_seen_at<now()-interval '7 days' AND (last_reengagement_at IS NULL OR last_reengagement_at<last_seen_at OR last_reengagement_at<now()-interval '7 days') LIMIT 500`);for(const s of rows)try{await webpush.sendNotification(s.subscription,JSON.stringify({title:"A szépségre mindig érdemes időt szánni ✨",body:"Már egy hete nem találkoztunk. Nézze meg az új Kleopátra ajánlatokat, és ajándékozzon magának egy kis énidőt!",url:"/kleopatra-app"}));await db.query(`UPDATE app_push_subscriptions SET last_reengagement_at=now() WHERE id=$1`,[s.id])}catch{await db.query(`UPDATE app_push_subscriptions SET active=false WHERE id=$1`,[s.id])}}catch(e:any){console.warn("[app-reminder]",e?.message||e)}finally{reminderRunning=false}}
+async function sendInactiveReminders(){if(reminderRunning)return;reminderRunning=true;try{await ensure();const vapid=await vapidConfig();webpush.setVapidDetails(process.env.VAPID_SUBJECT||"mailto:info@kleoszalon.hu",vapid.publicKey,vapid.privateKey);const{rows}=await db.query(`SELECT id,subscription FROM app_push_subscriptions WHERE active=true AND last_seen_at<now()-interval '7 days' AND (last_reengagement_at IS NULL OR last_reengagement_at<last_seen_at OR last_reengagement_at<now()-interval '7 days') LIMIT 500`);for(const s of rows)try{await webpush.sendNotification(s.subscription,JSON.stringify({title:"A szépségre mindig érdemes időt szánni ✨",body:"Már egy hete nem találkoztunk. Nézze meg az új Kleopátra ajánlatokat, és ajándékozzon magának egy kis énidőt!",url:"/kleopatra-app"}));await db.query(`UPDATE app_push_subscriptions SET last_reengagement_at=now() WHERE id=$1`,[s.id])}catch{await db.query(`UPDATE app_push_subscriptions SET active=false WHERE id=$1`,[s.id])}}catch(e:any){console.warn("[app-reminder]",e?.message||e)}finally{reminderRunning=false}}
 const reminderTimer=setInterval(()=>void sendInactiveReminders(),60*60*1000);reminderTimer.unref();setTimeout(()=>void sendInactiveReminders(),60_000).unref();
 export default router;
