@@ -17,8 +17,8 @@ const money=(v:any)=>Math.round(num(v)*100)/100;
 
 async function safeRows(sql:string,params:any[],fallback:any[]=[]){
   try{return (await db.query(sql,params)).rows}catch(error:any){
-    if(['42P01','42703','42883'].includes(String(error?.code||'')))return fallback;
-    throw error;
+    console.warn('[inventory-summary] optional dataset unavailable',error?.code||'',error?.message||error);
+    return fallback;
   }
 }
 
