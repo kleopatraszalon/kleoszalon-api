@@ -1,0 +1,4 @@
+const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path");
+const source=fs.readFileSync(path.join(__dirname,"../src/routes/dailyActions.ts"),"utf8");
+test("daily action names may be reused across campaign periods",()=>{assert.match(source,/DROP INDEX IF EXISTS daily_action_campaign_name_uq/);assert.doesNotMatch(source,/CREATE UNIQUE INDEX IF NOT EXISTS daily_action_campaign_name_uq/)});
+test("daily action save validates fields, dates and channels",()=>{assert.match(source,/function campaignInput/);assert.match(source,/Az akció vége legyen későbbi a kezdésnél/);assert.match(source,/Válasszon legalább egy kiküldési csatornát/);assert.match(source,/status\(400\)/)});
