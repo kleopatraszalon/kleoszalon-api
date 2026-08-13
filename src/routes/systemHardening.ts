@@ -1,0 +1,36 @@
+import { Router, Response } from "express";
+import db from "../db";
+import { AuthRequest, requireAuth } from "../middleware/auth";
+import { requireManagement } from "../middleware/requireRoles";
+import { writeSystemAudit } from "../audit/systemAudit";
+
+type ManagedEntity = { key:string; label:string; table:string; activeColumn:"active"|"is_active"; moduleKey:string; systemColumn?:string };
+const ENTITIES:ManagedEntity[]=[
+ {key:"clients",label:"Ügyfelek",table:"clients",activeColumn:"is_active",moduleKey:"crm"},
+ {key:"employees",label:"Munkatársak",table:"employees",activeColumn:"active",moduleKey:"hr"},
+ {key:"salons",label:"Szalonok",table:"locations",activeColumn:"is_active",moduleKey:"administration"},
+ {key:"departments",label:"Részlegek",table:"master_departments",activeColumn:"active",moduleKey:"administration"},
+ {key:"equipment-types",label:"Eszköztípusok",table:"master_equipment_types",activeColumn:"active",moduleKey:"administration"},
+ {key:"equipment",label:"Eszközök",table:"master_equipment",activeColumn:"active",moduleKey:"administration"},
+ {key:"suppliers",label:"Partnerek / Beszállítók",table:"suppliers",activeColumn:"active",moduleKey:"administration"},
+ {key:"warehouses",label:"Raktárak",table:"inventory_warehouses",activeColumn:"active",moduleKey:"inventory",systemColumn:"system"},
+ {key:"units",label:"Mennyiségi egységek",table:"inventory_units",activeColumn:"active",moduleKey:"inventory",systemColumn:"system"},
+ {key:"price-types",label:"Ártípusok",table:"master_price_types",activeColumn:"active",moduleKey:"administration",systemColumn:"system"},
+ {key:"leave-types",label:"Szabadságtípusok",table:"master_leave_types",activeColumn:"active",moduleKey:"hr",systemColumn:"system"},
+ {key:"movement-types",label:"Készletmozgás-típusok",table:"master_inventory_movement_types",activeColumn:"active",moduleKey:"inventory",systemColumn:"system"},
+ {key:"payment-methods",label:"Fizetési módok",table:"finance_payment_methods",activeColumn:"active",moduleKey:"finance",systemColumn:"system"},
+ {key:"financial-transaction-types",label:"Pénzügyi tranzakciótípusok",table:"finance_document_types",activeColumn:"active",moduleKey:"finance",systemColumn:"system"}
+];
+const byKey=new Map(ENTITIES.map(x=>[x.key,x]));
+const router=Router();let schemaReady:Promise<void>|null=null;
+const qi=(v:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(v))throw new Error("Unsafe SQL identifier");return `"${v}"`};
+async function tableExists(table:string){return Boolean((await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${table}`])).rows[0]?.ok)}
+function ensureSchema(){if(!schemaReady)schemaReady=(async()=>{for(const e of ENTITIES){if(!(await tableExists(e.table)))continue;await db.query(`ALTER TABLE ${qi(e.table)} ADD COLUMN IF NOT EXISTS deleted_at timestamptz;ALTER TABLE ${qi(e.table)} ADD COLUMN IF NOT EXISTS deleted_by text;ALTER TABLE ${qi(e.table)} ADD COLUMN IF NOT EXISTS delete_reason text;`);}})().catch(e=>{schemaReady=null;throw e});return schemaReady}
+const displayName=(d:any)=>d?.full_name||d?.name||d?.title||d?.code||d?.email||d?.phone||String(d?.id||"");
+async function getRow(e:ManagedEntity,id:string){if(!(await tableExists(e.table)))return null;return (await db.query(`SELECT to_jsonb(t) data FROM ${qi(e.table)} t WHERE id::text=$1 LIMIT 1`,[id])).rows[0]?.data||null}
+router.use(requireAuth,requireManagement);router.use(async(_q,_s,n)=>{try{await ensureSchema();n()}catch(e){n(e)}});
+router.get("/entities",async(_q,res,n)=>{try{const out=[];for(const e of ENTITIES){if(!(await tableExists(e.table)))continue;const count=Number((await db.query(`SELECT COUNT(*)::int count FROM ${qi(e.table)} WHERE deleted_at IS NOT NULL`)).rows[0]?.count||0);out.push({key:e.key,label:e.label,deleted_count:count})}res.json(out)}catch(e){n(e)}});
+router.get("/archived",async(req,res,n)=>{try{const key=String(req.query.entity||"").trim(),q=String(req.query.q||"").trim().toLowerCase(),limit=Math.min(500,Math.max(20,Number(req.query.limit||200)));const selected=key?[byKey.get(key)].filter(Boolean) as ManagedEntity[]:ENTITIES;if(key&&!selected.length)return res.status(404).json({message:"Ismeretlen lomtár-entitás."});const all:any[]=[];for(const e of selected){if(!(await tableExists(e.table)))continue;const rows=(await db.query(`SELECT to_jsonb(t) data FROM ${qi(e.table)} t WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT $1`,[limit])).rows;for(const row of rows){const d=row.data||{},name=displayName(d),hay=`${name} ${d.email||""} ${d.phone||""} ${d.code||""} ${d.delete_reason||""}`.toLowerCase();if(q&&!hay.includes(q))continue;all.push({entity:e.key,entity_label:e.label,id:String(d.id),name,deleted_at:d.deleted_at,deleted_by:d.deleted_by,delete_reason:d.delete_reason,location_id:d.location_id||null,data:d})}}all.sort((a,b)=>String(b.deleted_at||"").localeCompare(String(a.deleted_at||"")));res.json(all.slice(0,limit))}catch(e){n(e)}});
+router.post("/:entity/:id/archive",async(req:AuthRequest,res:Response,n)=>{try{const e=byKey.get(String(req.params.entity||""));if(!e)return res.status(404).json({message:"Ismeretlen lomtár-entitás."});const before=await getRow(e,req.params.id);if(!before)return res.status(404).json({message:"A rekord nem található."});if(e.systemColumn&&Boolean(before[e.systemColumn]))return res.status(409).json({message:"A rendszer által fenntartott rekord nem inaktiválható."});if(before.deleted_at)return res.status(409).json({message:"A rekord már a lomtárban van."});const reason=String(req.body?.reason||"").trim()||"Inaktiválás a VIR lomtárból",actor=req.user?.email||String(req.user?.id||"");const rows=(await db.query(`UPDATE ${qi(e.table)} SET ${qi(e.activeColumn)}=false,deleted_at=now(),deleted_by=$2,delete_reason=$3 WHERE id::text=$1 RETURNING to_jsonb(${qi(e.table)}.*) data`,[req.params.id,actor,reason])).rows;const after=rows[0]?.data;await writeSystemAudit(req,{moduleKey:e.moduleKey,entityType:e.key,entityId:req.params.id,action:"soft_delete",severity:"warning",summary:`${e.label}: ${displayName(before)} lomtárba helyezve`,before,after,metadata:{reason},locationId:before.location_id||null});res.json({ok:true,entity:e.key,record:after})}catch(e){n(e)}});
+router.post("/:entity/:id/restore",async(req:AuthRequest,res:Response,n)=>{try{const e=byKey.get(String(req.params.entity||""));if(!e)return res.status(404).json({message:"Ismeretlen lomtár-entitás."});const before=await getRow(e,req.params.id);if(!before)return res.status(404).json({message:"A rekord nem található."});if(!before.deleted_at)return res.status(409).json({message:"A rekord nincs a lomtárban."});const rows=(await db.query(`UPDATE ${qi(e.table)} SET ${qi(e.activeColumn)}=true,deleted_at=NULL,deleted_by=NULL,delete_reason=NULL WHERE id::text=$1 RETURNING to_jsonb(${qi(e.table)}.*) data`,[req.params.id])).rows;const after=rows[0]?.data;await writeSystemAudit(req,{moduleKey:e.moduleKey,entityType:e.key,entityId:req.params.id,action:"restore",summary:`${e.label}: ${displayName(before)} visszaállítva`,before,after,metadata:{restore_note:String(req.body?.note||"").trim()||null},locationId:before.location_id||null});res.json({ok:true,entity:e.key,record:after})}catch(e){n(e)}});
+export default router;
