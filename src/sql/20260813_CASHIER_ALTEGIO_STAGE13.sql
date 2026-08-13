@@ -97,4 +97,80 @@ CREATE TABLE IF NOT EXISTS work_order_payment_refunds(
 CREATE INDEX IF NOT EXISTS work_order_payment_refunds_payment_idx ON work_order_payment_refunds(payment_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS work_order_payment_refunds_workorder_idx ON work_order_payment_refunds(work_order_id,created_at DESC);
 
+-- A checkout-context biztosítja, hogy a loyalty/fallback fizetési útvonalak is
+-- ugyanahhoz a felhasználó által kiválasztott fizikai kasszához kapcsolódjanak.
+CREATE TABLE IF NOT EXISTS cashier_checkout_context(
+  work_order_id text PRIMARY KEY,
+  location_id text NOT NULL,
+  register_id bigint NOT NULL REFERENCES cash_registers(id),
+  register_session_id bigint NOT NULL REFERENCES cash_register_sessions(id),
+  created_by text,
+  expires_at timestamptz NOT NULL DEFAULT (now()+interval '5 minutes'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION enforce_cash_payment_open_register()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  v_location text;
+  v_count integer;
+  v_register bigint;
+  v_session bigint;
+BEGIN
+  IF NEW.payment_method <> 'cash' THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.register_session_id IS NOT NULL THEN
+    SELECT s.register_id INTO v_register
+    FROM cash_register_sessions s
+    WHERE s.id=NEW.register_session_id AND s.status='open';
+    IF v_register IS NULL THEN
+      RAISE EXCEPTION 'A kiválasztott készpénztár nincs megnyitva.' USING ERRCODE='P0001';
+    END IF;
+    NEW.register_id:=COALESCE(NEW.register_id,v_register);
+    RETURN NEW;
+  END IF;
+
+  SELECT wo.location_id::text INTO v_location FROM work_orders wo WHERE wo.id=NEW.work_order_id;
+
+  IF NEW.register_id IS NOT NULL THEN
+    SELECT s.id INTO v_session FROM cash_register_sessions s
+    WHERE s.register_id=NEW.register_id AND s.status='open' LIMIT 1;
+    IF v_session IS NULL THEN
+      RAISE EXCEPTION 'A kiválasztott készpénztár nincs megnyitva.' USING ERRCODE='P0001';
+    END IF;
+    NEW.register_session_id:=v_session;
+    RETURN NEW;
+  END IF;
+
+  SELECT c.register_id,c.register_session_id INTO v_register,v_session
+  FROM cashier_checkout_context c
+  WHERE c.work_order_id=NEW.work_order_id::text AND c.expires_at>now()
+  ORDER BY c.created_at DESC LIMIT 1;
+  IF v_session IS NOT NULL THEN
+    NEW.register_id:=v_register;
+    NEW.register_session_id:=v_session;
+    RETURN NEW;
+  END IF;
+
+  SELECT count(*),min(s.register_id),min(s.id)
+    INTO v_count,v_register,v_session
+  FROM cash_register_sessions s
+  WHERE s.location_id=v_location AND s.status='open';
+  IF v_count=0 THEN
+    RAISE EXCEPTION 'Készpénzes fizetés előtt nyissa meg a pénztárt.' USING ERRCODE='P0001';
+  ELSIF v_count>1 THEN
+    RAISE EXCEPTION 'Több nyitott pénztár van. Válassza ki a készpénztárt.' USING ERRCODE='P0001';
+  END IF;
+  NEW.register_id:=v_register;
+  NEW.register_session_id:=v_session;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS trg_work_order_cash_payment_register ON work_order_payments;
+CREATE TRIGGER trg_work_order_cash_payment_register
+BEFORE INSERT ON work_order_payments
+FOR EACH ROW EXECUTE FUNCTION enforce_cash_payment_open_register();
+
 COMMIT;
