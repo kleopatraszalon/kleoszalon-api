@@ -4,9 +4,11 @@ import * as XLSX from "xlsx";
 import pool from "../db";
 import { classifyProduct, TAXONOMY_VERSION, normalizeTaxonomyText } from "../inventory/productTaxonomy";
 import { ensureProductTaxonomySchema, ensureTaxonomyNodes } from "../inventory/ensureProductTaxonomy";
+import productTaxonomyAdminRouter from "./productTaxonomyAdmin";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+router.use("/taxonomy", productTaxonomyAdminRouter);
 
 const text = (v: unknown) => { const s = String(v ?? "").trim(); return s || null; };
 const number = (v: unknown) => {
