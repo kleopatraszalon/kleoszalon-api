@@ -9,8 +9,28 @@ const router = Router();
 const publicFrontendUrl = (process.env.FRONTEND_URL || "https://kleoszalon-frontend.onrender.com").replace(/\/$/, "");
 const kleopatraLogoUrl = `${publicFrontendUrl}/kleopatra-logo.png`;
 async function ensure() {
-  await db.query(`CREATE TABLE IF NOT EXISTS daily_action_campaigns(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,headline text NOT NULL,description_html text NOT NULL,image_url text,cta_label text DEFAULT 'Foglalok',cta_url text DEFAULT '/foglalas',discount_text text,valid_from timestamptz NOT NULL,valid_until timestamptz NOT NULL,audience jsonb DEFAULT '{"type":"all"}'::jsonb,channels jsonb DEFAULT '["app"]'::jsonb,status text DEFAULT 'draft',recipient_count int DEFAULT 0,sent_email int DEFAULT 0,sent_sms int DEFAULT 0,sent_push int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());CREATE UNIQUE INDEX IF NOT EXISTS daily_action_campaign_name_uq ON daily_action_campaigns((lower(name)));CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;
+  await db.query(`CREATE TABLE IF NOT EXISTS daily_action_campaigns(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,headline text NOT NULL,description_html text NOT NULL,image_url text,cta_label text DEFAULT 'Foglalok',cta_url text DEFAULT '/foglalas',discount_text text,valid_from timestamptz NOT NULL,valid_until timestamptz NOT NULL,audience jsonb DEFAULT '{"type":"all"}'::jsonb,channels jsonb DEFAULT '["app"]'::jsonb,status text DEFAULT 'draft',recipient_count int DEFAULT 0,sent_email int DEFAULT 0,sent_sms int DEFAULT 0,sent_push int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());DROP INDEX IF EXISTS daily_action_campaign_name_uq;CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;
 INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,discount_text,valid_from,valid_until,audience,channels,status,recipient_count,sent_email,sent_sms,sent_push,created_at)VALUES('Anyák napi ragyogás','Anyák napi ragyogás','<p>Ajándékozz feltöltődést: prémium arckezelés és frizuracsomag egy különleges napon.</p>','https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1200&q=80','-20%',now()-interval '3 month',now()-interval '3 month'+interval '1 day','{"type":"loyalty","tiers":["gold","silver"]}','["email","sms","app"]','expired',324,306,281,197,now()-interval '3 month'),('Pénteki villámszépülés','Pénteki villámszépülés','<p>Felszabadult időpontok péntek délutánra. Foglalj most, és válassz ajándék hajápolást!</p>','https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=1200&q=80','Ajándék hajápolás',now()-interval '1 month',now()-interval '1 month'+interval '8 hour','{"type":"active"}','["app","sms"]','expired',188,0,174,152,now()-interval '1 month'),('Bérletes VIP nap','Bérletes VIP nap','<p>Csak aktív bérletes vendégeinknek: dupla hűségpont és meglepetés a következő kezelés mellé.</p>','https://images.unsplash.com/photo-1600948836101-f9ffda59d250?auto=format&fit=crop&w=1200&q=80','Dupla pont',now()-interval '12 day',now()-interval '11 day','{"type":"pass_holders"}','["email","app"]','expired',116,111,0,89,now()-interval '12 day') ON CONFLICT DO NOTHING;`);
+}
+function campaignInput(body: any) {
+  const b = body || {};
+  const name = String(b.name || "").trim();
+  const headline = String(b.headline || "").trim();
+  const descriptionHtml = String(b.description_html || "").trim();
+  const validFrom = new Date(b.valid_from);
+  const validUntil = new Date(b.valid_until);
+  const channels = Array.isArray(b.channels)
+    ? b.channels.filter((x: unknown) => ["email", "sms", "app"].includes(String(x)))
+    : [];
+  if (!name || !headline || !descriptionHtml)
+    return { error: "A kampánynév, a főcím és az akció leírása kötelező." };
+  if (Number.isNaN(validFrom.getTime()) || Number.isNaN(validUntil.getTime()))
+    return { error: "Adjon meg érvényes kezdő és záró időpontot." };
+  if (validUntil <= validFrom)
+    return { error: "Az akció vége legyen későbbi a kezdésnél." };
+  if (!channels.length)
+    return { error: "Válasszon legalább egy kiküldési csatornát." };
+  return { name, headline, descriptionHtml, validFrom, validUntil, channels };
 }
 async function recipients(a: any) {
   let w = `COALESCE(c.marketing_consent,false)=true`;
@@ -71,20 +91,23 @@ router.post("/audience-preview", async (req, res, n) => {
 router.post("/", async (req, res, n) => {
   try {
     const b = req.body,
+      input = campaignInput(b);
+    if ("error" in input) return res.status(400).json({ message: input.error });
+    const
       { rows } = await db.query(
         `INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until,audience,channels,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft')RETURNING *`,
         [
-          b.name,
-          b.headline,
-          b.description_html,
+          input.name,
+          input.headline,
+          input.descriptionHtml,
           b.image_url || null,
           b.cta_label || "Foglalok",
           b.cta_url || "/foglalas",
           b.discount_text || null,
-          b.valid_from,
-          b.valid_until,
+          input.validFrom,
+          input.validUntil,
           b.audience || { type: "all" },
-          b.channels || ["app"],
+          input.channels,
         ],
       );
     res.status(201).json(rows[0]);
