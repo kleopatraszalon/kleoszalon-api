@@ -1,0 +1,63 @@
+name: Public booking resources stage15.1
+
+on:
+  pull_request:
+    paths:
+      - 'src/routes/onlineBooking.ts'
+      - 'src/routes/onlineBookingCore.ts'
+      - 'src/routes/onlineBookingResources.ts'
+      - 'src/booking/ensureOnlineBooking.ts'
+      - 'tests/public-booking-resources-stage15-1.contract.test.js'
+      - 'tests/public_booking_resources_stage15_1.integration.js'
+      - '.github/workflows/public-booking-resources-stage15-1.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/onlineBooking.ts'
+      - 'src/routes/onlineBookingCore.ts'
+      - 'src/routes/onlineBookingResources.ts'
+      - 'src/booking/ensureOnlineBooking.ts'
+      - 'tests/public-booking-resources-stage15-1.contract.test.js'
+      - 'tests/public_booking_resources_stage15_1.integration.js'
+      - '.github/workflows/public-booking-resources-stage15-1.yml'
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_public_booking_resources
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_public_booking_resources"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/kleo_public_booking_resources
+      PGSSL: off
+      JWT_SECRET: public_booking_resources_secret
+      NODE_ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+      - name: Build API
+        run: npm run build
+      - name: Create base schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/workorder_stage8_integration_schema.sql
+      - name: Run public booking resource integration
+        run: node tests/public_booking_resources_stage15_1.integration.js
