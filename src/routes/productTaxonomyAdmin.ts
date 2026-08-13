@@ -36,6 +36,7 @@ function thresholdFrom(req: AuthRequest) {
 router.get("/review", requireManagement, async (req: AuthRequest, res: Response) => {
   try {
     await ensureProductTaxonomyReady();
+    await ensureReviewAudit();
     const threshold = thresholdFrom(req);
     const includeInactive = String(req.query.include_inactive || "") === "1";
     const search = String(req.query.search || "").trim().toLowerCase();
@@ -148,10 +149,11 @@ router.get("/review/summary", requireManagement, async (req: AuthRequest, res: R
 });
 
 router.patch("/review/:id", requireManagement, async (req: AuthRequest, res: Response) => {
-  const client = await (pool as any).connect();
+  let client: any = null;
   try {
-    await client.query("BEGIN");
     await ensureReviewAudit();
+    client = await (pool as any).connect();
+    await client.query("BEGIN");
     const groupId = String((req.body as any)?.product_group_id || "").trim();
     const categoryId = String((req.body as any)?.product_category_id || "").trim();
     const note = String((req.body as any)?.note || "").trim() || null;
@@ -211,10 +213,10 @@ router.patch("/review/:id", requireManagement, async (req: AuthRequest, res: Res
       },
     });
   } catch (err: any) {
-    try { await client.query("ROLLBACK"); } catch {}
+    if (client) { try { await client.query("ROLLBACK"); } catch {} }
     res.status(500).json({ error: "A kézi termékbesorolás mentése nem sikerült.", detail: err?.message });
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
