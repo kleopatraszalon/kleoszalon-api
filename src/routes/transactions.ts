@@ -4,6 +4,7 @@ import inventoryControlRouter from "./inventoryControl";
 import aiSupportRouter from "./aiSupport";
 import collaborationChatRouter from "./collaborationChat";
 import cashierRouter from "./cashier";
+import cashRegisterRouter from "./cashRegister";
 import workOrderCashierFastRouter from "./workOrderCashierFast";
 import financeOperationsRouter from "./financeOperations";
 import financeAltegioRouter from "./financeAltegio";
@@ -104,6 +105,7 @@ router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashRegisterRouter);
 router.use("/cashier",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
