@@ -54,6 +54,7 @@ import operationsQualityRouter from "./operationsQuality";
 import newslettersRouter from "./newsletters";
 import knowledgeBaseRouter from "./knowledgeBase";
 import dailyActionsRouter from "./dailyActions";
+import centralMasterDataRouter from "./centralMasterData";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
 import db from "../db";
 import { requireAuth } from "../middleware/auth";
@@ -122,6 +123,7 @@ router.use("/operations-quality",requireManagement,operationsQualityRouter);
 router.use("/newsletters",requireManagement,newslettersRouter);
 router.use("/knowledge-base",knowledgeBaseRouter);
 router.use("/daily-actions",requireManagement,dailyActionsRouter);
+router.use("/masterdata",requireManagement,centralMasterDataRouter);
 
 router.use("/workorder-editor",workOrderEditorFastRouter);
 router.use("/workorder-editor",workOrderEditorRouter);
