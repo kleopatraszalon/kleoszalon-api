@@ -9,8 +9,10 @@ const router = Router();
 const publicFrontendUrl = (process.env.FRONTEND_URL || "https://kleoszalon-frontend.onrender.com").replace(/\/$/, "");
 const kleopatraLogoUrl = `${publicFrontendUrl}/kleopatra-logo.png`;
 async function ensure() {
-  await db.query(`CREATE TABLE IF NOT EXISTS daily_action_campaigns(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,headline text NOT NULL,description_html text NOT NULL,image_url text,cta_label text DEFAULT 'Foglalok',cta_url text DEFAULT '/foglalas',discount_text text,valid_from timestamptz NOT NULL,valid_until timestamptz NOT NULL,audience jsonb DEFAULT '{"type":"all"}'::jsonb,channels jsonb DEFAULT '["app"]'::jsonb,status text DEFAULT 'draft',recipient_count int DEFAULT 0,sent_email int DEFAULT 0,sent_sms int DEFAULT 0,sent_push int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());DROP INDEX IF EXISTS daily_action_campaign_name_uq;CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;
-INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,discount_text,valid_from,valid_until,audience,channels,status,recipient_count,sent_email,sent_sms,sent_push,created_at)VALUES('Anyák napi ragyogás','Anyák napi ragyogás','<p>Ajándékozz feltöltődést: prémium arckezelés és frizuracsomag egy különleges napon.</p>','https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1200&q=80','-20%',now()-interval '3 month',now()-interval '3 month'+interval '1 day','{"type":"loyalty","tiers":["gold","silver"]}','["email","sms","app"]','expired',324,306,281,197,now()-interval '3 month'),('Pénteki villámszépülés','Pénteki villámszépülés','<p>Felszabadult időpontok péntek délutánra. Foglalj most, és válassz ajándék hajápolást!</p>','https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=1200&q=80','Ajándék hajápolás',now()-interval '1 month',now()-interval '1 month'+interval '8 hour','{"type":"active"}','["app","sms"]','expired',188,0,174,152,now()-interval '1 month'),('Bérletes VIP nap','Bérletes VIP nap','<p>Csak aktív bérletes vendégeinknek: dupla hűségpont és meglepetés a következő kezelés mellé.</p>','https://images.unsplash.com/photo-1600948836101-f9ffda59d250?auto=format&fit=crop&w=1200&q=80','Dupla pont',now()-interval '12 day',now()-interval '11 day','{"type":"pass_holders"}','["email","app"]','expired',116,111,0,89,now()-interval '12 day') ON CONFLICT DO NOTHING;`);
+  await db.query(`CREATE TABLE IF NOT EXISTS daily_action_campaigns(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,headline text NOT NULL,description_html text NOT NULL,image_url text,cta_label text DEFAULT 'Foglalok',cta_url text DEFAULT '/foglalas',discount_text text,valid_from timestamptz NOT NULL,valid_until timestamptz NOT NULL,audience jsonb DEFAULT '{"type":"all"}'::jsonb,channels jsonb DEFAULT '["app"]'::jsonb,status text DEFAULT 'draft',recipient_count int DEFAULT 0,sent_email int DEFAULT 0,sent_sms int DEFAULT 0,sent_push int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
+ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS headline text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS description_html text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS image_url text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_label text DEFAULT 'Foglalok';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS cta_url text DEFAULT '/foglalas';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_text text;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_from timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS valid_until timestamptz;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS audience jsonb DEFAULT '{"type":"all"}'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS channels jsonb DEFAULT '["app"]'::jsonb;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS status text DEFAULT 'draft';ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS recipient_count int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_email int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_sms int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS sent_push int DEFAULT 0;ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE daily_action_campaigns DROP CONSTRAINT IF EXISTS daily_action_campaign_name_uq;DROP INDEX IF EXISTS daily_action_campaign_name_uq;
+CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;`);
 }
 function campaignInput(body: any) {
   const b = body || {};
@@ -111,8 +113,20 @@ router.post("/", async (req, res, n) => {
         ],
       );
     res.status(201).json(rows[0]);
-  } catch (e) {
-    n(e);
+  } catch (e: any) {
+    const diagnosticId = `DA-${Date.now().toString(36).toUpperCase()}`;
+    console.error("[daily-action-save]", diagnosticId, e?.code, e?.message, e?.detail);
+    const known: Record<string, string> = {
+      "23505": "Ezzel a névvel már létezik akció. Frissítse az oldalt, majd próbálja újra.",
+      "22P02": "Az akció egyik mezője érvénytelen formátumú.",
+      "42703": "Az akciók adatbázissémája frissítésre szorul.",
+    };
+    res.status(500).json({
+      code: "DAILY_ACTION_SAVE_FAILED",
+      message: known[e?.code] || "Az akció mentése nem sikerült. A hibát naplóztuk.",
+      diagnostic_id: diagnosticId,
+      database_code: e?.code || null,
+    });
   }
 });
 router.patch("/:id", async (req, res, n) => {
