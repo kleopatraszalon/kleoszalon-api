@@ -2,7 +2,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 
-const source=fs.readFileSync('src/routes/onlineBooking.ts','utf8');
+const source=fs.readFileSync('src/routes/onlineBookingCore.ts','utf8');
 
 test('online booking recovers a persisted appointment instead of returning a false 500',()=>{
   assert.match(source,/recovered persisted booking after response failure/);
