@@ -4,7 +4,7 @@ import{requireAuth,type AuthRequest}from'./auth';
 
 const ADMIN=new Set(['admin','administrator','rendszergazda','superadmin','super_admin']);
 const RECEPTION=new Set(['receptionist','recepciós','recepcios','reception']);
-const BUSINESS=new Set(['location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager','salon_manager','szalonvezető','szalonvezeto']);
+const BUSINESS=new Set(['location_manager','üzletvezető','uzletvezeto','store_manager','branch_manager']);
 const SCOPED=new Set([...RECEPTION,...BUSINESS]);
 const roles=(raw:any)=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const p=JSON.parse(String(raw||''));if(Array.isArray(p))return p.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
 const idLike=(v:string)=>/^[0-9a-f-]{8,}$/i.test(v)||/^\d+$/.test(v);
@@ -13,7 +13,7 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
  try{
   const r=roles(req.user?.role);
   if(r.some(x=>ADMIN.has(x))){res.locals.workOrderFinanceScope={kind:'all',canEdit:true,locationId:null};return next()}
-  if(!r.some(x=>SCOPED.has(x)))return res.status(403).json({message:'Pénzügyi munkalapműveletet csak adminisztrátor, recepciós vagy üzlet-/szalonvezető végezhet.'});
+  if(!r.some(x=>SCOPED.has(x)))return res.status(403).json({message:'Pénzügyi munkalapműveletet csak adminisztrátor, recepciós vagy üzletvezető végezhet.'});
   const locationId=String(req.user?.location_id||'').trim();
   if(!locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});
   res.locals.workOrderFinanceLocationId=locationId;
