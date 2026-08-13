@@ -36,7 +36,7 @@ ALTER TABLE cash_movements
   ADD COLUMN IF NOT EXISTS partner_id bigint,
   ADD COLUMN IF NOT EXISTS employee_id text,
   ADD COLUMN IF NOT EXISTS work_order_id text,
-  ADD COLUMN IF NOT EXISTS payment_id bigint,
+  ADD COLUMN IF NOT EXISTS payment_id uuid,
   ADD COLUMN IF NOT EXISTS transfer_id bigint;
 
 ALTER TABLE work_order_payments
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS cash_register_transfers(
 
 CREATE TABLE IF NOT EXISTS work_order_payment_refunds(
   id bigserial PRIMARY KEY,
-  payment_id bigint NOT NULL REFERENCES work_order_payments(id),
+  payment_id uuid NOT NULL REFERENCES work_order_payments(id),
   work_order_id text NOT NULL,
   location_id text,
   register_id bigint,
@@ -97,8 +97,6 @@ CREATE TABLE IF NOT EXISTS work_order_payment_refunds(
 CREATE INDEX IF NOT EXISTS work_order_payment_refunds_payment_idx ON work_order_payment_refunds(payment_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS work_order_payment_refunds_workorder_idx ON work_order_payment_refunds(work_order_id,created_at DESC);
 
--- A checkout-context biztosítja, hogy a loyalty/fallback fizetési útvonalak is
--- ugyanahhoz a felhasználó által kiválasztott fizikai kasszához kapcsolódjanak.
 CREATE TABLE IF NOT EXISTS cashier_checkout_context(
   work_order_id text PRIMARY KEY,
   location_id text NOT NULL,
