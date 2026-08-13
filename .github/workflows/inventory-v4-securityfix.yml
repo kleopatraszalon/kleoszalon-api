@@ -19,67 +19,76 @@ jobs:
           s=p.read_text()
 
           anchor='router.use(async (_req, _res, next) => {\n  try { await ensureInventoryOperationsSchema(); next(); } catch (err) { next(err); }\n});\n'
-          guard='''router.use((req: any, res, next) => {
-  if (hasAnyRole(req.user?.role, ["admin", "manager", "location_manager", "salon_manager", "receptionist"])) return next();
-  return res.status(403).json({ message: "Ehhez a készletgazdálkodási modulhoz nincs jogosultsága.", code: "inventory_operations_forbidden" });
-});
-'''
+          guard=('router.use((req: any, res, next) => {\n'
+                 '  if (hasAnyRole(req.user?.role, ["admin", "manager", "location_manager", "salon_manager", "receptionist"])) return next();\n'
+                 '  return res.status(403).json({ message: "Ehhez a készletgazdálkodási modulhoz nincs jogosultsága.", code: "inventory_operations_forbidden" });\n'
+                 '});\n')
           if 'inventory_operations_forbidden' not in s:
               s=s.replace(anchor,anchor+'\n'+guard,1)
 
-          old='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`w.location_id=$${params.length}::text`);
-    }
-    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`m.warehouse_id=$${params.length}`); }'''
-          new='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`w.location_id=$${params.length}::text`);
-    } else if (req.query.location_id !== undefined) {
-      const locationId = String(req.query.location_id || "").trim() || null;
-      if (locationId === null) filters.push("w.location_id IS NULL");
-      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }
-    }
-    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`m.warehouse_id=$${params.length}`); }'''
-          if old in s: s=s.replace(old,new,1)
+          catalog=('router.get("/catalog/products", async (_req, res, next) => {\n'
+                   '  try {\n'
+                   '    const { rows } = await db.query(`SELECT p.id::text,p.name,p.internal_code,p.barcode,p.brand,p.product_category_id::text,c.name AS product_category_name FROM products p LEFT JOIN product_categories c ON c.id=p.product_category_id WHERE COALESCE(p.is_active,true)=true ORDER BY p.name`);\n'
+                   '    res.json(rows);\n'
+                   '  } catch (err) { next(err); }\n'
+                   '});\n\n'
+                   'router.get("/catalog/categories", async (_req, res, next) => {\n'
+                   '  try {\n'
+                   '    const { rows } = await db.query(`SELECT c.id::text,c.name,c.product_group_id::text,g.name AS product_group_name FROM product_categories c LEFT JOIN product_groups g ON g.id=c.product_group_id WHERE COALESCE(c.is_active,true)=true ORDER BY COALESCE(g.sort_order,999),COALESCE(c.sort_order,999),c.name`);\n'
+                   '    res.json(rows);\n'
+                   '  } catch (err) { next(err); }\n'
+                   '});\n\n')
+          transfer_anchor='router.get("/transfer-targets", async (req: any, res, next) => {'
+          if '/catalog/products' not in s:
+              s=s.replace(transfer_anchor,catalog+transfer_anchor,1)
 
-          old='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`w.location_id=$${params.length}::text`);
-    }
-    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`s.warehouse_id=$${params.length}`); }'''
-          new='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`w.location_id=$${params.length}::text`);
-    } else if (req.query.location_id !== undefined) {
-      const locationId = String(req.query.location_id || "").trim() || null;
-      if (locationId === null) filters.push("w.location_id IS NULL");
-      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }
-    }
-    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`s.warehouse_id=$${params.length}`); }'''
-          if old in s: s=s.replace(old,new,1)
+          old=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`w.location_id=$${params.length}::text`);\n'
+               '    }\n'
+               '    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`m.warehouse_id=$${params.length}`); }')
+          new=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`w.location_id=$${params.length}::text`);\n'
+               '    } else if (req.query.location_id !== undefined) {\n'
+               '      const locationId = String(req.query.location_id || "").trim() || null;\n'
+               '      if (locationId === null) filters.push("w.location_id IS NULL");\n'
+               '      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }\n'
+               '    }\n'
+               '    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`m.warehouse_id=$${params.length}`); }')
+          s=s.replace(old,new,1)
 
-          old='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`);
-    }
-    const { rows } = await db.query(`SELECT t.*'''
-          new='''    if (!isGlobal(req)) {
-      const own = ownLocation(req); if (!own) return res.json([]);
-      params.push(own); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`);
-    } else if (req.query.location_id !== undefined) {
-      const locationId = String(req.query.location_id || "").trim() || null;
-      if (locationId === null) filters.push("(sw.location_id IS NULL OR dw.location_id IS NULL)");
-      else { params.push(locationId); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`); }
-    }
-    const { rows } = await db.query(`SELECT t.*'''
-          if old in s: s=s.replace(old,new,1)
+          old=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`w.location_id=$${params.length}::text`);\n'
+               '    }\n'
+               '    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`s.warehouse_id=$${params.length}`); }')
+          new=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`w.location_id=$${params.length}::text`);\n'
+               '    } else if (req.query.location_id !== undefined) {\n'
+               '      const locationId = String(req.query.location_id || "").trim() || null;\n'
+               '      if (locationId === null) filters.push("w.location_id IS NULL");\n'
+               '      else { params.push(locationId); filters.push(`w.location_id=$${params.length}::text`); }\n'
+               '    }\n'
+               '    if (req.query.warehouse_id) { params.push(String(req.query.warehouse_id)); filters.push(`s.warehouse_id=$${params.length}`); }')
+          s=s.replace(old,new,1)
 
-          p.write_text(s)
-
-          p=Path('src/inventory/ensureInventoryOperationsSchema.ts')
-          s=p.read_text()
-          s=s.replace("COALESCE(local.cost_method,global.cost_method,'weighted_average')", "COALESCE(loc.cost_method,g.cost_method,'weighted_average')") if False else s
+          old=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`);\n'
+               '    }\n'
+               '    const { rows } = await db.query(`SELECT t.*')
+          new=('    if (!isGlobal(req)) {\n'
+               '      const own = ownLocation(req); if (!own) return res.json([]);\n'
+               '      params.push(own); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`);\n'
+               '    } else if (req.query.location_id !== undefined) {\n'
+               '      const locationId = String(req.query.location_id || "").trim() || null;\n'
+               '      if (locationId === null) filters.push("(sw.location_id IS NULL OR dw.location_id IS NULL)");\n'
+               '      else { params.push(locationId); filters.push(`(sw.location_id=$${params.length}::text OR dw.location_id=$${params.length}::text)`); }\n'
+               '    }\n'
+               '    const { rows } = await db.query(`SELECT t.*')
+          s=s.replace(old,new,1)
           p.write_text(s)
           PY
       - name: Commit hardening
@@ -88,5 +97,5 @@ jobs:
           git config user.name "kleopatraszalon"
           git config user.email "birtalan.zoltan1975@gmail.com"
           git add src/routes/inventoryOperations.ts
-          git commit -m "fix(inventory): enforce v4 API roles and location scopes"
+          git commit -m "fix(inventory): enforce v4 roles scopes and safe catalog reads"
           git push origin HEAD:feature/inventory-operations-v4-20260813
