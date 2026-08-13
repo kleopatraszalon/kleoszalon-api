@@ -8,12 +8,48 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
+      API_BASE_URL: https://kleoszalon-api-1.onrender.com
     steps:
       - name: Trigger Render API deploy
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         run: curl -fsS --retry 3 --max-time 30 -X POST "$RENDER_DEPLOY_HOOK_URL"
+
+      - name: Verify live API and database
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          live=0
+          for attempt in $(seq 1 48); do
+            body="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health" 2>/dev/null || true)"
+            if BODY="$body" node -e "const x=JSON.parse(process.env.BODY||'{}'); process.exit(x.ok===true && x.db && x.db.ok===true ? 0 : 1)"; then
+              live=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$live" -ne 1 ]; then
+            echo "Render API health/DB smoke failed."
+            exit 1
+          fi
+          echo "Render API health/DB smoke PASS"
+
+      - name: Verify cashier API authentication boundary
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 20 -o /tmp/cashier-response.txt -w '%{http_code}' "$API_BASE_URL/api/transactions/cashier/shift/current?date=2026-08-13&location_id=render-smoke")"
+          if [ "$code" != "401" ] && [ "$code" != "403" ]; then
+            echo "Unexpected unauthenticated cashier status: $code"
+            cat /tmp/cashier-response.txt
+            exit 1
+          fi
+          echo "Cashier authentication boundary PASS ($code)"
+
       - name: Render deploy hook is not configured
         if: env.RENDER_DEPLOY_HOOK_URL == ''
         run: echo "RENDER_API_DEPLOY_HOOK_URL secret is not configured; Render deploy skipped."
