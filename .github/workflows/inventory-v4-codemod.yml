@@ -11,35 +11,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/inventory-operations-v4-20260813
-      - name: Apply inventory v4 wiring and hardening
+      - name: Complete inventory v4 wiring
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           p=Path('src/menu/ensureMenuHealth.ts')
           s=p.read_text()
           imp='import { ensureInventoryOperationsMenu } from "./ensureInventoryOperationsMenu";\n'
           if 'ensureInventoryOperationsMenu' not in s:
               s=s.replace("import pool from '../db';\n", "import pool from '../db';\n"+imp, 1)
-              s=s.replace('export async function ensureMenuHealth(){\n', 'export async function ensureMenuHealth(){\n  await ensureInventoryOperationsMenu();\n', 1)
-          p.write_text(s)
-
-          p=Path('src/inventory/ensureInventoryOperationsSchema.ts')
-          s=p.read_text()
-          pattern=r"        v_product:=COALESCE\(NEW\.product_id,OLD\.product_id\);\n        v_location:=COALESCE\(NEW\.location_id,OLD\.location_id\)::text;\n        IF TG_OP='INSERT' THEN\n          v_delta:=COALESCE\(NEW\.quantity,0\); v_min:=COALESCE\(NEW\.min_quantity,0\); v_opt:=COALESCE\(NEW\.optimal_quantity,0\); v_cost:=COALESCE\(NEW\.unit_cost,0\);\n        ELSIF TG_OP='UPDATE' THEN\n          v_delta:=COALESCE\(NEW\.quantity,0\)-COALESCE\(OLD\.quantity,0\); v_min:=COALESCE\(NEW\.min_quantity,0\); v_opt:=COALESCE\(NEW\.optimal_quantity,0\); v_cost:=COALESCE\(NEW\.unit_cost,0\);\n        ELSE\n          v_delta:=-COALESCE\(OLD\.quantity,0\); v_min:=0; v_opt:=0; v_cost:=COALESCE\(OLD\.unit_cost,0\);\n        END IF;"
-          replacement="        IF TG_OP='INSERT' THEN\n          v_product:=NEW.product_id; v_location:=NEW.location_id::text;\n          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);\n        ELSIF TG_OP='UPDATE' THEN\n          v_product:=NEW.product_id; v_location:=NEW.location_id::text;\n          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);\n        ELSE\n          v_product:=OLD.product_id; v_location:=OLD.location_id::text;\n          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);\n        END IF;"
-          s=re.sub(pattern,replacement,s,count=1)
+          s=s.replace('  await ensureInventoryOperationsMenu();\n','',1)
+          marker="  await pool.query(`ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;`);\n"
+          if marker in s and 'await ensureInventoryOperationsMenu();' not in s:
+              s=s.replace(marker,marker+'  await ensureInventoryOperationsMenu();\n',1)
           p.write_text(s)
 
           p=Path('src/routes/inventoryOperations.ts')
           s=p.read_text()
-          s=s.replace('warehouse: stocktake, movementType: "stocktake_adjustment"','warehouse: { id: stocktake.warehouse_id, location_id: stocktake.location_id }, movementType: "stocktake_adjustment"')
-          marker='router.get("/reports/balance"'
-          if marker in s:
-              start=s.index(marker)
-              end=s.index('\n\nexport default router;',start)
-              s=s[:start]+s[end+2:]
+          anchor='router.post("/warehouses", async (req: any, res, next) => {'
+          endpoint="router.get(\"/transfer-targets\", async (req: any, res, next) => {\n  try {\n    ensureOperator(req);\n    const { rows } = await db.query(`SELECT w.id,w.name,w.location_id,l.name AS location_name,w.warehouse_type FROM inventory_warehouses w LEFT JOIN locations l ON l.id::text=w.location_id WHERE w.active=true ORDER BY COALESCE(l.name,'Központ'),w.sort_order,w.name`);\n    res.json(rows);\n  } catch (err) { sendError(err, res, next); }\n});\n\n"
+          if '/transfer-targets' not in s and anchor in s:
+              s=s.replace(anchor,endpoint+anchor,1)
           p.write_text(s)
           PY
       - name: Commit wiring
@@ -47,6 +40,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name "kleopatraszalon"
           git config user.email "birtalan.zoltan1975@gmail.com"
-          git add src/menu/ensureMenuHealth.ts src/inventory/ensureInventoryOperationsSchema.ts src/routes/inventoryOperations.ts
-          git commit -m "fix(inventory): harden v4 stock sync and stocktake audit"
+          git add src/menu/ensureMenuHealth.ts src/routes/inventoryOperations.ts
+          git commit -m "feat(inventory): finish v4 menu and transfer targets"
           git push origin HEAD:feature/inventory-operations-v4-20260813
