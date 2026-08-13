@@ -18,7 +18,7 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
     if(workOrderId){const q=await db.query(`SELECT location_id FROM work_orders WHERE id::text=$1 LIMIT 1`,[workOrderId]);const loc=String(q.rows[0]?.location_id||'').trim();if(!q.rows[0])return res.status(404).json({message:'A munkalap nem található.'});if(loc)res.locals.workOrderFinanceLocationId=loc;}
     return next()
   }
-  if(!r.some(x=>SCOPED.has(x)))return res.status(403).json({message:'Pénzügyi munkalapműveletet csak adminisztrátor, recepciós, szalonvezető vagy üzletvezető végezhet.'});
+  if(!r.some(x=>SCOPED.has(x)))return res.status(403).json({message:'Pénzügyi munkalapműveletet csak adminisztrátor, recepciós vagy üzletvezető végezhet; a szalonvezető pénztári jogosultsággal szintén engedélyezett.'});
   const locationId=String(req.user?.location_id||'').trim();
   if(!locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});
   res.locals.workOrderFinanceLocationId=locationId;
