@@ -2,9 +2,11 @@ import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
 import { ensureProductTaxonomyReady } from "../inventory/ensureProductTaxonomy";
+import inventoryOperationsRouter from "./inventoryOperations";
 
 const router = Router();
 router.use(requireFeature("inventory"));
+router.use("/ops", inventoryOperationsRouter);
 
 type MovementType = "opening" | "receipt" | "adjustment";
 
