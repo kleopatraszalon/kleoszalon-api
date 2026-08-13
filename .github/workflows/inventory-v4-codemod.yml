@@ -1,0 +1,50 @@
+name: Inventory v4 codemod
+on:
+  push:
+    branches: [feature/inventory-operations-v4-20260813]
+permissions:
+  contents: write
+jobs:
+  codemod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/inventory-operations-v4-20260813
+      - name: Apply inventory v4 wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('src/menu/ensureMenuHealth.ts')
+          s=p.read_text()
+          imp='import { ensureInventoryOperationsMenu } from "./ensureInventoryOperationsMenu";\n'
+          if 'ensureInventoryOperationsMenu' not in s:
+              s=s.replace("import pool from '../db';\n", "import pool from '../db';\n"+imp, 1)
+              s=s.replace('export async function ensureMenuHealth(){\n', 'export async function ensureMenuHealth(){\n  await ensureInventoryOperationsMenu();\n', 1)
+          p.write_text(s)
+
+          p=Path('src/inventory/ensureInventoryOperationsSchema.ts')
+          s=p.read_text()
+          s=s.replace("          RETURN COALESCE(NEW,OLD);", "          IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;")
+          s=s.replace("        IF v_warehouse IS NULL THEN RETURN COALESCE(NEW,OLD); END IF;", "        IF v_warehouse IS NULL THEN IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF; END IF;")
+          s=s.replace("        RETURN COALESCE(NEW,OLD);", "        IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;")
+          p.write_text(s)
+
+          p=Path('src/routes/inventoryOperations.ts')
+          s=p.read_text()
+          marker='router.get("/reports/balance"'
+          if marker in s:
+              start=s.index(marker)
+              end=s.index('\n\nexport default router;',start)
+              s=s[:start]+s[end+2:]
+          p.write_text(s)
+          PY
+      - name: Commit wiring
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "kleopatraszalon"
+          git config user.email "birtalan.zoltan1975@gmail.com"
+          git add src/menu/ensureMenuHealth.ts src/inventory/ensureInventoryOperationsSchema.ts src/routes/inventoryOperations.ts
+          git commit -m "chore(inventory): wire v4 runtime and menu"
+          git push origin HEAD:feature/inventory-operations-v4-20260813
