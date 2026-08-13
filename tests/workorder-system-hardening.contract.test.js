@@ -6,7 +6,7 @@ const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const triggers=read('src/workorders/repairLegacyWorkOrderTriggers.ts');
 const finalization=read('src/routes/workOrderFinalizationFast.ts');
-const clients=read('src/routes/clients.ts');
+const clients=[read('src/routes/clients.ts'),read('src/routes/clientsCore.ts')].join('\n');
 
 test('legacy trigger repair is single-flight and retries after failure',()=>{
   assert.match(triggers,/let repairPromise:Promise<void>\|null=null/);

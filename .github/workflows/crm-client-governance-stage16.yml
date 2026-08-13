@@ -1,0 +1,35 @@
+name: CRM client governance stage16
+on:
+  pull_request:
+    paths: ['src/routes/clientGovernance.ts','src/routes/clients.ts','src/routes/clientsCore.ts','src/routes/onlineBookingClientBlock.ts','src/routes/onlineBooking.ts','tests/crm-client-governance-stage16.contract.test.js','tests/crm_client_governance_stage16.integration.js','.github/workflows/crm-client-governance-stage16.yml']
+  push:
+    branches: [main]
+    paths: ['src/routes/clientGovernance.ts','src/routes/clients.ts','src/routes/clientsCore.ts','src/routes/onlineBookingClientBlock.ts','src/routes/onlineBooking.ts','tests/crm-client-governance-stage16.contract.test.js','tests/crm_client_governance_stage16.integration.js','.github/workflows/crm-client-governance-stage16.yml']
+  workflow_dispatch:
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: kleo_crm_stage16}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_crm_stage16" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/kleo_crm_stage16
+      PGSSL: off
+      JWT_SECRET: crm_stage16_secret
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - run: npm ci --include=dev --no-audit --no-fund
+      - run: npm run build
+      - name: Create schema
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/workorder_stage8_integration_schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260808_LOYALTY_WALLET_V1.sql
+      - run: node tests/crm_client_governance_stage16.integration.js
