@@ -5,6 +5,10 @@ const n=(v:any)=>Math.max(0,Number(v||0));
 
 export async function ensureLoyaltyProgram(q:Queryable=db){
  await q.query(`
+  ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_spent numeric;
+  ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_paid numeric;
+  ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_visits integer;
+  ALTER TABLE clients ADD COLUMN IF NOT EXISTS altegio_last_visit timestamptz;
   CREATE TABLE IF NOT EXISTS loyalty_program_settings(id smallint PRIMARY KEY DEFAULT 1 CHECK(id=1),enabled boolean NOT NULL DEFAULT true,inactivity_days integer NOT NULL DEFAULT 360,points_enabled boolean NOT NULL DEFAULT true,updated_at timestamptz NOT NULL DEFAULT now(),updated_by text);
   INSERT INTO loyalty_program_settings(id) VALUES(1) ON CONFLICT DO NOTHING;
   CREATE TABLE IF NOT EXISTS loyalty_program_tiers(code text PRIMARY KEY,name text NOT NULL,color text NOT NULL,booked_threshold numeric(14,2) NOT NULL DEFAULT 0,paid_threshold numeric(14,2) NOT NULL DEFAULT 0,visits_threshold integer NOT NULL DEFAULT 0,discount_percent numeric(7,2) NOT NULL DEFAULT 0,sort_order integer NOT NULL,is_active boolean NOT NULL DEFAULT true,updated_at timestamptz NOT NULL DEFAULT now());
