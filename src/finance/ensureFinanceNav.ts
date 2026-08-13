@@ -41,14 +41,13 @@ async function step(stage:string,fn:()=>Promise<any>){
 export function ensureFinanceNav(){
   if(!ensurePromise){
     ensurePromise=(async()=>{
-      // A munkalap a pénzügyi folyamat tranzakciós magja, ezért a saját
-      // additív sémáját még a HR/pénzügyi modulok előtt biztosítjuk.
       await step('work_order_workflow',()=>ensureWorkOrderWorkflow(pool));
       await step('hr_v2',()=>ensureHrV2());
       for(const file of [
         '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
         '20260807_CRM_AUTOMATION_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
+        '20260813_CASHIER_ALTEGIO_PARITY_V2.sql',
         '20260807_payroll_accounting_v2.sql',
         '20260807_FINANCE_INVOICES_V3.sql',
         '20260808_FINANCE_NAV_SCHEMA_REPAIR_V6.sql',
