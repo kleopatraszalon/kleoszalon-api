@@ -1,0 +1,3 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');const source=fs.readFileSync(path.join(__dirname,'../src/routes/dailyActions.ts'),'utf8');
+test('inactive app users receive a seven day push reminder',()=>{assert.match(source,/last_seen_at<now\(\)-interval '7 days'/);assert.match(source,/A szépségre mindig érdemes időt szánni/);assert.match(source,/sendInactiveReminders/)});
+test('public beauty assistant has AI and deterministic fallback',()=>{assert.match(source,/publicDailyActionsRouter\.post\("\/assistant"/);assert.match(source,/OPENAI_API_KEY/);assert.match(source,/fallbackAssistant/)});
