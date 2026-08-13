@@ -2,7 +2,8 @@ const fs=require('fs');
 const assert=require('assert');
 
 const service=fs.readFileSync('src/services/operationalAlertAutomation.ts','utf8');
-const route=fs.readFileSync('src/routes/notifications.ts','utf8');
+const route=fs.readFileSync('src/routes/notificationsLegacy.ts','utf8');
+const wrapper=fs.readFileSync('src/routes/notifications.ts','utf8');
 
 for(const marker of [
   'supplier_expiry_batches',
@@ -32,6 +33,14 @@ for(const marker of [
   'supplier_expiry',
   'employee_document',
   'complaint_sla',
-]) assert(route.includes(marker),`missing notification route marker: ${marker}`);
+]) assert(route.includes(marker),`missing legacy notification route marker: ${marker}`);
 
+for(const marker of [
+  'notificationsLegacy',
+  'alertRuleAdminRouter',
+  'startAlertRuleScheduler',
+  'router.use("/alert-rules"',
+]) assert(wrapper.includes(marker),`missing notification wrapper marker: ${marker}`);
+
+assert(!route.includes('startOperationalAlertScheduler()'),'legacy scheduler must not start alongside rule scheduler');
 console.log('Operational alert automation contract OK');
