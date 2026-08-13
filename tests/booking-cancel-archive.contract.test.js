@@ -13,7 +13,7 @@ test('online booking bootstrap repairs legacy workorder child timestamps before 
 });
 
 test('public booking cancellation bootstraps the repaired schema before changing workorder status',()=>{
-  const src=read('src/routes/onlineBooking.ts');
+  const src=read('src/routes/onlineBookingCore.ts');
   const route=src.indexOf('router.post("/cancel/:token"');
   const ensure=src.indexOf('await ensureOnlineBooking();',route);
   const update=src.indexOf("UPDATE work_orders SET status='cancelled'",route);
