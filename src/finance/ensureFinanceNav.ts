@@ -47,6 +47,7 @@ export function ensureFinanceNav(){
       await step('hr_v2',()=>ensureHrV2());
       for(const file of [
         '20260807_CASHIER_FINANCIAL_CLOSE_V1.sql',
+        '20260813_CASH_REGISTER_SESSIONS_V1.sql',
         '20260807_CRM_AUTOMATION_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
         '20260807_payroll_accounting_v2.sql',
