@@ -38,6 +38,7 @@ export function ensureFinanceNav(){
         '20260807_CRM_AUTOMATION_V1.sql',
         '20260807_FINANCE_OPERATIONS_V2.sql',
         '20260813_CASHIER_ALTEGIO_PARITY_V1.sql',
+        '20260813_CASHIER_ALTEGIO_PARITY_V2.sql',
         '20260807_payroll_accounting_v2.sql',
         '20260807_FINANCE_INVOICES_V3.sql',
         '20260808_FINANCE_NAV_SCHEMA_REPAIR_V6.sql',
