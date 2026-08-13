@@ -174,7 +174,8 @@ router.post("/:id/publish", async (req, res, n) => {
       channels: string[] = c.channels || [];
     let email = 0,
       sms = 0,
-      push = 0;
+      push = 0,
+      pushFailures = 0;
     for (const x of r.rows) {
       if (channels.includes("email") && x.email && x.email_consent)
         try {
@@ -219,18 +220,24 @@ router.post("/:id/publish", async (req, res, n) => {
             }),
           );
           push++;
-        } catch {
-          await db.query(
-            `UPDATE app_push_subscriptions SET active=false WHERE id=$1`,
-            [s.id],
-          );
+        } catch (pushError:any) {
+          pushFailures++;
+          // Csak a végleg megszűnt böngésző-feliratkozást kapcsoljuk ki. Egy
+          // átmeneti hálózati/VAPID szolgáltatói hiba után a telefon aktív marad.
+          if ([404,410].includes(Number(pushError?.statusCode||pushError?.status)))
+            await db.query(
+              `UPDATE app_push_subscriptions SET active=false WHERE id=$1`,
+              [s.id],
+            );
+          else console.warn("[daily-action-push] transient failure",pushError?.statusCode,pushError?.message||pushError);
         }
     }
     await db.query(
       `UPDATE daily_action_campaigns SET status='published',recipient_count=$2,sent_email=$3,sent_sms=$4,sent_push=$5,updated_at=now()WHERE id=$1`,
       [c.id, r.rowCount, email, sms, push],
     );
-    res.json({ recipients: r.rowCount, email, sms, push });
+    const activeDevices=Number((await db.query(`SELECT COUNT(*)::int count FROM app_push_subscriptions WHERE active=true`)).rows[0]?.count||0);
+    res.json({ recipients: r.rowCount, email, sms, push, push_failures:pushFailures, active_devices:activeDevices, push_configured:Boolean(process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY) });
   } catch (e) {
     n(e);
   }

@@ -350,10 +350,20 @@ router.post("/book", async (req, res) => {
        VALUES($1::uuid,$2,'public',$3::jsonb,$4)`,
       [appointment.rows[0].id, bookingSource === "online_voice" ? "voice_created" : "online_created", JSON.stringify({ status, start_time: start, end_time: end, employee_id: employeeId, booking_source: bookingSource, voice_event_id:voiceEventId }), bookingSource === "online_voice" ? "Hangalapú online foglalás" : "Online foglalás"]
     );
-    const workOrder = await ensureBookingWorkOrder(cx, String(appointment.rows[0].id), "public");
-
     await cx.query("COMMIT");
-    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource, voice_event_id:voiceEventId, work_order_id: workOrder.work_order_id, work_order_number: workOrder.work_order_number });
+    // Az időpont a foglalás üzleti eredménye. A kapcsolódó munkalap előállítása
+    // külön tranzakcióban fut, így annak átmeneti hibája nem fordíthatja vissza és
+    // nem jelentheti sikertelennek a már elmentett vendégfoglalást.
+    let workOrder:any={work_order_id:null,work_order_number:null};
+    try {
+      await cx.query("BEGIN");
+      workOrder=await ensureBookingWorkOrder(cx,String(appointment.rows[0].id),"public");
+      await cx.query("COMMIT");
+    } catch (workOrderError:any) {
+      await cx.query("ROLLBACK").catch(()=>undefined);
+      console.error("[online-booking] work order deferred",{appointment_id:appointment.rows[0].id,error:workOrderError?.message||String(workOrderError)});
+    }
+    res.status(201).json({ id: appointment.rows[0].id, status, confirmation_required: Boolean(cfg.require_staff_confirmation), cancellation_token: token, online_discount_percent: Number(cfg.online_discount_percent || 0), booking_source: bookingSource, voice_event_id:voiceEventId, work_order_id: workOrder.work_order_id, work_order_number: workOrder.work_order_number, persisted:true });
   } catch (error: any) {
     await cx.query("ROLLBACK").catch(() => undefined);
     if(String(error?.code||"")==="23505"&&String(error?.constraint||"").includes("voice_event"))return res.status(409).json({error:"Ez a Voice Booking esemény már fel lett használva."});
