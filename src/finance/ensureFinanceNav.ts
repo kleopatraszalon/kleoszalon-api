@@ -56,6 +56,7 @@ export function ensureFinanceNav(){
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
         '20260811_NAV_ONLINE_INVOICE_41A.sql',
         '20260811_NAV_ONLINE_INVOICE_41B_XSD.sql',
+        '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
         '20260807_UAT_ISSUES_V3.sql',
