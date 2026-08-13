@@ -40,9 +40,9 @@ test('cash register routes are finance scoped and bootstrapped',()=>{
   assert.match(bootstrap,/20260813_CASH_REGISTER_SESSIONS_V1\.sql/);
 });
 
-test('reception, business manager and salon manager remain allowed cashier roles',()=>{
+test('cashier write access stays limited to reception and business-manager roles outside admin',()=>{
   assert.match(scope,/receptionist/);
   assert.match(scope,/location_manager/);
-  assert.match(scope,/salon_manager/);
-  assert.match(scope,/szalonvezető/);
+  assert.doesNotMatch(scope,/salon_manager/);
+  assert.match(scope,/Pénzügyi munkalapműveletet csak adminisztrátor, recepciós vagy üzletvezető/);
 });
