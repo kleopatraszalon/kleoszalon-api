@@ -357,6 +357,37 @@ router.post("/book", async (req, res) => {
   } catch (error: any) {
     await cx.query("ROLLBACK").catch(() => undefined);
     if(String(error?.code||"")==="23505"&&String(error?.constraint||"").includes("voice_event"))return res.status(409).json({error:"Ez a Voice Booking esemény már fel lett használva."});
+    // A kliens ne kapjon téves hibát, ha egy adatbázis/proxy megszakadás után a
+    // foglalás valójában már tartósan létrejött. Az ellenőrzés szándékosan az
+    // időpont + munkatárs + telephely + vendég elérhetőség teljes egyezését kéri,
+    // ezért más vendég foglalását soha nem tekinti sikeres ismétlésnek.
+    try {
+      const persisted = await db.query(
+        `SELECT a.id::text,a.status,a.cancellation_token::text,
+                a.work_order_id::text,a.work_order_number,
+                COALESCE(obs.require_staff_confirmation,true) confirmation_required,
+                COALESCE(obs.online_discount_percent,0)::numeric online_discount_percent
+         FROM appointments a
+         JOIN clients cl ON cl.id::text=(to_jsonb(a)->>'client_id')
+         LEFT JOIN online_booking_settings obs ON obs.location_id::text=(to_jsonb(a)->>'location_id')
+         WHERE a.location_id::text=$1 AND a.employee_id::text=$2
+           AND a.start_time=$3::timestamptz
+           AND lower(COALESCE(a.status,'')) NOT IN ('cancelled','canceled')
+           AND (
+             ($4<>'' AND regexp_replace(COALESCE(cl.phone,''),'[^0-9]','','g')=regexp_replace($4,'[^0-9]','','g'))
+             OR ($5<>'' AND lower(COALESCE(cl.email,''))=lower($5))
+           )
+         ORDER BY a.updated_at DESC NULLS LAST LIMIT 1`,
+        [locationId, employeeId, start.toISOString(), phone, email]
+      );
+      const recovered=persisted.rows[0];
+      if(recovered){
+        console.warn("[online-booking] recovered persisted booking after response failure",{appointment_id:recovered.id,error:error?.message||String(error)});
+        return res.status(200).json({id:recovered.id,status:recovered.status,confirmation_required:Boolean(recovered.confirmation_required),cancellation_token:recovered.cancellation_token,online_discount_percent:Number(recovered.online_discount_percent||0),booking_source:bookingSource,voice_event_id:requestedVoiceEventId||null,work_order_id:recovered.work_order_id||null,work_order_number:recovered.work_order_number||null,recovered:true});
+      }
+    } catch (recoveryError:any) {
+      console.error("[online-booking] persisted booking recovery failed",recoveryError?.message||recoveryError);
+    }
     res.status(500).json({ error: "Az online foglalás mentése sikertelen.", detail: error?.message || String(error) });
   } finally {
     cx.release();
