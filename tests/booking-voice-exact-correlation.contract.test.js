@@ -20,7 +20,7 @@ test('online booking schema persists one correlation id on appointments and wait
 });
 
 test('voice event use is fresh intent-scoped and atomically one-shot across final outcomes',()=>{
-  const src=read('src/routes/onlineBooking.ts');
+  const src=read('src/routes/onlineBookingCore.ts');
   assert.match(src,/pg_advisory_xact_lock\(hashtext\(\$1\)\)/);
   assert.match(src,/Date\.now\(\)-24\*3600_000/);
   assert.match(src,/allowedIntents\.includes/);
@@ -30,7 +30,7 @@ test('voice event use is fresh intent-scoped and atomically one-shot across fina
 });
 
 test('public booking and waitlist store and echo the correlation id without requiring it during rolling deploy',()=>{
-  const src=read('src/routes/onlineBooking.ts');
+  const src=read('src/routes/onlineBookingCore.ts');
   assert.match(src,/booking_source,voice_event_id,cancellation_token/);
   assert.match(src,/voice_event_id:voiceEventId/);
   assert.match(src,/source,voice_event_id\)/);
