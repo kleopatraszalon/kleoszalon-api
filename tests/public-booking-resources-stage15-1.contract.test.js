@@ -35,7 +35,7 @@ test('online resource holds prevent booking races and expire automatically',()=>
 test('appointment service trigger converts holds to real resource allocations',()=>{
  assert.match(resources,/kleo_online_booking_resource_allocate/);
  assert.match(resources,/appointment_resource_allocations/);
- assert.match(resources,/booking_source,'online'/);
+ assert.match(resources,/online_voice/);
  assert.match(resources,/A szükséges erőforrás időközben foglalttá vált/);
 });
 
