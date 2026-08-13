@@ -41,14 +41,14 @@ async function ensureSchema() {
   `);
 }
 
-router.use(async (_req, _res, next) => {
+const ready = async (_req: AuthRequest, _res: any, next: any) => {
   try {
     await ensureSchema();
     next();
   } catch (error) {
     next(error);
   }
-});
+};
 
 async function getMovementTotals(locationId: string, businessDate: string) {
   const { rows } = await db.query(
@@ -74,7 +74,7 @@ async function isClosed(locationId: string, businessDate: string) {
   return Boolean(rows[0]);
 }
 
-router.get("/register-movements", async (req: AuthRequest, res, next) => {
+router.get("/register-movements", ready, async (req: AuthRequest, res, next) => {
   try {
     const locationId = locationFrom(req);
     if (!locationId)
@@ -105,7 +105,7 @@ router.get("/register-movements", async (req: AuthRequest, res, next) => {
   }
 });
 
-router.post("/register-movements", async (req: AuthRequest, res, next) => {
+router.post("/register-movements", ready, async (req: AuthRequest, res, next) => {
   try {
     const locationId = locationFrom(req);
     if (!locationId)
@@ -141,7 +141,7 @@ router.post("/register-movements", async (req: AuthRequest, res, next) => {
   }
 });
 
-router.post("/register-movements/:id/void", async (req: AuthRequest, res, next) => {
+router.post("/register-movements/:id/void", ready, async (req: AuthRequest, res, next) => {
   const client = await db.connect();
   try {
     const locationId = locationFrom(req);
@@ -154,7 +154,8 @@ router.post("/register-movements/:id/void", async (req: AuthRequest, res, next) 
 
     await client.query("BEGIN");
     const locked = await client.query(
-      `SELECT * FROM cash_register_movements
+      `SELECT *,to_char(business_date,'YYYY-MM-DD') AS business_date_key
+       FROM cash_register_movements
        WHERE id=$1 AND location_id=$2
        FOR UPDATE`,
       [req.params.id, locationId],
@@ -168,7 +169,7 @@ router.post("/register-movements/:id/void", async (req: AuthRequest, res, next) 
       await client.query("ROLLBACK");
       return res.status(409).json({ message: "A kasszamozgás már vissza van vonva." });
     }
-    if (await isClosed(locationId, String(movement.business_date).slice(0, 10))) {
+    if (await isClosed(locationId, String(movement.business_date_key))) {
       await client.query("ROLLBACK");
       return res.status(409).json({
         message: "Lezárt napi pénztár kasszamozgása nem vonható vissza.",
@@ -192,7 +193,7 @@ router.post("/register-movements/:id/void", async (req: AuthRequest, res, next) 
   }
 });
 
-router.get("/daily-summary", async (req: AuthRequest, res, next) => {
+router.get("/daily-summary", ready, async (req: AuthRequest, res, next) => {
   try {
     const locationId = locationFrom(req);
     if (!locationId) return next();
@@ -242,7 +243,7 @@ router.get("/daily-summary", async (req: AuthRequest, res, next) => {
   }
 });
 
-router.post("/daily-close", async (req: AuthRequest, res, next) => {
+router.post("/daily-close", ready, async (req: AuthRequest, res, next) => {
   try {
     const locationId = locationFrom(req);
     if (!locationId) return next();
