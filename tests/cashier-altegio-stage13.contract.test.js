@@ -20,12 +20,13 @@ test('Stage13 supports multiple cash and cashless registers',()=>{
  assert.match(route,/router\.patch\('\/registers\/:id'/);
 });
 
-test('cashier supports denomination count interim check and cashier handover',()=>{
+test('cashier supports denomination count interim check cashier handover and dated history',()=>{
  assert.match(migration,/CREATE TABLE IF NOT EXISTS cash_register_counts/);
  assert.match(migration,/count_type IN\('opening','check','handover','closing'\)/);
  assert.match(route,/router\.post\('\/sessions\/:id\/check'/);
  assert.match(route,/Pénztárátadásnál adja meg az átvevő pénztárost/);
  assert.match(route,/handover_from_session_id/);
+ assert.match(context,/router\.get\('\/register-history'/);
  assert.match(context,/previous_closing_count/);
 });
 
@@ -48,8 +49,9 @@ test('cash cannot bypass an open register even through fallback or loyalty check
  assert.match(fast,/register_session_id/);
 });
 
-test('partial and full refunds remain auditable and affect net paid total',()=>{
+test('partial and full refunds remain UUID-linked auditable and affect net paid total',()=>{
  assert.match(migration,/CREATE TABLE IF NOT EXISTS work_order_payment_refunds/);
+ assert.match(migration,/payment_id uuid NOT NULL REFERENCES work_order_payments\(id\)/);
  assert.match(migration,/refunded_amount numeric\(14,2\)/);
  assert.match(route,/router\.post\('\/payments\/:paymentId\/refund'/);
  assert.match(route,/amount-COALESCE\(refunded_amount,0\)/);
