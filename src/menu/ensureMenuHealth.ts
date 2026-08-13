@@ -63,6 +63,21 @@ export async function ensureMenuHealth(){
     SELECT 'procurement.central_supply','Központi ellátás',NULL,'/warehouse/central-supply',45,p.id,'inventory',true FROM p
     ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='inventory',is_active=true`);
 
+
+  // Terméktörzs v3: kézi taxonómia-felülvizsgálat csak menedzsmentnek.
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='inventory' LIMIT 1)
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    SELECT 'inventory.taxonomy_review','Besorolás ellenőrzése','Tags','/masterdata/products/taxonomy-review',35,p.id,'inventory',true FROM p
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='inventory',is_active=true`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,true,false,true,false,true,true,false,false,CASE WHEN r.role_key='admin' THEN 'all_locations' ELSE 'own_location' END,now()
+    FROM (VALUES('admin'),('manager')) r(role_key) CROSS JOIN menus m WHERE m.code='inventory.taxonomy_review'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_edit=true,can_approve=true,can_export=true,scope_type=EXCLUDED.scope_type,updated_at=now()`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,false,false,false,false,false,false,false,false,'own_location',now()
+    FROM (VALUES('location_manager'),('salon_manager'),('receptionist'),('employee'),('customer')) r(role_key) CROSS JOIN menus m WHERE m.code='inventory.taxonomy_review'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_edit=false,can_approve=false,updated_at=now()`);
+
   await safe(`UPDATE menus SET route='/webshop/admin',is_active=true WHERE code='commerce.webshop'`);
   await safe(`UPDATE menus SET route='/signage',is_active=true WHERE code='screens.signage'`);
   await safe(`UPDATE menus SET route='/kiosk',is_active=true WHERE code='screens.kiosk'`);
