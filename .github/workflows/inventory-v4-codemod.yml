@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/inventory-operations-v4-20260813
-      - name: Apply inventory v4 wiring
+      - name: Apply inventory v4 wiring and hardening
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -26,13 +26,32 @@ jobs:
 
           p=Path('src/inventory/ensureInventoryOperationsSchema.ts')
           s=p.read_text()
-          s=s.replace("          RETURN COALESCE(NEW,OLD);", "          IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;")
-          s=s.replace("        IF v_warehouse IS NULL THEN RETURN COALESCE(NEW,OLD); END IF;", "        IF v_warehouse IS NULL THEN IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF; END IF;")
-          s=s.replace("        RETURN COALESCE(NEW,OLD);", "        IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;")
+          old='''        v_product:=COALESCE(NEW.product_id,OLD.product_id);
+        v_location:=COALESCE(NEW.location_id,OLD.location_id)::text;
+        IF TG_OP='INSERT' THEN
+          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
+        ELSIF TG_OP='UPDATE' THEN
+          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
+        ELSE
+          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);
+        END IF;'''
+          new='''        IF TG_OP='INSERT' THEN
+          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
+          v_delta:=COALESCE(NEW.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
+        ELSIF TG_OP='UPDATE' THEN
+          v_product:=NEW.product_id; v_location:=NEW.location_id::text;
+          v_delta:=COALESCE(NEW.quantity,0)-COALESCE(OLD.quantity,0); v_min:=COALESCE(NEW.min_quantity,0); v_opt:=COALESCE(NEW.optimal_quantity,0); v_cost:=COALESCE(NEW.unit_cost,0);
+        ELSE
+          v_product:=OLD.product_id; v_location:=OLD.location_id::text;
+          v_delta:=-COALESCE(OLD.quantity,0); v_min:=0; v_opt:=0; v_cost:=COALESCE(OLD.unit_cost,0);
+        END IF;'''
+          if old in s:
+              s=s.replace(old,new,1)
           p.write_text(s)
 
           p=Path('src/routes/inventoryOperations.ts')
           s=p.read_text()
+          s=s.replace('warehouse: stocktake, movementType: "stocktake_adjustment"','warehouse: { id: stocktake.warehouse_id, location_id: stocktake.location_id }, movementType: "stocktake_adjustment"')
           marker='router.get("/reports/balance"'
           if marker in s:
               start=s.index(marker)
@@ -46,5 +65,5 @@ jobs:
           git config user.name "kleopatraszalon"
           git config user.email "birtalan.zoltan1975@gmail.com"
           git add src/menu/ensureMenuHealth.ts src/inventory/ensureInventoryOperationsSchema.ts src/routes/inventoryOperations.ts
-          git commit -m "chore(inventory): wire v4 runtime and menu"
+          git commit -m "fix(inventory): harden v4 stock sync and stocktake audit"
           git push origin HEAD:feature/inventory-operations-v4-20260813
