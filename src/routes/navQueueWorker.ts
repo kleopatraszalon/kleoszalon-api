@@ -5,7 +5,7 @@ import {requireManagement} from '../middleware/requireRoles';
 import {getNavQueueWorkerStatus,runNavQueueWorkerOnce,startNavQueueWorker} from '../nav/navQueueWorker';
 
 const router=Router();
-startNavQueueWorker();
+if(process.env.NODE_ENV!=='test')startNavQueueWorker();
 router.use(requireAuth,requireManagement);
 const truthy=(v:any)=>/^(1|true|yes|on)$/i.test(String(v||'').trim());
 
