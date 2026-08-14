@@ -5,7 +5,7 @@ import type { SocialCampaignRecord, SocialPublishResult } from "./types";
 
 async function metaForm(endpoint: string, data: Record<string, string>) {
   const body = new URLSearchParams(data);
-  return axios.post(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${endpoint}`, body, {
+  return axios.post<any>(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${endpoint}`, body, {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     timeout: 25000,
   });
@@ -14,7 +14,7 @@ async function metaForm(endpoint: string, data: Record<string, string>) {
 export async function verifyFacebookAccount() {
   if (!socialConfig.facebook.pageId || !socialConfig.facebook.accessToken) return { ok: false, error: "Nincs konfigurálva." };
   try {
-    const result = await axios.get(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${socialConfig.facebook.pageId}`, {
+    const result = await axios.get<any>(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${socialConfig.facebook.pageId}`, {
       params: { fields: "id,name", access_token: socialConfig.facebook.accessToken },
       timeout: 15000,
     });
@@ -27,7 +27,7 @@ export async function verifyFacebookAccount() {
 export async function verifyInstagramAccount() {
   if (!socialConfig.instagram.userId || !socialConfig.instagram.accessToken) return { ok: false, error: "Nincs konfigurálva." };
   try {
-    const result = await axios.get(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${socialConfig.instagram.userId}`, {
+    const result = await axios.get<any>(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${socialConfig.instagram.userId}`, {
       params: { fields: "id,username,name", access_token: socialConfig.instagram.accessToken },
       timeout: 15000,
     });
@@ -65,7 +65,7 @@ export async function publishFacebook(campaign: SocialCampaignRecord, payload: a
 
 async function waitForInstagramContainer(containerId: string, accessToken: string) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const result = await axios.get(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${containerId}`, {
+    const result = await axios.get<any>(`https://graph.facebook.com/${socialConfig.metaGraphVersion}/${containerId}`, {
       params: { fields: "status_code,status", access_token: accessToken },
       timeout: 15000,
     });
