@@ -1,8 +1,6 @@
 import { Router } from "express";
 import pool from "../db";
 import * as https from "https";
-import { verifyEmailTransport } from "../mailer";
-import { classifyBookingCommunicationFailure, normalizeBookingCommunicationFailure } from "../booking/communicationFailureAnalysis";
 
 /**
  * Public Signage API (NO AUTH)
@@ -12,7 +10,7 @@ import { classifyBookingCommunicationFailure, normalizeBookingCommunicationFailu
  * Endpoints used by SignagePage.tsx:
  *  - GET /services        -> { services: ServiceItem[], fetchedAt }
  *  - GET /deals           -> { deals: Deal[] }
- *  - GET /videos          -> { videos: VideoItem[], fetchedAt }
+ *  - GET /videos          -> { videos: VideoItem[] }
  *  - GET /daily           -> { fitness: Quote|null, beauty: Quote|null }
  *  - GET /professionals   -> { professionals: Professional[] }
  *
@@ -432,35 +430,6 @@ router.get("/nameday", async (_req, res) => {
       source: "nameday.abalin.net",
     });
   }
-});
-
-// TEMPORARY 2026-08-14. PII-free production verification; remove immediately after read.
-router.get("/booking-mail-recovery-probe-20260814", async (_req,res)=>{
-  res.setHeader("Cache-Control","no-store");
-  try{
-    const email_transport=await verifyEmailTransport();
-    const {rows}=await pool.query(`SELECT channel,error_text,resolved_at FROM booking_communication_queue WHERE status='failed'`);
-    const active=rows.filter((r:any)=>!r.resolved_at);
-    const causes=new Map<string,number>();
-    const unknownSignatures=new Map<string,number>();
-    for(const row of active){
-      const cause=classifyBookingCommunicationFailure(row.error_text,row.channel);
-      causes.set(cause.key,(causes.get(cause.key)||0)+1);
-      if(cause.key==="unknown"){
-        const signature=normalizeBookingCommunicationFailure(row.error_text);
-        unknownSignatures.set(signature,(unknownSignatures.get(signature)||0)+1);
-      }
-    }
-    res.json({
-      generated_at:nowIso(),
-      email_transport,
-      active_failed:active.length,
-      resolved_failed:rows.length-active.length,
-      historical_total_failed:rows.length,
-      active_causes:[...causes.entries()].map(([key,count])=>({key,count})).sort((a,b)=>b.count-a.count),
-      unknown_signatures:[...unknownSignatures.entries()].map(([message,count])=>({message,count})).sort((a,b)=>b.count-a.count).slice(0,10)
-    });
-  }catch(_error){res.status(500).json({error:"booking_mail_recovery_probe_failed"});}
 });
 
 export default router;
