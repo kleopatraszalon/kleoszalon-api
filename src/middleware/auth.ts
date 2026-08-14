@@ -6,10 +6,11 @@ import JWT_SECRET from "../security/jwtSecret";
 
 export interface AuthRequest extends Request {
   user?: {
-    id: number;
+    id: number | string;
     email?: string;
-    role?: string;
-    location_id?: number | null;
+    role?: string | string[];
+    location_id?: number | string | null;
+    uat_scope?: string;
   };
 }
 
@@ -36,6 +37,12 @@ function getTokenFromReq(req: Request): string | null {
   return null;
 }
 
+function navTestUatPathAllowed(req:Request){
+  const path=String(req.originalUrl||req.url||"").split("?")[0];
+  return path.startsWith("/api/transactions/nav-test-uat/")||path==="/api/transactions/nav-test-uat"||
+         path.startsWith("/api/transactions/nav-online-invoice/")||path==="/api/transactions/nav-online-invoice";
+}
+
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const token = getTokenFromReq(req);
 
@@ -53,7 +60,15 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       email: decoded.email,
       role: decoded.role,
       location_id: decoded.location_id ?? null,
+      uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
+
+    if(req.user.uat_scope==="nav_test"&&!navTestUatPathAllowed(req)){
+      return res.status(403).json({
+        error:"A NAV TEST UAT token kizárólag a NAV teszt végpontokra használható.",
+        uat_scope:"nav_test"
+      });
+    }
 
     const allowed = await enforceKnownModuleAccess(req, res);
     if (!allowed) return;
