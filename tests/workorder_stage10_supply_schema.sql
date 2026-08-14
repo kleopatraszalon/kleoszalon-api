@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS product_supplier_terms(
   minimum_order_quantity numeric(14,3) NOT NULL DEFAULT 1,
   lead_time_days int NOT NULL DEFAULT 7,
   preferred boolean NOT NULL DEFAULT false,
-  active boolean NOT NULL DEFAULT true
+  active boolean NOT NULL DEFAULT true,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS purchase_orders(
   id bigserial PRIMARY KEY,
@@ -58,13 +59,21 @@ CREATE TABLE IF NOT EXISTS purchase_orders(
   note text,
   created_by text,
   approval_status text NOT NULL DEFAULT 'not_requested',
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  ordered_at timestamptz,
+  cancelled_at timestamptz,
+  received_at timestamptz,
+  updated_by text,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS purchase_order_items(
   id bigserial PRIMARY KEY,
   purchase_order_id bigint NOT NULL REFERENCES purchase_orders(id),
   product_id uuid NOT NULL REFERENCES products(id),
   ordered_quantity numeric(14,3) NOT NULL,
+  received_quantity numeric(14,3) NOT NULL DEFAULT 0,
   unit_cost numeric(14,4) NOT NULL DEFAULT 0,
-  note text
+  actual_unit_cost numeric(14,4),
+  note text,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -7,6 +7,7 @@ const cashier=require('../dist/routes/cashier').default;
 const finalization=require('../dist/routes/workOrderFinalization').default;
 const materials=require('../dist/routes/workOrderMaterials').default;
 const centralSupply=require('../dist/routes/centralSupply').default;
+const purchaseOrders=require('../dist/routes/purchaseOrders').default;
 const {requireAuth}=require('../dist/middleware/auth');
 const {ensureWorkOrderWorkflow}=require('../dist/workorders/ensureWorkOrderWorkflow');
 
@@ -41,6 +42,7 @@ async function main(){
  app.use('/cashier',cashier);
  app.use('/finalization',finalization);
  app.use('/supply',requireAuth,centralSupply);
+ app.use('/procurement',requireAuth,purchaseOrders);
  app.use((err,_req,res,_next)=>{console.error('stage10 route error',err);res.status(500).json({message:err?.message||String(err),code:err?.code||null})});
  const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s))});
  const port=server.address().port,base=`http://127.0.0.1:${port}`;
@@ -68,12 +70,14 @@ async function main(){
 
   // 3) Approve product1 request, allocate from central warehouse, dispatch, receive with shortage.
   r=await request(base,`/supply/requests/${req1.id}/approve`,{method:'POST',headers:auth(admin),body:JSON.stringify({approved_quantity:6})});assert.equal(r.status,200,`approve #1: ${JSON.stringify(r.body)}`);
-  r=await request(base,`/supply/requests/${req1.id}/allocate`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,201,`allocate #1: ${JSON.stringify(r.body)}`);const t1=r.body.id;
+  r=await request(base,`/supply/requests/${req1.id}/allocate`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,201,`allocate #1: ${JSON.stringify(r.body)}`);const t1=r.body.id;assert.ok(r.body.source_warehouse_id);assert.ok(r.body.destination_warehouse_id);
   r=await request(base,`/supply/transfers/${t1}/dispatch`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,200,`dispatch #1: ${JSON.stringify(r.body)}`);
   let central=(await q(`SELECT quantity FROM product_stock_balances WHERE product_id=$1 AND location_id IS NULL`,[d.product1_id])).rows[0];assert.equal(Number(central.quantity),14);
+  let ledger=(await q(`SELECT warehouse_id,destination_warehouse_id,document_number,quantity FROM inventory_movements WHERE document_number=$1 AND movement_type='transfer_out'`,[`CS-${t1}`])).rows[0];assert.ok(ledger?.warehouse_id);assert.ok(ledger?.destination_warehouse_id);assert.equal(Number(ledger.quantity),-6);
   r=await request(base,`/supply/transfers/${t1}/receive`,{method:'POST',headers:auth(admin),body:JSON.stringify({received_quantity:5,note:'Stage10 shortage test'})});assert.equal(r.status,200,`receive partial #1: ${JSON.stringify(r.body)}`);assert.equal(Number(r.body.shortage),1);
   req1=(await q(`SELECT * FROM salon_stock_requests WHERE id=$1`,[req1.id])).rows[0];assert.equal(req1.status,'partially_supplied');assert.equal(Number(req1.supplied_quantity),5);
   assert.equal(Number((await q(`SELECT count(*) n FROM stock_transfer_discrepancies WHERE transfer_id=$1 AND status='open'`,[t1])).rows[0].n),1);
+  ledger=(await q(`SELECT warehouse_id,document_number,quantity FROM inventory_movements WHERE document_number=$1 AND movement_type='transfer_in'`,[`CS-${t1}`])).rows[0];assert.ok(ledger?.warehouse_id);assert.equal(Number(ledger.quantity),5);
 
   // 4) Allocate and receive the remaining 1; request must become supplied and salon balance must be 9.
   r=await request(base,`/supply/requests/${req1.id}/allocate`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,201,`allocate remaining: ${JSON.stringify(r.body)}`);const t2=r.body.id;
@@ -87,8 +91,15 @@ async function main(){
   r=await request(base,`/supply/requests/${req2.id}/approve`,{method:'POST',headers:auth(admin),body:JSON.stringify({approved_quantity:2})});assert.equal(r.status,200);
   r=await request(base,`/supply/requests/${req2.id}/allocate`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,409);assert.equal(r.body.can_procure,true);assert.equal(Number(r.body.missing),2);
   r=await request(base,`/supply/requests/${req2.id}/procure`,{method:'POST',headers:auth(admin),body:'{}'});assert.equal(r.status,201,`procure #2: ${JSON.stringify(r.body)}`);assert.ok(r.body.purchase_order?.id);assert.equal(Number(r.body.missing_quantity),2);assert.equal(Number(r.body.ordered_quantity),5,'minimum supplier order quantity must be respected');
-  const po=(await q(`SELECT po.*,poi.ordered_quantity,poi.product_id FROM purchase_orders po JOIN purchase_order_items poi ON poi.purchase_order_id=po.id WHERE po.id=$1`,[r.body.purchase_order.id])).rows[0];assert.equal(po.status,'draft');assert.equal(po.approval_status,'not_requested');assert.equal(String(po.product_id),String(d.product2_id));assert.equal(Number(po.ordered_quantity),5);
+  const po=(await q(`SELECT po.*,poi.id item_id,poi.ordered_quantity,poi.product_id FROM purchase_orders po JOIN purchase_order_items poi ON poi.purchase_order_id=po.id WHERE po.id=$1`,[r.body.purchase_order.id])).rows[0];assert.equal(po.status,'draft');assert.equal(po.approval_status,'not_requested');assert.equal(String(po.product_id),String(d.product2_id));assert.equal(Number(po.ordered_quantity),5);
   const linked=(await q(`SELECT purchase_order_id FROM salon_stock_requests WHERE id=$1`,[req2.id])).rows[0];assert.equal(Number(linked.purchase_order_id),Number(po.id));
+
+  // 6) Supplier receipt must enter a concrete central warehouse and keep the legacy aggregate synchronized.
+  await q(`UPDATE purchase_orders SET approval_status='approved',status='ordered',ordered_at=now(),updated_at=now() WHERE id=$1`,[po.id]);
+  r=await request(base,`/procurement/orders/${po.id}/receive`,{method:'POST',headers:auth(admin),body:JSON.stringify({items:[{item_id:po.item_id,received_quantity:5,unit_cost:55}]})});assert.equal(r.status,200,`PO receive: ${JSON.stringify(r.body)}`);assert.equal(r.body.status,'received');assert.ok(r.body.receipts?.[0]?.warehouse_id);
+  central=(await q(`SELECT quantity FROM product_stock_balances WHERE product_id=$1 AND location_id IS NULL`,[d.product2_id])).rows[0];assert.equal(Number(central.quantity),5);
+  const warehouseCentral=(await q(`SELECT COALESCE(SUM(b.quantity),0)::numeric quantity FROM inventory_warehouse_balances b JOIN inventory_warehouses w ON w.id=b.warehouse_id WHERE b.product_id=$1 AND w.location_id IS NULL`,[d.product2_id])).rows[0];assert.equal(Number(warehouseCentral.quantity),5);
+  const receiptMovement=(await q(`SELECT warehouse_id,supplier_id,document_number,quantity FROM inventory_movements WHERE product_id=$1 AND movement_type='receipt' AND document_number=$2 ORDER BY id DESC LIMIT 1`,[d.product2_id,`PO-${po.id}`])).rows[0];assert.ok(receiptMovement?.warehouse_id);assert.ok(receiptMovement?.supplier_id);assert.equal(Number(receiptMovement.quantity),5);
 
   console.log('STAGE10 CENTRAL SUPPLY INTEGRATION: PASS');
  }finally{await new Promise(resolve=>server.close(resolve));await pool.end()}

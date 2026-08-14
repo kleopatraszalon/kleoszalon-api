@@ -1,6 +1,8 @@
 import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
+import { ensureInventoryOperationsSchema } from "../inventory/ensureInventoryOperationsSchema";
+import { postWarehouseReceipt, resolveInventoryWarehouse } from "../inventory/inventoryLedgerService";
 
 const router = Router();
 router.use(requireFeature("inventory"));
@@ -149,42 +151,61 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
   try {
     const incoming = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!incoming.length) return res.status(400).json({ message: "Nincs bevételezendő tétel." });
+    await ensureInventoryOperationsSchema();
     await client.query("BEGIN");
     const orderRes = await client.query(`SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE`, [req.params.id]);
     const order = orderRes.rows[0];
     if (!order) { await client.query("ROLLBACK"); return res.status(404).json({ message: "A rendelés nem található." }); }
     if (!["ordered","partially_received"].includes(order.status)) { await client.query("ROLLBACK"); return res.status(409).json({ message: "Bevételezés csak megrendelt vagy részben beérkezett rendelésre végezhető." }); }
     const who = req.user?.email || String(req.user?.id || "");
+    const receipts:any[]=[];
 
     for (const x of incoming) {
       const itemId = String(x?.item_id || "");
       const receiveQty = num(x?.received_quantity);
       const actualUnitCost = x?.unit_cost == null || x.unit_cost === "" ? null : money(x.unit_cost);
       if (!itemId || !(receiveQty > 0)) throw new Error("Érvénytelen bevételezési tétel.");
+      if (actualUnitCost != null && actualUnitCost < 0) throw new Error("Érvénytelen bevételezési egységár.");
       const itemRes = await client.query(`SELECT * FROM purchase_order_items WHERE id=$1 AND purchase_order_id=$2 FOR UPDATE`, [itemId,req.params.id]);
       const item = itemRes.rows[0];
       if (!item) throw new Error("A rendelési tétel nem található.");
       const remaining = num(item.ordered_quantity)-num(item.received_quantity);
       if (receiveQty>remaining+0.0001) throw new Error("A bevételezett mennyiség nagyobb a hátralévő rendelésnél.");
       const cost = actualUnitCost == null ? num(item.unit_cost) : actualUnitCost;
-      const balRes = await client.query(`SELECT * FROM product_stock_balances WHERE product_id=$1 AND (($2::text IS NULL AND location_id IS NULL) OR location_id::text=$2::text) FOR UPDATE`, [item.product_id,order.location_id]);
-      const bal = balRes.rows[0],oldQty=num(bal?.quantity),oldCost=num(bal?.unit_cost),newQty=oldQty+receiveQty;
-      const newCost = newQty>0 ? money((oldQty*oldCost+receiveQty*cost)/newQty) : cost;
-      if (bal) await client.query(`UPDATE product_stock_balances SET quantity=$2,unit_cost=$3,updated_at=now() WHERE id=$1`, [bal.id,newQty,newCost]);
-      else await client.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity,unit_cost,min_quantity,updated_at) VALUES($1,$2,$3,$4,0,now())`, [item.product_id,order.location_id,newQty,newCost]);
+      const locationId = order.location_id == null ? null : String(order.location_id);
+      const warehouse = await resolveInventoryWarehouse(client, {
+        locationId,
+        productId:String(item.product_id),
+        warehouseId:x?.warehouse_id ?? req.body?.warehouse_id ?? null,
+      });
+      const receipt = await postWarehouseReceipt(client, {
+        warehouse,
+        productId:String(item.product_id),
+        quantity:receiveQty,
+        incomingUnitCost:cost,
+        movementType:"receipt",
+        meta:{
+          supplierId:order.supplier_id || null,
+          documentNumber:`PO-${order.id}`,
+          counterpartyName:order.supplier_name || null,
+          note:`Beszerzési rendelés #${order.id}`,
+          createdBy:who,
+        },
+      });
+      receipts.push({item_id:itemId,product_id:String(item.product_id),...receipt});
       await client.query(`UPDATE purchase_order_items SET received_quantity=received_quantity+$2,actual_unit_cost=$3,updated_at=now() WHERE id=$1`, [itemId,receiveQty,cost]);
       if (order.supplier_id) await client.query(`UPDATE product_supplier_terms SET unit_price=$3,updated_at=now() WHERE product_id=$1 AND supplier_id=$2`, [item.product_id,order.supplier_id,cost]);
-      await client.query(`INSERT INTO inventory_movements(product_id,location_id,movement_type,quantity,balance_after,unit_cost,stock_value_after,note,created_by) VALUES($1,$2,'receipt',$3,$4,$5,$6,$7,$8)`, [item.product_id,order.location_id,receiveQty,newQty,newCost,money(newQty*newCost),`Beszerzési rendelés #${order.id}`,who]);
     }
 
     const totals = await client.query(`SELECT BOOL_AND(received_quantity>=ordered_quantity) all_received,BOOL_OR(received_quantity>0) any_received FROM purchase_order_items WHERE purchase_order_id=$1`, [req.params.id]);
     const newStatus = totals.rows[0]?.all_received ? "received" : totals.rows[0]?.any_received ? "partially_received" : order.status;
     await client.query(`UPDATE purchase_orders SET status=$2,received_at=CASE WHEN $2='received' THEN now() ELSE received_at END,updated_by=$3,updated_at=now() WHERE id=$1`, [req.params.id,newStatus,who]);
     await client.query("COMMIT");
-    res.json({ ok:true,status:newStatus });
+    res.json({ ok:true,status:newStatus,receipts });
   } catch (err:any) {
-    await client.query("ROLLBACK");
+    await client.query("ROLLBACK").catch(()=>undefined);
     const msg=String(err?.message||"");
+    if (err?.status) return res.status(Number(err.status)).json({message:msg,code:err.code||err.publicCode});
     if (msg.startsWith("Érvénytelen") || msg.startsWith("A rendelési") || msg.startsWith("A bevételezett")) return res.status(400).json({message:msg});
     next(err);
   } finally { client.release(); }
