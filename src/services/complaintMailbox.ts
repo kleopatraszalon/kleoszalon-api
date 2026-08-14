@@ -85,6 +85,23 @@ function getConfig(): MailboxConfig | null {
   };
 }
 
+function getSentConfig(): MailboxConfig | null {
+  const complaint = getConfig();
+  const host = env("IMAP_HOST") || complaint?.host || "";
+  const user = env("IMAP_USER") || env("SMTP_USER") || complaint?.user || "";
+  const pass = env("IMAP_PASS") || env("SMTP_PASS") || complaint?.pass || "";
+  if (!host || !user || !pass) return null;
+  return {
+    host,
+    port: Number(env("IMAP_PORT") || complaint?.port || 993),
+    user,
+    pass,
+    inbox: "INBOX",
+    sent: env("IMAP_SENT_MAILBOX") || env("COMPLAINT_IMAP_SENT_MAILBOX") || complaint?.sent || "Sent",
+    complaintAddress: env("COMPLAINT_EMAIL") || complaint?.complaintAddress || "vendegpanasz@kleoszalon.hu",
+  };
+}
+
 function q(value: string): string {
   return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
@@ -158,21 +175,27 @@ class MinimalImapClient {
     return this.buffer;
   }
 
+  private taggedLinePosition(buf: Buffer, tag: string): number {
+    const text = buf.toString("latin1");
+    const match = new RegExp(`(?:^|\\r\\n)${tag}\\s`).exec(text);
+    if (!match || match.index == null) return -1;
+    return match.index + (match[0].startsWith("\r\n") ? 2 : 0);
+  }
+
   async command(command: string): Promise<Buffer> {
     if (!this.socket) throw new Error("IMAP socket is not connected");
     const tag = `K${String(++this.tagNo).padStart(4, "0")}`;
     this.socket.write(`${tag} ${command}\r\n`);
-    const marker = Buffer.from(`\r\n${tag} `);
     const all = await this.readUntil((buf) => {
-      const pos = buf.indexOf(marker);
+      const pos = this.taggedLinePosition(buf, tag);
       if (pos < 0) return false;
-      return buf.indexOf(Buffer.from("\r\n"), pos + marker.length) >= 0;
+      return buf.indexOf(Buffer.from("\r\n"), pos) >= 0;
     });
-    const pos = all.indexOf(marker);
-    const lineEnd = all.indexOf(Buffer.from("\r\n"), pos + 2);
+    const pos = this.taggedLinePosition(all, tag);
+    const lineEnd = all.indexOf(Buffer.from("\r\n"), pos);
     const response = all.subarray(0, lineEnd + 2);
     this.buffer = all.subarray(lineEnd + 2);
-    const tagged = response.subarray(pos + 2, lineEnd).toString("utf8");
+    const tagged = all.subarray(pos, lineEnd).toString("utf8");
     if (!new RegExp(`^${tag}\\s+OK\\b`, "i").test(tagged)) {
       throw new Error(`IMAP command failed (${command.split(" ", 1)[0]}): ${tagged}`);
     }
@@ -188,14 +211,13 @@ class MinimalImapClient {
     if (continuationEnd >= 0) this.buffer = this.buffer.subarray(continuationEnd + 2);
     this.socket.write(raw);
     this.socket.write("\r\n");
-    const marker = Buffer.from(`\r\n${tag} `);
     const all = await this.readUntil((buf) => {
-      const pos = buf.indexOf(marker);
-      return pos >= 0 && buf.indexOf(Buffer.from("\r\n"), pos + marker.length) >= 0;
+      const pos = this.taggedLinePosition(buf, tag);
+      return pos >= 0 && buf.indexOf(Buffer.from("\r\n"), pos) >= 0;
     }, 30000);
-    const pos = all.indexOf(marker);
-    const lineEnd = all.indexOf(Buffer.from("\r\n"), pos + 2);
-    const tagged = all.subarray(pos + 2, lineEnd).toString("utf8");
+    const pos = this.taggedLinePosition(all, tag);
+    const lineEnd = all.indexOf(Buffer.from("\r\n"), pos);
+    const tagged = all.subarray(pos, lineEnd).toString("utf8");
     this.buffer = all.subarray(lineEnd + 2);
     if (!new RegExp(`^${tag}\\s+OK\\b`, "i").test(tagged)) throw new Error(`IMAP APPEND failed: ${tagged}`);
   }
@@ -473,7 +495,7 @@ export async function syncComplaintMailbox(): Promise<{ imported: number; scanne
 
 export async function appendRawMessageToSent(raw: Buffer): Promise<boolean> {
   if (env("IMAP_SENT_SYNC") === "0") return false;
-  const cfg = getConfig();
+  const cfg = getSentConfig();
   if (!cfg) return false;
   const client = new MinimalImapClient(cfg);
   try {
