@@ -1,0 +1,68 @@
+name: VIR specification parity CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/services/complaintMailbox.ts'
+      - 'src/routes/virSpecParity.ts'
+      - 'src/routes/wallboardPublic.ts'
+      - 'src/virSpec/ensureSpecParityDependencies.ts'
+      - 'src/mailer.ts'
+      - 'src/server.ts'
+      - 'tests/vir-spec-parity.contract.test.js'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  unit-contract:
+    name: Unit / contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: VIR parity contracts
+        run: node --test tests/vir-spec-parity.contract.test.js
+      - name: Full automated suite
+        run: npm test
+
+  integration-build:
+    name: Integration / production build
+    runs-on: ubuntu-latest
+    needs: unit-contract
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: TypeScript integration boundary
+        run: npm run build
+      - name: Workorder / RBAC integration regression
+        run: npm run test:workorders
+
+  e2e-contract:
+    name: E2E contract gate
+    runs-on: ubuntu-latest
+    needs: integration-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Public booking UAT and application entry contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=()
+          [ -f tests/booking-uat-final.contract.test.js ] && files+=(tests/booking-uat-final.contract.test.js)
+          [ -f tests/app-customer-entry.contract.test.js ] && files+=(tests/app-customer-entry.contract.test.js)
+          [ -f tests/vir-spec-parity.contract.test.js ] && files+=(tests/vir-spec-parity.contract.test.js)
+          node --test "${files[@]}"
