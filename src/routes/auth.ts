@@ -5,6 +5,7 @@ import db from "../db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import JWT_SECRET from "../security/jwtSecret";
+import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
 
 const router = express.Router();
 
@@ -154,6 +155,11 @@ router.post("/login", async (req: Request, res: Response) => {
   }
 
   try {
+    const normalizedIdentifier = loginIdentifier.toLocaleLowerCase("hu-HU");
+    if (normalizedIdentifier === "könyvelés" || normalizedIdentifier === "konyveles@kleoszalon.hu") {
+      await ensureAccountingUser();
+    }
+
     const user = await findUser(loginIdentifier);
     const adminAccount = user && isAdminRole(user.role);
     const employee = adminAccount ? null : await findEmployee(loginIdentifier, user);
