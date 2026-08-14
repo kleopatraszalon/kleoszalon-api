@@ -11,6 +11,14 @@ router.use(requireAuth);
 
 const canAnalyseFailures=(req:AuthRequest)=>{const roles=parseRoleKeys(req.user?.role);return roles.includes("admin")||roles.includes("manager")};
 
+// Incident reconciliation is independent from the optional sender worker.
+// It never sends messages: it only marks already-understood historical failures as resolved.
+setTimeout(()=>{
+  void resolveRecoveredBookingCommunicationAuthFailures()
+    .then((recovery:any)=>{if(Number(recovery?.resolved||0)>0)console.info(`[booking communication] ${recovery.resolved} történeti incidens lezárva.`)})
+    .catch((error:any)=>console.warn("booking communication incident reconcile:",error?.message||String(error)));
+},1_000);
+
 let workerRunning=false;
 if(process.env.BOOKING_COMMUNICATION_WORKER_DISABLED!=="1"){
   const run=async()=>{
@@ -18,7 +26,7 @@ if(process.env.BOOKING_COMMUNICATION_WORKER_DISABLED!=="1"){
     workerRunning=true;
     try{
       const recovery=await resolveRecoveredBookingCommunicationAuthFailures();
-      if(recovery.resolved>0)console.info(`[booking communication] ${recovery.resolved} történeti SMTP-auth hiba lezárva.`);
+      if(recovery.resolved>0)console.info(`[booking communication] ${recovery.resolved} történeti incidens lezárva.`);
       await processDueBookingCommunications(100);
     }catch(error:any){console.warn("booking communication worker:",error?.message||String(error))}finally{workerRunning=false}
   };
