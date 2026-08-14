@@ -27,6 +27,11 @@ function setAuthCookie(res: Response, token: string) {
   });
 }
 
+function bearerToken(req: Request): string {
+  const authorization=String(req.headers.authorization||"").trim();
+  return authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
+}
+
 function roleKeys(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw.map(String).map(x => x.trim().toLowerCase()).filter(Boolean);
   const value = String(raw ?? "").trim();
@@ -38,7 +43,7 @@ function roleKeys(raw: unknown): string[] {
   } catch {}
   return value
     .split(",")
-    .map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase())
+    .map(x => x.split("[").join("").split("]").join("").split("\"").join("").trim().toLowerCase())
     .filter(Boolean);
 }
 
@@ -157,8 +162,7 @@ async function verifyGitHubUatToken(token:string,audience:string,workflowRef:str
 }
 
 router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
-  const authorization=String(req.headers.authorization||"");
-  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  const oidcToken=bearerToken(req);
   if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
   try{
     const claims=await verifyGitHubUatToken(oidcToken,ACCOUNTING_UAT_AUDIENCE,ACCOUNTING_UAT_WORKFLOW);
@@ -176,8 +180,7 @@ router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
 });
 
 router.post("/uat/nav-test-token",async(req:Request,res:Response)=>{
-  const authorization=String(req.headers.authorization||"");
-  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  const oidcToken=bearerToken(req);
   if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
   try{
     const claims=await verifyGitHubUatToken(oidcToken,NAV_TEST_UAT_AUDIENCE,NAV_TEST_UAT_WORKFLOW);
@@ -195,8 +198,7 @@ router.post("/uat/nav-test-token",async(req:Request,res:Response)=>{
  * secret values are never serialized or logged.
  */
 router.post("/uat/nav-test-readiness",async(req:Request,res:Response)=>{
-  const authorization=String(req.headers.authorization||"");
-  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  const oidcToken=bearerToken(req);
   if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
   try{
     const claims=await verifyGitHubUatToken(oidcToken,NAV_TEST_UAT_AUDIENCE,NAV_TEST_UAT_WORKFLOW);
