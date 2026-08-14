@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { ensureInventoryOperationsSchema } from "./ensureInventoryOperationsSchema";
+import { ensureInventoryHardeningSchema } from "./ensureInventoryHardeningSchema";
 
 const EPS = 0.0001;
 const money = (v: unknown) => {
@@ -107,6 +108,7 @@ async function syncLegacyAggregate(client: any, productId: string, locationId: s
 
 export async function consumeWorkOrderInventory(client: any, workOrder: any, createdBy: string) {
   await ensureInventoryOperationsSchema();
+  await ensureInventoryHardeningSchema();
   if (workOrder.stock_consumed_at) return { consumed: [], replenishment_requests: [], idempotent: true };
 
   const direct = (await client.query(`
