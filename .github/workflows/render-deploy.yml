@@ -6,9 +6,37 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  automated-quality-gate:
+    name: Unit / integration / E2E / build
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit, integration and contract tests
+        run: npm test
+
+      - name: TypeScript production build
+        run: npm run build
+
+  deploy:
+    name: Manual approval + production deploy
+    needs: automated-quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure this GitHub Environment with required reviewers. GitHub then
+    # blocks this job until a human explicitly approves the production release.
+    environment: production-manual-approval
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
@@ -36,6 +64,14 @@ jobs:
             exit 1
           fi
           echo "Render API health/DB smoke PASS"
+
+      - name: Verify HA readiness endpoint
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 20 "$API_BASE_URL/api/health/ready" | tee /tmp/ready.json
+          node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/ready.json','utf8'));if(x.ok!==true)process.exit(1);console.log('API readiness PASS; single-instance-failure-ready=',!!x.single_instance_failure_ready)"
 
       - name: Verify cashier API authentication boundary
         if: env.RENDER_DEPLOY_HOOK_URL != ''
