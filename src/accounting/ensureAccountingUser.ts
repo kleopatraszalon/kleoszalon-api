@@ -5,14 +5,26 @@ const ACCOUNTING_EMAIL='konyveles@kleoszalon.hu';
 const ACCOUNTING_NAME='Könyvelés';
 const ACCOUNTING_PASSWORD_HASH='$2b$12$7yCjqwhiLLMvIH0H8wzDIud7cTOHC.uU2MZUKIDWrYhbzGZvocwsO';
 
+async function safeQuery(label:string,sql:string){
+  try{
+    await db.query(sql);
+    return true;
+  }catch(err){
+    console.error(`[ACCOUNTING RBAC] ${label} sikertelen:`,err);
+    return false;
+  }
+}
+
 async function ensureAccountingPermissions(){
-  await db.query(`
+  const results:boolean[]=[];
+
+  results.push(await safeQuery('access role',`
     INSERT INTO access_roles(role_key,label,description,level,is_system,is_active,updated_at)
     VALUES('accounting','Könyvelés','Könyvelési moduladmin: pénzügy/NAV, bér, beszerzés és raktár-készlet teljes kezelése minden telephelyen; kapcsolódó adatokhoz szükséges hozzáféréssel.',80,true,true,now())
     ON CONFLICT(role_key) DO UPDATE SET label=EXCLUDED.label,description=EXCLUDED.description,level=EXCLUDED.level,is_active=true,updated_at=now()
-  `);
+  `));
 
-  await db.query(`
+  results.push(await safeQuery('feature permissions',`
     INSERT INTO role_feature_permissions(role_key,feature_key,can_view,can_create,can_edit,can_delete,can_export,scope_type,updated_at)
     VALUES
       ('accounting','management_dashboard',true,false,false,false,true,'all_locations',now()),
@@ -32,17 +44,15 @@ async function ensureAccountingPermissions(){
     ON CONFLICT(role_key,feature_key) DO UPDATE SET
       can_view=EXCLUDED.can_view,can_create=EXCLUDED.can_create,can_edit=EXCLUDED.can_edit,
       can_delete=EXCLUDED.can_delete,can_export=EXCLUDED.can_export,scope_type='all_locations',updated_at=now()
-  `);
+  `));
 
-  // Minden menühöz legyen explicit sor, hogy a hiányzó rekord ne okozzon eltérő viselkedést deployok között.
-  await db.query(`
+  results.push(await safeQuery('menu permission rows',`
     INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,manage_permissions,scope_type,updated_at)
     SELECT 'accounting',m.id,false,false,false,false,false,false,false,false,'all_locations',now() FROM menus m
     ON CONFLICT(role_key,menu_id) DO NOTHING
-  `);
+  `));
 
-  // Könyvelési moduladmin: Pénzügy/NAV, Bér, Beszerzés és Raktár/Készlet teljes kezelés.
-  await db.query(`
+  results.push(await safeQuery('module admin menu permissions',`
     UPDATE role_menu_permissions p SET
       can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,
       can_view_financial=true,manage_permissions=false,scope_type='all_locations',updated_at=now()
@@ -53,10 +63,9 @@ async function ensureAccountingPermissions(){
       m.code='inventory' OR m.code LIKE 'inventory.%' OR
       m.code='procurement' OR m.code LIKE 'procurement.%'
     )
-  `);
+  `));
 
-  // Könyvelési forrásadatok és ellenőrző eszközök: megtekintés/export, szükséges törzsadatok módosítása.
-  await db.query(`
+  results.push(await safeQuery('source-data menu permissions',`
     UPDATE role_menu_permissions p SET
       can_view=true,
       can_create=CASE WHEN m.code LIKE 'masterdata%' THEN true ELSE false END,
@@ -72,15 +81,16 @@ async function ensureAccountingPermissions(){
       m.code LIKE 'audit%' OR m.code='settings.audit' OR
       m.code LIKE 'marketing%' OR m.code LIKE 'masterdata%'
     )
-  `);
+  `));
 
-  // A munkalap könyvelési forrás, nem operatív szerkesztési felület.
-  await db.query(`
+  results.push(await safeQuery('workorder source permission',`
     UPDATE role_menu_permissions p SET
       can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,
       can_export=true,can_view_financial=true,manage_permissions=false,scope_type='all_locations',updated_at=now()
     FROM menus m WHERE p.menu_id=m.id AND p.role_key='accounting' AND m.code='finance.workorders'
-  `);
+  `));
+
+  return results.every(Boolean);
 }
 
 export async function ensureAccountingUser(){
@@ -105,6 +115,14 @@ export async function ensureAccountingUser(){
     created=true;
   }
 
-  await ensureAccountingPermissions();
-  return {created,id};
+  // A jogosultság-szinkron nem blokkolhatja a bejelentkezést.
+  // Eltérő/hiányos éles RBAC séma esetén a hibát naplózzuk, a felhasználó viszont beléphet.
+  let permissionsSynced=false;
+  try{
+    permissionsSynced=await ensureAccountingPermissions();
+  }catch(err){
+    console.error('[ACCOUNTING RBAC] váratlan szinkronhiba:',err);
+  }
+
+  return {created,id,permissionsSynced};
 }
