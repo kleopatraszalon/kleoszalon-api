@@ -7,7 +7,9 @@ const router=Router();
 router.use(requireAuth);
 router.use(requireFeature('finance'));
 
-const ADMIN_ROLES=new Set(['admin','administrator','rendszergazda','superadmin','super_admin']);
+// This set is local to the finance dashboard: accounting gets network-wide financial scope
+// without becoming a system administrator anywhere else.
+const ADMIN_ROLES=new Set(['admin','administrator','rendszergazda','superadmin','super_admin','accounting','bookkeeper','konyveles','könyvelés']);
 const money=(v:any)=>Math.round(Number(v||0)*100)/100;
 const roles=(raw:any):string[]=>{
   if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());
