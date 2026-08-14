@@ -36,6 +36,7 @@ import workOrderMaterialsRouter from "./workOrderMaterials";
 import navOnlineInvoiceRouter from "./navOnlineInvoice";
 import navOnlineInvoiceStatusRouter from "./navOnlineInvoiceStatus";
 import navInvoiceLifecycleRouter from "./navInvoiceLifecycle";
+import navQueueWorkerRouter from "./navQueueWorker";
 import navTestUatRouter,{navTestOnlySubmitGuard} from "./navTestUat";
 import notificationsRouter from "./notifications";
 import managementSummaryRouter from "./managementSummary";
@@ -172,6 +173,7 @@ router.get("/nav-online-invoice/runtime-status",requireManagement,async(_req,res
 router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceFastRouter);
 router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",navTestOnlySubmitGuard);
+router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navQueueWorkerRouter);
 router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
 router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
 router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
