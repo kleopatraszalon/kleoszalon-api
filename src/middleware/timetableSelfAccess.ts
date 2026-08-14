@@ -9,6 +9,7 @@ function roles(raw:unknown):string[]{
   return value.split(",").map(x=>x.replace(/[\[\]"]/g,"").trim().toLowerCase()).filter(Boolean);
 }
 function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto","location_manager","üzletvezető","uzletvezeto","store_manager","branch_manager"].includes(r));}
+function receptionist(req:AuthRequest){return roles(req.user?.role).some(r=>["receptionist","reception","recepciós","recepcios"].includes(r));}
 
 async function resolveEmployee(req:AuthRequest){
   const id=String(req.user?.id??"").trim();const email=String(req.user?.email??"").trim();
@@ -23,7 +24,12 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
     if(!employee)return res.status(403).json({error:"A művelethez nem található saját munkatársi rekord."});
     const path=String(req.path||"");
 
-    if(req.method==="GET"&&path==="/")return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői felületen érhető el."});
+    if(req.method==="GET"&&path==="/"){
+      if(!receptionist(req))return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői vagy recepciós felületen érhető el."});
+      if(!employee.location_id)return res.status(403).json({error:"A recepciós fiókhoz nincs szalon rendelve."});
+      (req.query as any).location_id=String(employee.location_id);
+      return next();
+    }
     if(req.method==="GET"&&path==="/schedule"){
       (req.query as any).location_id=employee.location_id?String(employee.location_id):"";
       return next();
