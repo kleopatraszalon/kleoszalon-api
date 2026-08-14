@@ -27,3 +27,5 @@ jobs:
           BOOKING_UAT_BASE: https://kleoszalon-api-1.onrender.com/api/public/marketing/booking
           BOOKING_UAT_EMAIL: vir-booking-uat@example.com
         run: node tests/booking_live_uat.mjs
+
+# Live UAT rerun marker: 2026-08-14T14:44+02:00
