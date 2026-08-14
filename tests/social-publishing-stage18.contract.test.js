@@ -42,3 +42,12 @@ test('Meta and TikTok adapters use official publishing flows', () => {
   assert.match(tiktok, /\/v2\/post\/publish\/content\/init\//);
   assert.match(tiktok, /consent_confirmed/);
 });
+
+test('menu health keeps Marketing active and exposes Social Hub to management', () => {
+  const menu = read('src/menu/ensureMenuHealth.ts');
+  assert.match(menu, /code='marketing'/);
+  assert.match(menu, /'marketing\.social','Social Hub'/);
+  assert.match(menu, /\/marketing\/newsletter\?view=social/);
+  assert.match(menu, /\('manager'\),\('location_manager'\),\('salon_manager'\)/);
+  assert.match(menu, /\('receptionist'\),\('employee'\),\('customer'\)/);
+});
