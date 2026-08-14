@@ -36,7 +36,7 @@ function lotError(message: string, code: string, status = 409) {
 }
 
 export async function getProductLotTracking(client: any, productId: string) {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const { rows } = await client.query(`
     SELECT id::text,name,
            COALESCE(lot_tracking_enabled,false) AS lot_tracking_enabled,
@@ -82,7 +82,7 @@ export async function receiveInventoryLot(client: any, args: {
   unitCost: number;
   input?: LotReceiptInput | null;
 }) : Promise<LotAllocation[]> {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const tracking = await getProductLotTracking(client, args.productId);
   if (!tracking.lot_tracking_enabled) return [];
   const input = args.input || {};
@@ -114,7 +114,7 @@ export async function allocateInventoryLots(client: any, args: {
   specificLotId?: string | null;
   allowExpired?: boolean;
 }): Promise<LotAllocation[]> {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const tracking = await getProductLotTracking(client, args.productId);
   if (!tracking.lot_tracking_enabled) return [];
   const requested = Number(args.quantity || 0);
@@ -189,7 +189,7 @@ export async function receiveTransferLots(client:any,args:{
   operationGroupId?:string|null;
   unitCost:number;
 }):Promise<LotAllocation[]> {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const tracking=await getProductLotTracking(client,args.productId);
   if(!tracking.lot_tracking_enabled)return[];
   if(!args.operationGroupId)throw lotError("A sarzskövetett raktári átadás operation_group_id nélkül nem érkeztethető.","INVENTORY_TRANSFER_LOT_LINK_MISSING",409);
@@ -223,7 +223,7 @@ export async function receiveTransferLots(client:any,args:{
 }
 
 export async function listInventoryLotBalances(client:any,filters:{warehouseId?:string|null;productId?:string|null;locationId?:string|null;status?:string|null}){
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const params:any[]=[];const where=["lb.quantity>0"];
   if(filters.warehouseId){params.push(filters.warehouseId);where.push(`w.id=$${params.length}`)}
   if(filters.productId){params.push(filters.productId);where.push(`l.product_id=$${params.length}::uuid`)}
