@@ -9,11 +9,27 @@ function roles(raw:unknown):string[]{
   return value.split(",").map(x=>x.replace(/[\[\]"]/g,"").trim().toLowerCase()).filter(Boolean);
 }
 function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto","location_manager","üzletvezető","uzletvezeto","store_manager","branch_manager"].includes(r));}
+function receptionist(req:AuthRequest){return roles(req.user?.role).some(r=>["receptionist","reception","recepciós","recepcios"].includes(r));}
 
 async function resolveEmployee(req:AuthRequest){
   const id=String(req.user?.id??"").trim();const email=String(req.user?.email??"").trim();
   const{rows}=await pool.query(`SELECT id,location_id FROM employees WHERE COALESCE(active,true)=true AND (id::text=$1 OR ($2<>'' AND (lower(COALESCE(email,''))=lower($2) OR lower(COALESCE(login_name,''))=lower($2)))) ORDER BY CASE WHEN id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[id,email]);
   return rows[0]??null;
+}
+
+function scopeTimetableResponse(res:Response,locationId:string){
+  const originalJson=res.json.bind(res);
+  (res as any).json=(body:any)=>{
+    if(!body||typeof body!=="object")return originalJson(body);
+    const employees=Array.isArray(body.employees)?body.employees.filter((row:any)=>String(row?.location_id??"")===locationId):[];
+    const employeeIds=new Set(employees.map((row:any)=>String(row?.id??"")).filter(Boolean));
+    const appointments=Array.isArray(body.appointments)?body.appointments.filter((row:any)=>{
+      const appointmentLocation=String(row?.location_id??"");
+      if(appointmentLocation)return appointmentLocation===locationId;
+      return employeeIds.has(String(row?.employee_id??""));
+    }):[];
+    return originalJson({...body,employees,appointments});
+  };
 }
 
 async function guard(req:AuthRequest,res:Response,next:NextFunction){
@@ -23,7 +39,14 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
     if(!employee)return res.status(403).json({error:"A művelethez nem található saját munkatársi rekord."});
     const path=String(req.path||"");
 
-    if(req.method==="GET"&&path==="/")return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői felületen érhető el."});
+    if(req.method==="GET"&&path==="/"){
+      if(!receptionist(req))return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői vagy recepciós felületen érhető el."});
+      if(!employee.location_id)return res.status(403).json({error:"A recepciós fiókhoz nincs szalon rendelve."});
+      const locationId=String(employee.location_id);
+      (req.query as any).location_id=locationId;
+      scopeTimetableResponse(res,locationId);
+      return next();
+    }
     if(req.method==="GET"&&path==="/schedule"){
       (req.query as any).location_id=employee.location_id?String(employee.location_id):"";
       return next();
