@@ -8,12 +8,26 @@ import {
   startLegacyEvaluation2018Worker,
   syncLegacyTaskRedXById,
 } from "../services/legacyEvaluation2018";
+import {
+  closeLegacyMonthlyEvaluation,
+  generateLegacyMonthlyAi,
+  listLegacyMonthlyEvaluations,
+  prepareLegacyMonthlyEvaluations,
+  startLegacyMonthlyEvaluationWorker,
+  updateLegacyMonthlyManagerComment,
+} from "../services/legacyEvaluationMonthly";
 
 const router = Router();
 startLegacyEvaluation2018Worker();
+startLegacyMonthlyEvaluationWorker();
 
 function userKey(req: AuthRequest): string {
   return String(req.user?.email || req.user?.id || "manager");
+}
+
+function serviceError(res:any,error:any) {
+  const status = Number(error?.status || 500);
+  return res.status(status >= 400 && status < 600 ? status : 500).json({message:String(error?.message || "A művelet sikertelen.")});
 }
 
 async function ensure() {
@@ -145,6 +159,31 @@ router.patch("/records/:id", async (req:AuthRequest,res,next) => {
 
 router.post("/legacy-2018/reconcile", async (_req,res,next) => {
   try { res.json(await reconcileLegacyTaskRedX()); } catch (error) { next(error); }
+});
+
+router.get("/legacy-2018/monthly", async (req,res) => {
+  try { res.json(await listLegacyMonthlyEvaluations(String(req.query.month || ""))); }
+  catch (error:any) { return serviceError(res,error); }
+});
+
+router.post("/legacy-2018/monthly/prepare", async (req,res) => {
+  try { res.json(await prepareLegacyMonthlyEvaluations(String(req.body?.month || ""))); }
+  catch (error:any) { return serviceError(res,error); }
+});
+
+router.patch("/legacy-2018/monthly/:id", async (req,res) => {
+  try { res.json(await updateLegacyMonthlyManagerComment(req.params.id,String(req.body?.manager_comment || ""))); }
+  catch (error:any) { return serviceError(res,error); }
+});
+
+router.post("/legacy-2018/monthly/:id/ai", async (req:AuthRequest,res) => {
+  try { res.json(await generateLegacyMonthlyAi(req.params.id,userKey(req))); }
+  catch (error:any) { return serviceError(res,error); }
+});
+
+router.post("/legacy-2018/monthly/:id/close", async (req:AuthRequest,res) => {
+  try { res.json(await closeLegacyMonthlyEvaluation(req.params.id,String(req.body?.manager_comment || ""),userKey(req))); }
+  catch (error:any) { return serviceError(res,error); }
 });
 
 export default router;
