@@ -143,7 +143,7 @@ async function verifyGitHubAccountingUatToken(token:string){
   const decoded=jwt.decode(token,{complete:true}) as any;
   const kid=String(decoded?.header?.kid||"");
   if(!kid)throw new Error("GitHub OIDC token kid hiányzik.");
-  const jwks=await axios.get(`${GITHUB_OIDC_ISSUER}/.well-known/jwks`,{timeout:10_000,headers:{Accept:"application/json"}});
+  const jwks=await axios.get<{keys:any[]}>(`${GITHUB_OIDC_ISSUER}/.well-known/jwks`,{timeout:10_000,headers:{Accept:"application/json"}});
   const jwk=(jwks.data?.keys||[]).find((x:any)=>String(x?.kid||"")===kid);
   if(!jwk)throw new Error("A GitHub OIDC aláírókulcs nem található.");
   const publicKey=crypto.createPublicKey({key:jwk,format:"jwk"} as any);
