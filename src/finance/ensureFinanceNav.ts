@@ -52,6 +52,7 @@ export function ensureFinanceNav(){
         '20260807_UAT_SANDBOX_V2.sql',
         '20260807_UAT_ISSUES_V3.sql',
         '20260809_UAT_STAGE10_V1.sql',
+        '20260814_BOOKING_UAT_FINAL_V1.sql',
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
