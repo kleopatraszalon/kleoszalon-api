@@ -1,0 +1,95 @@
+name: Accounting authenticated UAT
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/auth.ts'
+      - 'src/accounting/**'
+      - 'src/routes/financeDashboard.ts'
+      - 'src/middleware/**'
+      - '.github/workflows/accounting-authenticated-uat.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  accounting-authenticated-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_BASE_URL: https://kleoszalon-api-1.onrender.com
+    steps:
+      - name: Acquire accounting UAT session through GitHub OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          success=0
+          for attempt in $(seq 1 60); do
+            oidc_response="$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-accounting-uat")"
+            oidc_token="$(OIDC="$oidc_response" node -e "const x=JSON.parse(process.env.OIDC||'{}');process.stdout.write(String(x.value||''))")"
+            if [ -z "$oidc_token" ]; then echo "GitHub OIDC token missing"; exit 1; fi
+            code="$(curl -sS --max-time 30 -o /tmp/accounting-auth.json -w '%{http_code}' -X POST -H "Authorization: Bearer $oidc_token" "$API_BASE_URL/api/uat/accounting-token" || true)"
+            if [ "$code" = "200" ]; then success=1; break; fi
+            echo "Waiting for deployed accounting UAT bootstrap ($attempt/60), HTTP=$code"
+            sleep 10
+          done
+          if [ "$success" -ne 1 ]; then cat /tmp/accounting-auth.json || true; exit 1; fi
+          vir_token="$(node -e "const x=require('/tmp/accounting-auth.json');if(!x.success||!x.token)process.exit(1);process.stdout.write(x.token)")"
+          echo "::add-mask::$vir_token"
+          echo "VIR_TOKEN=$vir_token" >> "$GITHUB_ENV"
+          node -e "const x=require('/tmp/accounting-auth.json');const roles=Array.isArray(x.role)?x.role:JSON.parse(String(x.role).startsWith('[')?x.role:JSON.stringify([x.role]));if(!roles.map(String).map(s=>s.toLowerCase()).includes('accounting'))process.exit(1);if(x.location_id!==null)process.exit(1);console.log('Accounting auth bootstrap PASS; role=accounting; all-location token')"
+
+      - name: Verify authenticated identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/me" | tee /tmp/me.json
+          node - <<'NODE'
+          const x=require('/tmp/me.json');
+          const raw=x?.user?.role;
+          let roles=[];try{roles=Array.isArray(raw)?raw:JSON.parse(String(raw||'[]'))}catch{roles=String(raw||'').split(',')}
+          roles=roles.map(String).map(s=>s.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean);
+          if(x?.ok!==true||!roles.includes('accounting'))process.exit(1);
+          console.log('Authenticated /api/me PASS; accounting role confirmed');
+          NODE
+
+      - name: Verify accounting menu RBAC
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/menu" | tee /tmp/menu.json >/dev/null
+          node - <<'NODE'
+          const roots=require('/tmp/menu.json');
+          const flat=[];const walk=x=>{for(const i of x||[]){flat.push(i);walk(i.submenus)}};walk(roots);
+          const finance=flat.find(x=>x.code==='finance');
+          const hasFinanceChildren=flat.some(x=>String(x.code||'').startsWith('finance.'));
+          if(!finance||finance.permissions?.can_view!==true||!hasFinanceChildren)process.exit(1);
+          if(finance.permissions?.can_manage_permissions===true)process.exit(1);
+          console.log('Accounting menu RBAC PASS; finance visible, permission administration denied');
+          NODE
+
+      - name: Verify network-wide finance dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 60 -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/finance-dashboard?date=2026-08-14" | tee /tmp/finance.json >/dev/null
+          node - <<'NODE'
+          const x=require('/tmp/finance.json');
+          if(!x.kpis||!x.scope||x.scope.is_admin!==true||x.scope.location_id!==null)process.exit(1);
+          console.log('Accounting finance dashboard PASS; all-location financial scope confirmed');
+          NODE
+
+      - name: Verify privilege boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/system-health-denied.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/system-health")"
+          if [ "$code" != "403" ]; then
+            echo "Expected 403 for management-only system health, got $code"
+            cat /tmp/system-health-denied.json
+            exit 1
+          fi
+          echo "Accounting privilege boundary PASS (management-only endpoint denied)"
