@@ -5,10 +5,10 @@ import type { SocialCampaignRecord, SocialPublishResult } from "./types";
 
 const TIKTOK_BASE = "https://open.tiktokapis.com";
 
-export async function queryTikTokCreator() {
+export async function queryTikTokCreator(): Promise<any> {
   const token = socialConfig.tiktok.accessToken;
   if (!token) throw new Error("TikTok nincs konfigurálva: TIKTOK_ACCESS_TOKEN szükséges.");
-  const result = await axios.post(`${TIKTOK_BASE}/v2/post/publish/creator_info/query/`, {}, {
+  const result = await axios.post<any>(`${TIKTOK_BASE}/v2/post/publish/creator_info/query/`, {}, {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=UTF-8" },
     timeout: 20000,
   });
@@ -58,9 +58,9 @@ export async function publishTikTok(campaign: SocialCampaignRecord, payload: any
   if (!imageUrl && !videoUrl) throw new Error("TikTok publikáláshoz kép vagy videó szükséges.");
 
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=UTF-8" };
-  let result;
+  let result: any;
   if (videoUrl) {
-    result = await axios.post(`${TIKTOK_BASE}/v2/post/publish/video/init/`, {
+    result = await axios.post<any>(`${TIKTOK_BASE}/v2/post/publish/video/init/`, {
       post_info: {
         title: socialText(payload?.caption || payload?.title, 2200),
         privacy_level: requestedPrivacy,
@@ -72,7 +72,7 @@ export async function publishTikTok(campaign: SocialCampaignRecord, payload: any
       source_info: { source: "PULL_FROM_URL", video_url: videoUrl },
     }, { headers, timeout: 25000 });
   } else {
-    result = await axios.post(`${TIKTOK_BASE}/v2/post/publish/content/init/`, {
+    result = await axios.post<any>(`${TIKTOK_BASE}/v2/post/publish/content/init/`, {
       media_type: "PHOTO",
       post_mode: "DIRECT_POST",
       post_info: {
@@ -94,10 +94,10 @@ export async function publishTikTok(campaign: SocialCampaignRecord, payload: any
   return { status: "submitted", external_id: publishId, response: result.data };
 }
 
-export async function fetchTikTokPublishStatus(publishId: string) {
+export async function fetchTikTokPublishStatus(publishId: string): Promise<any> {
   const token = socialConfig.tiktok.accessToken;
   if (!token) throw new Error("TikTok token nincs konfigurálva.");
-  const result = await axios.post(`${TIKTOK_BASE}/v2/post/publish/status/fetch/`, { publish_id: publishId }, {
+  const result = await axios.post<any>(`${TIKTOK_BASE}/v2/post/publish/status/fetch/`, { publish_id: publishId }, {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=UTF-8" },
     timeout: 20000,
   });
