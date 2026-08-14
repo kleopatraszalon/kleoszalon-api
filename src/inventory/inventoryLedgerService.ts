@@ -192,7 +192,7 @@ export async function postWarehouseReceipt(client: any, args: {
   lot?: LotReceiptInput | null;
   meta: MovementMeta;
 }) {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const quantity = Number(args.quantity || 0);
   if (!(quantity > EPS)) throw inventoryError("A bevételezett mennyiségnek pozitívnak kell lennie.", "INVENTORY_INVALID_QUANTITY", 400);
   const balance = await balanceForUpdate(client, args.warehouse.id, args.productId);
@@ -240,7 +240,7 @@ export async function postWarehouseIssue(client: any, args: {
   allowExpiredLot?: boolean;
   meta: MovementMeta;
 }) {
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   const quantity = Number(args.quantity || 0);
   if (!(quantity > EPS)) throw inventoryError("A kiadott mennyiségnek pozitívnak kell lennie.", "INVENTORY_INVALID_QUANTITY", 400);
   const balance = await balanceForUpdate(client, args.warehouse.id, args.productId);
