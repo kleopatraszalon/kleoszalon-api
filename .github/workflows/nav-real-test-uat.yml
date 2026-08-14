@@ -43,6 +43,46 @@ jobs:
           echo "VIR_TOKEN=$vir_token" >> "$GITHUB_ENV"
           echo "NAV TEST UAT authentication PASS"
 
+      - name: Safely activate an existing TEST configuration if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/nav-config.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-test-uat/configuration")"
+          if [ "$code" != "200" ]; then echo "NAV configuration read HTTP=$code"; cat /tmp/nav-config.json; exit 1; fi
+          configured="$(node -e "const x=require('/tmp/nav-config.json');process.stdout.write(x.configured?'1':'0')")"
+          if [ "$configured" != "1" ]; then
+            echo "NAV_TEST_CONFIGURATION_MISSING: no stored TEST configuration exists. Configure NAV TEST technical user credentials in VIR/Render; no NAV network submission was attempted."
+            exit 1
+          fi
+          environment="$(node -e "const x=require('/tmp/nav-config.json');process.stdout.write(String(x.config?.environment||''))")"
+          if [ "$environment" != "test" ]; then
+            echo "NAV_TEST_CONFIGURATION_BLOCKED: stored configuration is not TEST; automation will not modify it."
+            cat /tmp/nav-config.json
+            exit 1
+          fi
+          active="$(node -e "const x=require('/tmp/nav-config.json');process.stdout.write(x.active?'1':'0')")"
+          if [ "$active" = "0" ]; then
+            node - <<'NODE' > /tmp/nav-activate.json
+          const x=require('/tmp/nav-config.json').config||{};
+          const payload={
+            environment:'test',
+            location_id:x.location_id||null,
+            supplier_name:x.supplier_name||'',
+            supplier_tax_number:x.supplier_tax_number||'',
+            supplier_postal_code:x.supplier_postal_code||'',
+            supplier_city:x.supplier_city||'',
+            supplier_address:x.supplier_address||'',
+            invoice_prefix:x.invoice_prefix||'KLEO'
+          };
+          process.stdout.write(JSON.stringify(payload));
+          NODE
+            code="$(curl -sS --max-time 30 -o /tmp/nav-activate-response.json -w '%{http_code}' -X PUT -H "Authorization: Bearer $VIR_TOKEN" -H 'Content-Type: application/json' --data @/tmp/nav-activate.json "$API_BASE_URL/api/transactions/nav-test-uat/configuration")"
+            if [ "$code" != "200" ]; then echo "NAV TEST activation HTTP=$code"; cat /tmp/nav-activate-response.json; exit 1; fi
+            echo "Existing NAV TEST configuration activated without changing stored secrets."
+          else
+            echo "NAV TEST configuration already active."
+          fi
+
       - name: Prove TEST environment and configured credentials
         shell: bash
         run: |
