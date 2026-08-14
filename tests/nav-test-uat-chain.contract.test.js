@@ -7,9 +7,9 @@ const uat=read('src/routes/navTestUat.ts');
 const tx=read('src/routes/transactions.ts');
 
 test('NAV automated UAT is hard-blocked outside test environment',()=>{
-  assert.match(uat,/uat_test_only!==true/);
+  assert.match(uat,/req\.body\?\.uat_test_only===true/);
   assert.match(uat,/String\(s\.environment\)!=='test'/);
-  assert.match(uat,/String\(c\?\.environment\)!=='test'/);
+  assert.match(uat,/String\(c\.environment\)!=='test'/);
   assert.match(uat,/nav_uat_live_blocked/);
   assert.match(tx,/router\.use\("\/nav-online-invoice",navTestOnlySubmitGuard\)/);
 });
