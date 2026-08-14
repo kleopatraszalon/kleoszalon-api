@@ -2,9 +2,10 @@ import {Router} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {requireManagement} from '../middleware/requireRoles';
-import {getNavQueueWorkerStatus,runNavQueueWorkerOnce} from '../nav/navQueueWorker';
+import {getNavQueueWorkerStatus,runNavQueueWorkerOnce,startNavQueueWorker} from '../nav/navQueueWorker';
 
 const router=Router();
+startNavQueueWorker();
 router.use(requireAuth,requireManagement);
 const truthy=(v:any)=>/^(1|true|yes|on)$/i.test(String(v||'').trim());
 
