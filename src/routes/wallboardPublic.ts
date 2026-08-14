@@ -4,7 +4,7 @@ import { requireAdmin } from "../middleware/requireRoles";
 import type { AuthRequest } from "../middleware/auth";
 import { getRuntimeSettingsSnapshot, saveRuntimeSettings } from "../services/virRuntimeSettings";
 import { applyGitHubReleaseEnvironment, applyRenderHighAvailability, getRenderInfrastructureStatus } from "../services/virInfrastructureControl";
-import { getComplaintMailboxStatus, startComplaintMailboxWorker } from "../services/complaintMailbox";
+import { getComplaintMailboxStatus, restartComplaintMailboxWorker } from "../services/complaintMailbox";
 
 const router = Router();
 
@@ -76,7 +76,7 @@ router.put("/runtime-settings", requireAdmin, async (req:AuthRequest,res,next)=>
   try {
     const actor=String(req.user?.email||req.user?.id||"admin");
     await saveRuntimeSettings(req.body?.settings||{},actor);
-    startComplaintMailboxWorker();
+    restartComplaintMailboxWorker();
     const [settings, render] = await Promise.all([getRuntimeSettingsSnapshot(), getRenderInfrastructureStatus()]);
     res.json({ ok:true,settings,render,mailbox:getComplaintMailboxStatus() });
   } catch(e){ next(e); }
