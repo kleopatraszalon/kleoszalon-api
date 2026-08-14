@@ -1,7 +1,7 @@
 import pool from '../db';
 import { ensureMenuHealth as ensureLegacyMenuHealth } from './ensureMenuHealthLegacy';
 
-async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)}catch(error:any){console.warn('CRM menü önjavítási részlépés kihagyva:',error?.message||error)}}
+async function safe(sql:string,params:any[]=[]){try{await pool.query(sql,params)}catch(error:any){console.warn('CRM/Stage18 menü önjavítási részlépés kihagyva:',error?.message||error)}}
 
 export async function ensureMenuHealth(){
   await ensureLegacyMenuHealth();
@@ -19,17 +19,30 @@ export async function ensureMenuHealth(){
     SELECT 'customers.duplicate_review','Duplikációk jóváhagyása','Merge','/modules/customers/duplicate-review',70,p.id,'clients',true FROM p
     ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='clients',is_active=true`);
 
+  // Stage18: a marketing szülő és a három kanonikus kampánymenü minden önjavítás után aktív marad.
+  await safe(`UPDATE menus SET name='Marketing és kampányok',icon=COALESCE(icon,'Megaphone'),is_active=true WHERE code='marketing'`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='marketing' LIMIT 1)
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    SELECT 'marketing.social','Social Hub','Megaphone','/marketing/newsletter?view=social',30,p.id,'newsletter',true FROM p
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='newsletter',is_active=true`);
+  await safe(`WITH p AS (SELECT id FROM menus WHERE code='marketing' LIMIT 1)
+    UPDATE menus SET parent_id=p.id,is_active=true WHERE code IN('marketing.newsletter','marketing.daily-deals')`);
+
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT 'admin',m.id,true,true,true,true,true,true,false,true,'all_locations',now()
-    FROM menus m WHERE m.code IN('customers.forms','customers.duplicate_review')
+    FROM menus m WHERE m.code IN('customers.forms','customers.duplicate_review','marketing.social')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,scope_type='all_locations',updated_at=now()`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT r.role_key,m.id,true,false,true,false,true,false,false,false,'own_location',now()
     FROM (VALUES('manager'),('location_manager'),('salon_manager')) r(role_key) CROSS JOIN menus m
-    WHERE m.code IN('customers.forms','customers.duplicate_review')
+    WHERE m.code IN('customers.forms','customers.duplicate_review','marketing.social')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_edit=true,can_delete=false,can_approve=true,can_export=false,scope_type='own_location',updated_at=now()`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT 'receptionist',m.id,true,false,false,false,false,false,false,false,'own_location',now()
     FROM menus m WHERE m.code IN('customers.forms','customers.duplicate_review')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,scope_type='own_location',updated_at=now()`);
+  await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+    SELECT r.role_key,m.id,false,false,false,false,false,false,false,false,'own_location',now()
+    FROM (VALUES('receptionist'),('employee'),('customer')) r(role_key) CROSS JOIN menus m WHERE m.code='marketing.social'
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,updated_at=now()`);
 }
