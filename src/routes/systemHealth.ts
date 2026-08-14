@@ -7,6 +7,7 @@ import axios from "axios";
 import { ensureOnlineBooking } from "../booking/ensureOnlineBooking";
 import { ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 import { estimateOpenAiTextCost } from "../ai/openAiCost";
+import { verifyEmailTransport } from "../mailer";
 
 const router = Router();
 router.use(requireAuth);
@@ -78,7 +79,14 @@ router.get("/",async(req:AuthRequest,res,next)=>{
 
   if(tableMap.get("accounting_journal_entries")&&tableMap.get("accounting_journal_lines")){const c=await count(`SELECT COUNT(*) FROM (SELECT je.id FROM accounting_journal_entries je JOIN accounting_journal_lines jl ON jl.journal_entry_id=je.id GROUP BY je.id HAVING ABS(COALESCE(SUM(jl.debit),0)-COALESCE(SUM(jl.credit),0))>0.01) q`);add({key:"ledger.balance",group:"Könyvelés",label:"Tartozik / Követel egyensúly",status:c?"error":"ok",count:c,message:c?`${c} kiegyensúlyozatlan naplótétel.`:"A főkönyvi tételek egyensúlyban vannak."});}
   if(tableMap.get("payroll_runs")){const c=await count(`SELECT COUNT(*) FROM payroll_runs WHERE status IN ('draft','calculated')`);add({key:"payroll.pending",group:"Bérszámfejtés",label:"Nyitott számfejtések",status:c?"warning":"ok",count:c,message:c?`${c} számfejtési futás nincs még jóváhagyva.`:"Nincs függő számfejtési futás."});}
-  if(tableMap.get("booking_communication_queue")){const c=await count(`SELECT COUNT(*) FROM booking_communication_queue WHERE status='failed'`);add({key:"booking.failed_messages",group:"Kommunikáció",label:"Sikertelen foglalási értesítések",status:c?"warning":"ok",count:c,message:c?`${c} sikertelen üzenet található.`:"A foglalási üzenetsorban nincs sikertelen tétel."});}
+  if(tableMap.get("booking_communication_queue")){
+   await ensureOnlineBooking();
+   const c=await count(`SELECT COUNT(*) FROM booking_communication_queue WHERE status='failed' AND resolved_at IS NULL`);
+   const historical=await count(`SELECT COUNT(*) FROM booking_communication_queue WHERE status='failed' AND resolved_at IS NOT NULL`);
+   add({key:"booking.failed_messages",group:"Kommunikáció",label:"Aktív sikertelen foglalási értesítések",status:c?"warning":"ok",count:c,message:c?`${c} aktív sikertelen üzenet található; ${historical} korábbi hiba már incidensként lezárva.`:`Nincs aktív sikertelen foglalási értesítés. Lezárt történeti hibák: ${historical}.`});
+   const email=await verifyEmailTransport();
+   add({key:"booking.email_transport",group:"Kommunikáció",label:"Foglalási e-mail SMTP kapcsolat",status:email.ok?"ok":email.mode==="disabled"||email.mode==="unconfigured"?"warning":"error",message:email.ok?"Az SMTP kapcsolat és hitelesítés ellenőrzése sikeres.":email.authentication_error?`SMTP hitelesítési hiba (${email.error_code||"ismeretlen kód"}); a circuit breaker blokkolja a próbálkozások elégetését.`:`SMTP nem küldéskész: ${email.mode}${email.error_code?` (${email.error_code})`:""}.`});
+  }
   if(tableMap.get("purchase_orders")&&tableMap.get("finance_invoices")){const c=await count(`SELECT COUNT(*) FROM purchase_orders po LEFT JOIN finance_invoices fi ON fi.purchase_order_id=po.id::text AND fi.direction='incoming' AND fi.status<>'cancelled' WHERE po.status IN ('partially_received','received') AND fi.id IS NULL`);add({key:"procurement.invoice_link",group:"Beszerzés",label:"Bevételezés → bejövő számla",status:c?"warning":"ok",count:c,message:c?`${c} bevételezett rendeléshez nincs kapcsolt bejövő számla.`:"A bevételezett rendelések számlakapcsolata rendben."});}
   if(tableMap.get("work_orders")&&tableMap.get("finance_invoices")){const c=await count(`SELECT COUNT(*) FROM work_orders wo LEFT JOIN finance_invoices fi ON fi.work_order_id=wo.id::text AND fi.direction='outgoing' AND fi.status<>'cancelled' WHERE wo.financial_closed_at IS NOT NULL AND COALESCE(wo.invoice_status,'not_requested') IN ('requested','issued') AND fi.id IS NULL`);add({key:"workorder.invoice_link",group:"Munkalap",label:"Munkalap → kimenő számla",status:c?"warning":"ok",count:c,message:c?`${c} lezárt, számlás munkalaphoz nincs kapcsolt számla.`:"A számlás munkalapok kapcsolata rendben."});}
 
