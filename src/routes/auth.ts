@@ -156,10 +156,6 @@ async function verifyGitHubUatToken(token:string,audience:string,workflowRef:str
   return claims;
 }
 
-/**
- * GitHub Actions-only accounting UAT bootstrap.
- * No reusable password or repository secret is introduced.
- */
 router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
   const authorization=String(req.headers.authorization||"");
   const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
@@ -179,13 +175,6 @@ router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
   }
 });
 
-/**
- * GitHub Actions-only NAV TEST UAT bootstrap.
- * Exact repository + exact workflow + main ref + dedicated audience are required.
- * The 10-minute admin token is generated only to cross the existing management/finance
- * middleware for the automated NAV TEST chain; the workflow itself sends exclusively
- * to the test environment and the server-side NAV guard keeps live UAT blocked.
- */
 router.post("/uat/nav-test-token",async(req:Request,res:Response)=>{
   const authorization=String(req.headers.authorization||"");
   const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
@@ -202,11 +191,30 @@ router.post("/uat/nav-test-token",async(req:Request,res:Response)=>{
 });
 
 /**
- * POST /api/login
- * Egységes belépés ügyfeleknek, munkatársaknak és adminisztrátoroknak.
- * A szerepkört és a telephelyet a felhasználói/munkatársi rekord határozza meg,
- * ezért a kliens nem küldhet és nem választhat telephelyet.
+ * Exact GitHub NAV TEST workflow-only readiness check. Returns booleans only;
+ * secret values are never serialized or logged.
  */
+router.post("/uat/nav-test-readiness",async(req:Request,res:Response)=>{
+  const authorization=String(req.headers.authorization||"");
+  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
+  try{
+    const claims=await verifyGitHubUatToken(oidcToken,NAV_TEST_UAT_AUDIENCE,NAV_TEST_UAT_WORKFLOW);
+    const credentials={
+      technical_login:Boolean(String(process.env.NAV_TECHNICAL_LOGIN||"").trim()),
+      technical_password:Boolean(String(process.env.NAV_TECHNICAL_PASSWORD||"").trim()),
+      signing_key:Boolean(String(process.env.NAV_SIGNING_KEY||"").trim()),
+      exchange_key:Boolean(String(process.env.NAV_EXCHANGE_KEY||"").trim())
+    };
+    const all_configured=Object.values(credentials).every(Boolean);
+    console.info("[NAV-TEST-UAT] credential readiness checked",{run_id:String(claims?.run_id||""),all_configured});
+    return res.json({ok:true,credentials,all_configured,secret_values_exposed:false});
+  }catch(error:any){
+    console.warn("[NAV-TEST-UAT] readiness rejected:",error?.message||String(error));
+    return res.status(401).json({error:"Érvénytelen vagy nem engedélyezett GitHub NAV TEST UAT identitás."});
+  }
+});
+
 router.post("/login", async (req: Request, res: Response) => {
   const { email, identifier, username, login, phone, password } = (req.body || {}) as {
     email?: string;
