@@ -64,6 +64,8 @@ import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "..
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
 import {ensureFinanceNav} from "../finance/ensureFinanceNav";
+import {ensureNavInvoiceCore,getNavInvoiceBootstrapState} from "../finance/ensureNavInvoiceCore";
+import {getNavXsdRuntimeInfo} from "../nav/navXsdValidator";
 import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
 
 const router=express.Router();
@@ -75,6 +77,16 @@ const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
     const dbCode=error?.dbCode?String(error.dbCode):(error?.code?String(error.code):null);
     console.error('Finance/NAV schema bootstrap hiba:',{stage,dbCode,message:error?.message||String(error)});
     res.status(503).json({ok:false,error:'finance_schema_unavailable',message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',bootstrap_stage:stage,db_code:dbCode,detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})
+  }
+};
+const ensureNavInvoiceReady=async(_req:Request,res:Response,next:NextFunction)=>{
+  try{await ensureNavInvoiceCore();next()}
+  catch(error:any){
+    const state=getNavInvoiceBootstrapState();
+    const stage=error?.stage?String(error.stage):state.stage;
+    const dbCode=error?.dbCode?String(error.dbCode):(error?.code?String(error.code):state.db_code);
+    console.error('NAV Online Számla core bootstrap hiba:',{stage,dbCode,constraint:state.constraint,message:error?.message||String(error)});
+    res.status(503).json({ok:false,error:'nav_schema_unavailable',message:'A NAV Online Számla adatbázis-mag jelenleg nem kész. A rendszer automatikusan újrapróbálja.',bootstrap_stage:stage,db_code:dbCode,constraint:state.constraint,bootstrap_state:state,detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})
   }
 };
 const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
@@ -147,13 +159,23 @@ router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finan
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
 
-router.use("/workorder-invoice",requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceFastRouter);
-router.use("/workorder-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
+router.get("/nav-online-invoice/bootstrap-status",requireManagement,async(_req,res)=>{
+  const before=getNavInvoiceBootstrapState();
+  try{await ensureNavInvoiceCore();res.json({ok:true,bootstrap:getNavInvoiceBootstrapState()})}
+  catch(error:any){res.status(503).json({ok:false,bootstrap:getNavInvoiceBootstrapState(),message:String(error?.message||error),previous:before})}
+});
+router.get("/nav-online-invoice/runtime-status",requireManagement,async(_req,res)=>{
+  try{const xsd=await getNavXsdRuntimeInfo();res.json({ok:true,xsd,bootstrap:getNavInvoiceBootstrapState(),fail_closed:true})}
+  catch(error:any){res.status(503).json({ok:false,xsd:{ready:false,message:String(error?.message||error)},bootstrap:getNavInvoiceBootstrapState(),fail_closed:true})}
+});
+
+router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceFastRouter);
+router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",navTestOnlySubmitGuard);
-router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
-router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
-router.use("/nav-online-invoice",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
-router.use("/nav-test-uat",requireManagement,ensureFinanceReady,requireFeature("finance"),navTestUatRouter);
+router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceRouter);
+router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navOnlineInvoiceStatusRouter);
+router.use("/nav-online-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),navInvoiceLifecycleRouter);
+router.use("/nav-test-uat",requireManagement,ensureNavInvoiceReady,requireFeature("finance"),navTestUatRouter);
 router.use("/loyalty-automation",loyaltyAutomationRouter);
 router.use("/loyalty-program",requireManagement,loyaltyProgramRouter);
 router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
