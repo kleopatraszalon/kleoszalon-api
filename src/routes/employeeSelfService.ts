@@ -2,6 +2,7 @@ import { Router, Response, NextFunction } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { ensureHrV2 } from "../hr/ensureHrV2";
+import { ensureLegacyEvaluation2018Schema, syncLegacyTaskRedXById } from "../services/legacyEvaluation2018";
 
 const router = Router();
 router.use(requireAuth);
@@ -30,6 +31,7 @@ async function currentEmployee(req: AuthRequest) {
 
 router.get("/dashboard", asyncRoute(async (req, res) => {
   await ensureHrV2();
+  await ensureLegacyEvaluation2018Schema();
   const employee = await currentEmployee(req);
   if (!employee) return res.status(404).json({ error: "A belépett felhasználóhoz nem található aktív munkatársi rekord." });
 
@@ -43,7 +45,7 @@ router.get("/dashboard", asyncRoute(async (req, res) => {
     [employee.id,year]
   );
 
-  const [attendance, leaveBalance, leaves, shifts] = await Promise.all([
+  const [attendance, leaveBalance, leaves, shifts, tasks] = await Promise.all([
     pool.query(
       `SELECT
          COUNT(DISTINCT work_date) FILTER (WHERE COALESCE(regular_minutes,0)+COALESCE(overtime_minutes,0)>0)::int AS worked_days_year,
@@ -90,6 +92,15 @@ router.get("/dashboard", asyncRoute(async (req, res) => {
         WHERE employee_id=$1 AND status<>'cancelled' AND work_date BETWEEN CURRENT_DATE AND CURRENT_DATE+14
         ORDER BY work_date,starts_at LIMIT 30`,
       [employee.id]
+    ),
+    pool.query(
+      `SELECT id,title,description,priority,status,due_at,recurrence,requires_approval,completed_at,approved_at,approved_by
+         FROM operations_quality_records
+        WHERE module_key='tasks' AND employee_id=$1
+          AND (status NOT IN ('approved','cancelled','archived') OR due_at>=CURRENT_DATE-interval '45 days')
+        ORDER BY CASE WHEN status='completed' THEN 0 WHEN due_at<now() THEN 1 ELSE 2 END,due_at NULLS LAST,created_at DESC
+        LIMIT 50`,
+      [employee.id]
     )
   ]);
 
@@ -100,7 +111,26 @@ router.get("/dashboard", asyncRoute(async (req, res) => {
     leave: leaveBalance.rows[0] ?? { entitlement_days:20,carried_days:0,adjustment_days:0,taken_days:0,pending_days:0,remaining_days:20 },
     leave_requests: leaves.rows,
     upcoming_shifts: shifts.rows,
+    tasks: tasks.rows,
   });
+}));
+
+router.post("/tasks/:id/complete", asyncRoute(async (req,res) => {
+  await ensureLegacyEvaluation2018Schema();
+  const employee = await currentEmployee(req);
+  if (!employee) return res.status(404).json({ error: "A belépett felhasználóhoz nem található aktív munkatársi rekord." });
+  const task = (await pool.query(
+    `UPDATE operations_quality_records
+        SET status='completed',completed_at=now(),approved_by=NULL,approved_at=NULL,
+            metadata=metadata||jsonb_build_object('employee_completed_at',now()::text),updated_at=now()
+      WHERE id=$1::uuid AND module_key='tasks' AND employee_id=$2
+        AND status NOT IN ('approved','cancelled','archived')
+      RETURNING *`,
+    [req.params.id,employee.id]
+  )).rows[0];
+  if (!task) return res.status(404).json({ error: "A feladat nem található, nem Önhöz tartozik, vagy már lezárt." });
+  await syncLegacyTaskRedXById(String(task.id));
+  res.json({ ok:true, task, message:"A feladat elvégzett állapotba került, vezetői jóváhagyásra vár." });
 }));
 
 export default router;
