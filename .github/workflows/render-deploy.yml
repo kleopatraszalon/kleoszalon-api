@@ -90,11 +90,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sleep 5
           curl -fsS --max-time 30 "$API_BASE_URL/api/signage/booking-mail-recovery-probe-20260814" | tee /tmp/booking-mail-recovery.json
           node - <<'NODE'
           const x=require('/tmp/booking-mail-recovery.json');
           if(!x.email_transport || !Number.isFinite(Number(x.active_failed))) process.exit(1);
           console.log('BOOKING_MAIL_RECOVERY='+JSON.stringify(x));
+          if(Number(x.active_failed)!==0 || Number(x.resolved_failed)!==1534) process.exit(1);
           NODE
 
       - name: Verify cashier API authentication boundary
