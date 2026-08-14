@@ -15,34 +15,40 @@ CREATE INDEX IF NOT EXISTS financial_accounts_location_active_idx
   ON financial_accounts(location_id,active,sort_order,name);
 
 -- Counterparties / partners -------------------------------------------------
+-- The cashier/legacy Altegio module predates Finance V5 and created this table
+-- with bigint ids and text location ids. Finance V5 intentionally keeps that
+-- physical key format so existing partner references remain valid.
 CREATE TABLE IF NOT EXISTS finance_partners (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  location_id uuid REFERENCES locations(id) ON DELETE CASCADE,
+  id bigserial PRIMARY KEY,
+  location_id text,
   partner_type text NOT NULL DEFAULT 'supplier',
   name text NOT NULL,
-  company_name text,
   tax_number text,
-  registration_number text,
   email text,
   phone text,
   contact_name text,
   address text,
-  city text,
-  postal_code text,
-  country_code text NOT NULL DEFAULT 'HU',
-  payment_terms_days integer NOT NULL DEFAULT 0,
-  opening_balance numeric(14,2) NOT NULL DEFAULT 0,
-  external_source text,
-  external_id text,
   note text,
   active boolean NOT NULL DEFAULT true,
-  created_by text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT finance_partners_type_ck CHECK(partner_type IN ('supplier','customer','employee','other'))
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS company_name text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS registration_number text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS postal_code text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS country_code text NOT NULL DEFAULT 'HU';
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS payment_terms_days integer NOT NULL DEFAULT 0;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS opening_balance numeric(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS external_source text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS external_id text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS supplier_id text;
+ALTER TABLE finance_partners ADD COLUMN IF NOT EXISTS created_by text;
+ALTER TABLE finance_partners DROP CONSTRAINT IF EXISTS finance_partners_type_ck;
+ALTER TABLE finance_partners ADD CONSTRAINT finance_partners_type_ck
+  CHECK(partner_type IN ('supplier','customer','employee','company','other')) NOT VALID;
 CREATE UNIQUE INDEX IF NOT EXISTS finance_partners_location_name_uq
-  ON finance_partners(COALESCE(location_id,'00000000-0000-0000-0000-000000000000'::uuid),lower(name));
+  ON finance_partners(COALESCE(location_id,''),lower(name));
 CREATE INDEX IF NOT EXISTS finance_partners_location_active_idx ON finance_partners(location_id,active,name);
 CREATE UNIQUE INDEX IF NOT EXISTS finance_partners_external_uq
   ON finance_partners(external_source,external_id) WHERE external_source IS NOT NULL AND external_id IS NOT NULL;
@@ -68,68 +74,88 @@ VALUES
 ON CONFLICT(system_key) DO UPDATE SET name=EXCLUDED.name,category_group=EXCLUDED.category_group,sort_order=EXCLUDED.sort_order;
 
 -- Payment methods and fees --------------------------------------------------
+-- Keep bigint/text keys for compatibility with cashierAltegioParity and the
+-- older financeAltegio router; V5 adds its richer attributes to the same rows.
 CREATE TABLE IF NOT EXISTS finance_payment_methods (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  location_id uuid REFERENCES locations(id) ON DELETE CASCADE,
+  id bigserial PRIMARY KEY,
+  location_id text,
   code text NOT NULL,
   name text NOT NULL,
   method_type text NOT NULL DEFAULT 'custom',
-  account_id uuid REFERENCES financial_accounts(id) ON DELETE SET NULL,
-  fee_percent numeric(8,4) NOT NULL DEFAULT 0,
+  account_id uuid,
+  fee_percent numeric(9,4) NOT NULL DEFAULT 0,
   fee_fixed numeric(14,2) NOT NULL DEFAULT 0,
   processing_days integer NOT NULL DEFAULT 0,
-  rounding_step numeric(10,2) NOT NULL DEFAULT 0,
-  online boolean NOT NULL DEFAULT false,
-  is_default boolean NOT NULL DEFAULT false,
+  brand_fees jsonb NOT NULL DEFAULT '{}'::jsonb,
+  allow_installments boolean NOT NULL DEFAULT false,
   active boolean NOT NULL DEFAULT true,
   sort_order integer NOT NULL DEFAULT 100,
-  note text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT finance_payment_methods_type_ck CHECK(method_type IN ('cash','debit_card','credit_card','bank_transfer','online','voucher','custom')),
-  CONSTRAINT finance_payment_methods_fee_ck CHECK(fee_percent>=0 AND fee_percent<=100 AND fee_fixed>=0 AND processing_days>=0)
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE finance_payment_methods ADD COLUMN IF NOT EXISTS rounding_step numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE finance_payment_methods ADD COLUMN IF NOT EXISTS online boolean NOT NULL DEFAULT false;
+ALTER TABLE finance_payment_methods ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false;
+ALTER TABLE finance_payment_methods ADD COLUMN IF NOT EXISTS note text;
+ALTER TABLE finance_payment_methods DROP CONSTRAINT IF EXISTS finance_payment_methods_type_ck;
+ALTER TABLE finance_payment_methods ADD CONSTRAINT finance_payment_methods_type_ck
+  CHECK(method_type IN ('cash','card','debit_card','credit_card','bank_transfer','online','online_card','voucher','custom')) NOT VALID;
+ALTER TABLE finance_payment_methods DROP CONSTRAINT IF EXISTS finance_payment_methods_fee_ck;
+ALTER TABLE finance_payment_methods ADD CONSTRAINT finance_payment_methods_fee_ck
+  CHECK(fee_percent>=0 AND fee_percent<=100 AND fee_fixed>=0 AND processing_days>=0) NOT VALID;
 CREATE UNIQUE INDEX IF NOT EXISTS finance_payment_methods_location_code_uq
-  ON finance_payment_methods(COALESCE(location_id,'00000000-0000-0000-0000-000000000000'::uuid),lower(code));
+  ON finance_payment_methods(COALESCE(location_id,''),lower(code));
 
 INSERT INTO finance_payment_methods(code,name,method_type,online,sort_order)
 VALUES
  ('cash','Készpénz','cash',false,10),
- ('card','Bankkártya','debit_card',false,20),
+ ('card','Bankkártya','card',false,20),
  ('transfer','Banki átutalás','bank_transfer',false,30),
- ('online','Online fizetés','online',true,40),
+ ('online','Online fizetés','online_card',true,40),
  ('voucher','Utalvány / ajándékkártya','voucher',false,50)
 ON CONFLICT DO NOTHING;
 
 -- Generic finance document register ----------------------------------------
+-- The older finance module may already own this table with bigint ids. Extend
+-- it rather than creating an incompatible UUID duplicate.
 CREATE TABLE IF NOT EXISTS finance_documents (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  location_id uuid REFERENCES locations(id) ON DELETE SET NULL,
-  document_type text NOT NULL,
-  document_number text,
+  id bigserial PRIMARY KEY,
+  location_id text,
+  document_no text,
+  document_type_code text,
   document_date date NOT NULL DEFAULT CURRENT_DATE,
+  status text NOT NULL DEFAULT 'active',
+  partner_id bigint,
+  account_id uuid,
   direction text NOT NULL DEFAULT 'neutral',
-  partner_id uuid REFERENCES finance_partners(id) ON DELETE SET NULL,
-  partner_name text,
-  gross_total numeric(14,2) NOT NULL DEFAULT 0,
+  amount numeric(14,2) NOT NULL DEFAULT 0,
   currency text NOT NULL DEFAULT 'HUF',
+  content text,
+  note text,
   reference_type text,
   reference_id text,
-  status text NOT NULL DEFAULT 'active',
-  note text,
+  movement_id uuid,
   created_by text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT finance_documents_direction_ck CHECK(direction IN ('income','expense','neutral')),
-  CONSTRAINT finance_documents_status_ck CHECK(status IN ('draft','active','cancelled','archived'))
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE finance_documents ADD COLUMN IF NOT EXISTS document_type text;
+ALTER TABLE finance_documents ADD COLUMN IF NOT EXISTS document_number text;
+ALTER TABLE finance_documents ADD COLUMN IF NOT EXISTS partner_name text;
+ALTER TABLE finance_documents ADD COLUMN IF NOT EXISTS gross_total numeric(14,2) NOT NULL DEFAULT 0;
+UPDATE finance_documents
+SET document_type=COALESCE(document_type,document_type_code,'other'),
+    document_number=COALESCE(document_number,document_no),
+    gross_total=CASE WHEN gross_total=0 THEN COALESCE(amount,0) ELSE gross_total END;
 CREATE INDEX IF NOT EXISTS finance_documents_location_date_idx ON finance_documents(location_id,document_date DESC,created_at DESC);
 CREATE INDEX IF NOT EXISTS finance_documents_partner_idx ON finance_documents(partner_id,document_date DESC);
 
 -- Enrich the existing audited money movement ledger ------------------------
-ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS partner_id uuid REFERENCES finance_partners(id) ON DELETE SET NULL;
-ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS payment_method_id uuid REFERENCES finance_payment_methods(id) ON DELETE SET NULL;
-ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS document_id uuid REFERENCES finance_documents(id) ON DELETE SET NULL;
+-- partner/payment/document ids follow the already deployed bigint master
+-- tables. Account/category/movement ids remain UUID as originally designed.
+ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS partner_id bigint;
+ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS payment_method_id bigint;
+ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS document_id bigint;
 ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS client_id text;
 ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS employee_id text;
 ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS service_id text;
@@ -164,8 +190,6 @@ CREATE TABLE IF NOT EXISTS finance_settings_v5 (
 INSERT INTO finance_settings_v5(location_key) VALUES('__global__') ON CONFLICT(location_key) DO NOTHING;
 
 -- Safe one-time projection of procurement suppliers into Finance partners.
--- The supplier remains the procurement source of truth; the finance row is a
--- counterparty projection linked by external_source/external_id.
 DO $$
 BEGIN
   IF to_regclass('public.suppliers') IS NOT NULL THEN
