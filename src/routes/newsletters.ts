@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db";
 import { sendEmail } from "../mailer";
+import socialPublishingRouter from "./socialPublishing";
 const router = Router();
 const publicFrontendUrl = (process.env.FRONTEND_URL || "https://kleoszalon-frontend.onrender.com").replace(/\/$/, "");
 const kleopatraLogoUrl = `${publicFrontendUrl}/kleopatra-logo.png`;
@@ -21,6 +22,7 @@ router.use(async (_q, _s, n) => {
     n(e);
   }
 });
+router.use("/social", socialPublishingRouter);
 async function audience(a: any) {
   const p: any[] = [];
   let w = `COALESCE(c.email_consent,c.marketing_consent,false)=true AND NULLIF(c.email,'') IS NOT NULL`;
