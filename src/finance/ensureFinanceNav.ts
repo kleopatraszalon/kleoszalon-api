@@ -47,6 +47,7 @@ export function ensureFinanceNav(){
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
         '20260811_NAV_ONLINE_INVOICE_41A.sql',
         '20260811_NAV_ONLINE_INVOICE_41B_XSD.sql',
+        '20260807_NOTIFICATION_CENTER_V1.sql',
         // Named preflight stages make legacy production schema drift diagnosable
         // without exposing database error text through public endpoints.
         '20260814_FINANCE_V5_PREFLIGHT_A_MASTER.sql',
@@ -61,8 +62,11 @@ export function ensureFinanceNav(){
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
-      // The accounting role is applied last so permissions also cover finance menu rows
-      // created by the current release during the same bootstrap pass.
+      // Fail-closed must be applied after every menu self-heal so all active
+      // menu/role combinations receive an explicit ALLOW or DENY row.
+      await step('sql:20260810_RBAC_FAIL_CLOSED_V1.sql',()=>runSql('20260810_RBAC_FAIL_CLOSED_V1.sql'));
+      // Accounting is a dedicated module-admin role and is applied after the
+      // canonical fail-closed matrix so its explicit finance grants win.
       await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
     })().catch(err=>{ensurePromise=null;throw err});
   }
