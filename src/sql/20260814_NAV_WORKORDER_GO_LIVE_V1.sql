@@ -6,6 +6,7 @@ ALTER TABLE nav_online_invoice_settings
   ADD COLUMN IF NOT EXISTS live_enabled_by text;
 
 ALTER TABLE work_orders
+  ADD COLUMN IF NOT EXISTS invoice_status text NOT NULL DEFAULT 'not_requested',
   ADD COLUMN IF NOT EXISTS billing_name text,
   ADD COLUMN IF NOT EXISTS billing_vat_status text,
   ADD COLUMN IF NOT EXISTS billing_tax_number text,
