@@ -12,6 +12,7 @@ const keepSecret=(incoming:any,current:any)=>{
   if(!next||masked(next))return current||null;
   return next;
 };
+const truthy=(v:any)=>/^(1|true|yes|on)$/i.test(String(v||'').trim());
 const safeConfig=(row:any)=>row?{
   id:String(row.id),
   location_id:row.location_id?String(row.location_id):null,
@@ -36,7 +37,8 @@ const safeConfig=(row:any)=>row?{
     exchange_key:process.env.NAV_EXCHANGE_KEY?'environment':'database'
   },
   test_ready:String(row.environment)==='test'&&Boolean(process.env.NAV_TECHNICAL_LOGIN||row.technical_login)&&Boolean(process.env.NAV_TECHNICAL_PASSWORD||row.technical_password)&&Boolean(process.env.NAV_SIGNING_KEY||row.signing_key)&&Boolean(process.env.NAV_EXCHANGE_KEY||row.exchange_key),
-  live_submission_blocked:true
+  live_submit_enabled:Boolean(row.live_submit_enabled),
+  live_submission_blocked:String(row.environment)!=='live'||!Boolean(row.live_submit_enabled)||!truthy(process.env.NAV_LIVE_SUBMIT_ENABLED)
 }:null;
 
 async function selectedConfig(locationId:string){
@@ -45,21 +47,57 @@ async function selectedConfig(locationId:string){
 }
 
 /**
- * Hard safety gate for automated NAV UAT. Production routes ignore this middleware
- * unless the caller explicitly sets uat_test_only=true. In UAT mode submission is
- * physically blocked unless BOTH the prepared submission and the currently selected
- * NAV configuration point to the test environment.
+ * NAV biztonsági kapu minden prepare/submit hívás elé.
+ * - belső számlatervezetet nem enged beküldésre előkészíteni (kivéve explicit NAV-UAT fixture),
+ * - a prepared submission környezetét a konfigurációhoz rögzíti,
+ * - éles NAV beküldéshez kettős engedély (DB + NAV_LIVE_SUBMIT_ENABLED) és ENV-ben tárolt secret kell,
+ * - már transactionId-val rendelkező submit idempotensen visszatér, így nem küldi el kétszer ugyanazt a beküldést.
  */
 export async function navTestOnlySubmitGuard(req:Request,res:Response,next:NextFunction){
   try{
-    if(req.method!=='POST'||req.body?.uat_test_only!==true||!/^\/submissions\/[^/]+\/submit\/?$/.test(req.path))return next();
-    const submissionId=decodeURIComponent(req.path.split('/')[2]||'');
-    const q=await db.query(`SELECT s.id,s.environment,i.location_id::text FROM nav_invoice_submissions s JOIN finance_invoices i ON i.id=s.invoice_id WHERE s.id=$1::uuid LIMIT 1`,[submissionId]);
+    if(req.method!=='POST')return next();
+
+    const prepareMatch=String(req.path||'').match(/^\/invoices\/([^/]+)\/prepare\/?$/);
+    if(prepareMatch){
+      const invoiceId=decodeURIComponent(prepareMatch[1]);
+      const q=await db.query(`SELECT id::text,invoice_no,document_kind,issued_at,location_id::text FROM finance_invoices WHERE id=$1::uuid LIMIT 1`,[invoiceId]);
+      const inv=q.rows[0];
+      if(!inv)return res.status(404).json({ok:false,message:'A számla nem található.'});
+      const c=await selectedConfig(String(inv.location_id||''));
+      if(!c)return res.status(409).json({ok:false,error:'nav_config_missing',message:'A NAV Online Számla konfiguráció hiányzik.'});
+      const isUatFixture=String(c.environment)==='test'&&String(inv.invoice_no||'').startsWith('KLEO-NAV-UAT-');
+      const isIssued=String(inv.document_kind||'')==='tax_invoice'&&Boolean(inv.issued_at);
+      if(!isIssued&&!isUatFixture)return res.status(409).json({ok:false,error:'nav_invoice_not_issued',message:'NAV adatszolgáltatás csak hivatalosan kiállított számlához készíthető elő. A belső számlatervezet nem küldhető a NAV felé.'});
+      return next();
+    }
+
+    const submitMatch=String(req.path||'').match(/^\/submissions\/([^/]+)\/submit\/?$/);
+    if(!submitMatch)return next();
+    const submissionId=decodeURIComponent(submitMatch[1]);
+    const q=await db.query(`SELECT s.id::text,s.environment,s.transaction_id,s.status,i.id::text invoice_id,i.invoice_no,i.document_kind,i.issued_at,i.location_id::text FROM nav_invoice_submissions s JOIN finance_invoices i ON i.id=s.invoice_id WHERE s.id=$1::uuid LIMIT 1`,[submissionId]);
     const s=q.rows[0];
-    if(!s)return res.status(404).json({ok:false,message:'NAV UAT: a beküldés nem található.'});
+    if(!s)return res.status(404).json({ok:false,message:'NAV beküldés nem található.'});
+
+    if(s.transaction_id)return res.json({ok:true,idempotent:true,transaction_id:s.transaction_id,environment:s.environment,message:'Ez a NAV beküldés már rendelkezik transactionId-val; ismételt hálózati beküldés nem történt.'});
+    if(String(s.status)==='submitting')return res.status(409).json({ok:false,error:'nav_submission_in_progress',message:'A NAV beküldés már folyamatban van; párhuzamos ismételt küldés blokkolva.'});
+
     const c=await selectedConfig(String(s.location_id||''));
-    if(String(s.environment)!=='test'||String(c?.environment)!=='test')return res.status(409).json({ok:false,error:'nav_uat_live_blocked',message:'NAV UAT biztonsági blokkolás: automatizált UAT kizárólag a NAV tesztkörnyezetbe küldhet.',submission_environment:s.environment||null,configured_environment:c?.environment||null});
-    res.setHeader('X-NAV-UAT-Safety','test-only');
+    if(!c)return res.status(409).json({ok:false,error:'nav_config_missing',message:'A NAV Online Számla konfiguráció hiányzik.'});
+    if(String(s.environment)!==String(c.environment))return res.status(409).json({ok:false,error:'nav_environment_mismatch',message:'A NAV beküldés előkészített környezete eltér az aktív NAV konfigurációtól. Készítse elő újra az adatszolgáltatást.',submission_environment:s.environment||null,configured_environment:c.environment||null});
+
+    if(req.body?.uat_test_only===true&&(String(s.environment)!=='test'||String(c.environment)!=='test'))return res.status(409).json({ok:false,error:'nav_uat_live_blocked',message:'NAV UAT biztonsági blokkolás: automatizált UAT kizárólag a NAV tesztkörnyezetbe küldhet.',submission_environment:s.environment||null,configured_environment:c.environment||null});
+
+    if(String(c.environment)==='live'){
+      const issued=String(s.document_kind||'')==='tax_invoice'&&Boolean(s.issued_at);
+      if(!issued)return res.status(409).json({ok:false,error:'nav_live_invoice_not_issued',message:'Éles NAV adatszolgáltatás csak hivatalosan kiállított számlához engedélyezett.'});
+      if(!Boolean(c.live_submit_enabled)||!truthy(process.env.NAV_LIVE_SUBMIT_ENABLED))return res.status(409).json({ok:false,error:'nav_live_submission_locked',message:'Az éles NAV beküldés kettős biztonsági zára nincs feloldva. A DB live_submit_enabled és a NAV_LIVE_SUBMIT_ENABLED környezeti kapu egyaránt szükséges.'});
+      const envSecrets=['NAV_TECHNICAL_LOGIN','NAV_TECHNICAL_PASSWORD','NAV_SIGNING_KEY','NAV_EXCHANGE_KEY'] as const;
+      const missing=envSecrets.filter(k=>!String(process.env[k]||'').trim());
+      if(missing.length)return res.status(409).json({ok:false,error:'nav_live_secrets_not_in_environment',message:'Éles NAV beküldésnél a technikai hitelesítő adatokat környezeti titokként kell konfigurálni.',missing});
+    }
+
+    res.setHeader('X-NAV-Safety','validated');
+    if(req.body?.uat_test_only===true)res.setHeader('X-NAV-UAT-Safety','test-only');
     next();
   }catch(e){next(e)}
 }
@@ -95,9 +133,6 @@ router.put('/configuration',async(req:AuthRequest,res,next)=>{
       return res.status(409).json({ok:false,error:'nav_uat_live_config_protected',message:'Ehhez a telephelyhez éles NAV konfiguráció tartozik. A teszt UAT végpont ezt nem írhatja felül.'});
     }
 
-    // Az ENV-ben tárolt secretet soha nem másoljuk át az adatbázisba.
-    // Üres/maszkolt mezőnél csak a korábban DB-ben tárolt értéket tartjuk meg;
-    // az effektív credential ellenőrzése külön, ENV overlay-jel történik.
     const technicalLogin=keepSecret(req.body?.technical_login,existing?.technical_login);
     const technicalPassword=keepSecret(req.body?.technical_password,existing?.technical_password);
     const signingKey=keepSecret(req.body?.signing_key,existing?.signing_key);
@@ -137,7 +172,7 @@ router.get('/environment',async(req:AuthRequest,res,next)=>{
     const c=await selectedConfig(requested);
     if(!c)return res.status(404).json({ok:false,message:'Nincs aktív NAV Online Számla konfiguráció.'});
     const safe=safeConfig(c);
-    res.json({ok:true,environment:c.environment,location_id:c.location_id||null,test_ready:Boolean(safe?.test_ready),credentials_configured:{technical_login:Boolean(safe?.technical_login),technical_password:Boolean(safe?.technical_password_configured),signing_key:Boolean(safe?.signing_key_configured),exchange_key:Boolean(safe?.exchange_key_configured)},live_submission_blocked:true});
+    res.json({ok:true,environment:c.environment,location_id:c.location_id||null,test_ready:Boolean(safe?.test_ready),credentials_configured:{technical_login:Boolean(safe?.technical_login),technical_password:Boolean(safe?.technical_password_configured),signing_key:Boolean(safe?.signing_key_configured),exchange_key:Boolean(safe?.exchange_key_configured)},live_submission_blocked:Boolean(safe?.live_submission_blocked)});
   }catch(e){next(e)}
 });
 
