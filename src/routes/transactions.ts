@@ -10,6 +10,7 @@ import cashierAltegioParityRouter from "./cashierAltegioParity";
 import workOrderCashierFastRouter from "./workOrderCashierFast";
 import financeOperationsRouter from "./financeOperations";
 import financeAltegioRouter from "./financeAltegio";
+import financeAltegioV5Router from "./financeAltegioV5";
 import financeDashboardRouter from "./financeDashboard";
 import financeLinkingRouter from "./financeLinking";
 import financeControlRouter from "./financeControl";
@@ -129,6 +130,7 @@ router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierS
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
+router.use("/finance-v5",ensureFinanceReady,requireFeature("finance"),financeAltegioV5Router);
 router.use("/finance-dashboard",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeDashboardRouter);
 router.use("/finance-linking",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeLinkingRouter);
 router.use("/finance-control",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeControlRouter);

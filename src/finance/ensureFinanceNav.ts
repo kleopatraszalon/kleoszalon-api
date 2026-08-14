@@ -3,6 +3,7 @@ import path from 'path';
 import pool from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
 import {ensureMenuHealth} from '../menu/ensureMenuHealth';
+import {ensureFinanceV5Menu} from './ensureFinanceV5Menu';
 import {ensureWorkOrderWorkflow} from '../workorders/ensureWorkOrderWorkflow';
 
 let ensurePromise:Promise<void>|null=null;
@@ -46,12 +47,14 @@ export function ensureFinanceNav(){
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
         '20260811_NAV_ONLINE_INVOICE_41A.sql',
         '20260811_NAV_ONLINE_INVOICE_41B_XSD.sql',
+        '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
         '20260807_UAT_ISSUES_V3.sql',
         '20260809_UAT_STAGE10_V1.sql',
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
+      await step('finance_v5_menu',()=>ensureFinanceV5Menu());
     })().catch(err=>{ensurePromise=null;throw err});
   }
   return ensurePromise;
