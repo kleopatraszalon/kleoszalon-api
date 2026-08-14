@@ -135,7 +135,12 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     await c.query('RELEASE SAVEPOINT wo_finalize_status');
 
     const archive=await ensureArchiveRow(c,{...wo,status:'completed'},'completed');
-    if(woCols.has('archive_hash'))await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash]).catch(()=>undefined);
+    if(woCols.has('archive_hash')&&!wo.archive_hash){
+      await c.query('SAVEPOINT wo_archive_hash');
+      try{await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash])}
+      catch(e:any){await c.query('ROLLBACK TO SAVEPOINT wo_archive_hash');console.warn('[workorder-finalization-fast] archive hash backfill skipped',e?.code||'',e?.message||e)}
+      await c.query('RELEASE SAVEPOINT wo_archive_hash');
+    }
     if(wo.client_id)await evaluateClient(c,String(wo.client_id),'workorder_finalized',actor(req));
     await c.query('COMMIT');
 
