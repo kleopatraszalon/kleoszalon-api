@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
 import { ensureInventoryOperationsSchema } from "../inventory/ensureInventoryOperationsSchema";
+import { ensureInventoryLotSchema } from "../inventory/ensureInventoryLotSchema";
 import { postWarehouseReceipt, resolveInventoryWarehouse } from "../inventory/inventoryLedgerService";
 
 const router = Router();
@@ -107,9 +108,14 @@ router.get("/orders", async (req, res, next) => {
 
 router.get("/orders/:id", async (req, res, next) => {
   try {
+    await ensureInventoryLotSchema();
     const order = await db.query(`SELECT po.*,COALESCE(s.name,po.supplier_name) supplier_display_name FROM purchase_orders po LEFT JOIN suppliers s ON s.id=po.supplier_id WHERE po.id=$1`, [req.params.id]);
     if (!order.rows[0]) return res.status(404).json({ message: "A beszerzési rendelés nem található." });
-    const items = await db.query(`SELECT poi.*,p.name AS product_name,p.internal_code,p.brand FROM purchase_order_items poi JOIN products p ON p.id=poi.product_id WHERE poi.purchase_order_id=$1 ORDER BY poi.id`, [req.params.id]);
+    const items = await db.query(`SELECT poi.*,p.name AS product_name,p.internal_code,p.brand,
+      COALESCE(p.lot_tracking_enabled,false) lot_tracking_enabled,
+      COALESCE(p.expiry_tracking_enabled,false) expiry_tracking_enabled,
+      COALESCE(p.fefo_enabled,false) fefo_enabled
+      FROM purchase_order_items poi JOIN products p ON p.id=poi.product_id WHERE poi.purchase_order_id=$1 ORDER BY poi.id`, [req.params.id]);
     res.json({ ...order.rows[0], items: items.rows });
   } catch (err) { next(err); }
 });
@@ -152,6 +158,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     const incoming = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!incoming.length) return res.status(400).json({ message: "Nincs bevételezendő tétel." });
     await ensureInventoryOperationsSchema();
+    await ensureInventoryLotSchema();
     await client.query("BEGIN");
     const orderRes = await client.query(`SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE`, [req.params.id]);
     const order = orderRes.rows[0];
@@ -166,7 +173,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
       const actualUnitCost = x?.unit_cost == null || x.unit_cost === "" ? null : money(x.unit_cost);
       if (!itemId || !(receiveQty > 0)) throw new Error("Érvénytelen bevételezési tétel.");
       if (actualUnitCost != null && actualUnitCost < 0) throw new Error("Érvénytelen bevételezési egységár.");
-      const itemRes = await client.query(`SELECT * FROM purchase_order_items WHERE id=$1 AND purchase_order_id=$2 FOR UPDATE`, [itemId,req.params.id]);
+      const itemRes = await client.query(`SELECT poi.*,COALESCE(p.lot_tracking_enabled,false) lot_tracking_enabled,COALESCE(p.expiry_tracking_enabled,false) expiry_tracking_enabled FROM purchase_order_items poi JOIN products p ON p.id=poi.product_id WHERE poi.id=$1 AND poi.purchase_order_id=$2 FOR UPDATE OF poi`, [itemId,req.params.id]);
       const item = itemRes.rows[0];
       if (!item) throw new Error("A rendelési tétel nem található.");
       const remaining = num(item.ordered_quantity)-num(item.received_quantity);
@@ -184,6 +191,17 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
         quantity:receiveQty,
         incomingUnitCost:cost,
         movementType:"receipt",
+        lot:{
+          lotCode:x?.lot_code || null,
+          manufacturedAt:x?.manufactured_at || null,
+          expiresAt:x?.expires_at || null,
+          supplierId:order.supplier_id || null,
+          sourceRecordType:"purchase_order",
+          sourceRecordId:String(order.id),
+          note:`Beszerzési rendelés #${order.id}`,
+          createdBy:who,
+          allowExpired:Boolean(x?.allow_expired),
+        },
         meta:{
           supplierId:order.supplier_id || null,
           documentNumber:`PO-${order.id}`,
@@ -193,7 +211,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
         },
       });
       receipts.push({item_id:itemId,product_id:String(item.product_id),...receipt});
-      await client.query(`UPDATE purchase_order_items SET received_quantity=received_quantity+$2,actual_unit_cost=$3,updated_at=now() WHERE id=$1`, [itemId,receiveQty,cost]);
+      await client.query(`UPDATE purchase_order_items SET received_quantity=received_quantity+$2,actual_unit_cost=$3,last_lot_code=$4,last_expires_at=$5::date,updated_at=now() WHERE id=$1`, [itemId,receiveQty,cost,x?.lot_code||null,x?.expires_at||null]);
       if (order.supplier_id) await client.query(`UPDATE product_supplier_terms SET unit_price=$3,updated_at=now() WHERE product_id=$1 AND supplier_id=$2`, [item.product_id,order.supplier_id,cost]);
     }
 
