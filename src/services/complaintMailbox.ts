@@ -64,6 +64,7 @@ const mailboxState: MailboxState = {
 
 let schemaPromise: Promise<void> | null = null;
 let workerTimer: NodeJS.Timeout | null = null;
+let workerInitialTimer: NodeJS.Timeout | null = null;
 
 function env(name: string): string {
   return String(process.env[name] || "").trim();
@@ -511,8 +512,19 @@ export async function appendRawMessageToSent(raw: Buffer): Promise<boolean> {
   } finally { await client.close(); }
 }
 
+export function stopComplaintMailboxWorker(): void {
+  if (workerInitialTimer) {
+    clearTimeout(workerInitialTimer);
+    workerInitialTimer = null;
+  }
+  if (workerTimer) {
+    clearInterval(workerTimer);
+    workerTimer = null;
+  }
+}
+
 export function startComplaintMailboxWorker(): void {
-  if (workerTimer) return;
+  if (workerTimer || workerInitialTimer) return;
   const cfg = getConfig();
   mailboxState.enabled = Boolean(cfg);
   if (!cfg) {
@@ -521,7 +533,16 @@ export function startComplaintMailboxWorker(): void {
   }
   const pollMs = Math.max(60, Number(env("COMPLAINT_IMAP_POLL_SECONDS") || 120)) * 1000;
   const run = () => syncComplaintMailbox().catch((error) => console.error("Complaint IMAP sync error:", error?.message || error));
-  const initial = setTimeout(run, 5000); initial.unref?.();
+  workerInitialTimer = setTimeout(() => {
+    workerInitialTimer = null;
+    run();
+  }, 5000);
+  workerInitialTimer.unref?.();
   workerTimer = setInterval(run, pollMs); workerTimer.unref?.();
   console.log(`Complaint IMAP worker enabled: ${cfg.complaintAddress}, every ${Math.round(pollMs / 1000)}s`);
+}
+
+export function restartComplaintMailboxWorker(): void {
+  stopComplaintMailboxWorker();
+  startComplaintMailboxWorker();
 }
