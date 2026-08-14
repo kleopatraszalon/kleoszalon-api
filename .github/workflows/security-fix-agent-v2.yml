@@ -1,0 +1,36 @@
+name: Security fix agent v2
+on:
+  push:
+    branches:
+      - agent/security-regression-hardening-20260814
+permissions:
+  contents: write
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/security-regression-hardening-20260814
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Upgrade vulnerable production dependencies
+        run: |
+          npm install --save axios@^1.18.0 bcrypt@^6.0.0 express@^4.22.2 morgan@^1.10.2 multer@^2.2.0 nodemailer@^9.0.5
+          npm audit fix --omit=dev || true
+      - name: Regression tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Production dependency audit
+        run: npm audit --omit=dev || true
+      - name: Commit hardened lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix: harden production dependencies [skip ci]"
+          git push origin HEAD:agent/security-regression-hardening-20260814
