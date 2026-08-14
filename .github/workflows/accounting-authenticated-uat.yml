@@ -75,7 +75,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsS --max-time 60 -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/finance-dashboard?date=2026-08-14" | tee /tmp/finance.json >/dev/null
+          code="$(curl -sS --max-time 60 -o /tmp/finance.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/finance-dashboard?date=2026-08-14" || true)"
+          if [ "$code" != "200" ]; then
+            echo "Finance dashboard HTTP=$code"
+            cat /tmp/finance.json || true
+            exit 1
+          fi
           node - <<'NODE'
           const x=require('/tmp/finance.json');
           if(!x.kpis||!x.scope||x.scope.is_admin!==true||x.scope.location_id!==null)process.exit(1);
