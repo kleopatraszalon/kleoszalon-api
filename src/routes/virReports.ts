@@ -5,7 +5,9 @@ import { AuthRequest, requireAuth } from "../middleware/auth";
 const router = Router();
 
 function isAdmin(req: AuthRequest) {
-  return (req.user?.role || "").toLowerCase() === "admin";
+  const raw = req.user?.role;
+  return (Array.isArray(raw) ? raw : [raw])
+    .some((role) => String(role || "").trim().toLowerCase() === "admin");
 }
 
 router.get("/subscriptions", requireAuth, async (req: AuthRequest, res: Response) => {
