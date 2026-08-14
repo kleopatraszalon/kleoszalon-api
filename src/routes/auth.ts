@@ -4,10 +4,16 @@ import express, { Request, Response } from "express";
 import db from "../db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import axios from "axios";
+import crypto from "crypto";
 import JWT_SECRET from "../security/jwtSecret";
 import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
 
 const router = express.Router();
+const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
+const GITHUB_UAT_AUDIENCE="kleoszalon-accounting-uat";
+const GITHUB_UAT_REPOSITORY="kleopatraszalon/kleoszalon-api";
+const GITHUB_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/accounting-authenticated-uat.yml@refs/heads/main";
 
 function setAuthCookie(res: Response, token: string) {
   res.cookie("token", token, {
@@ -132,6 +138,46 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
     login_name: employee.login_name,
   });
 }
+
+async function verifyGitHubAccountingUatToken(token:string){
+  const decoded=jwt.decode(token,{complete:true}) as any;
+  const kid=String(decoded?.header?.kid||"");
+  if(!kid)throw new Error("GitHub OIDC token kid hiányzik.");
+  const jwks=await axios.get(`${GITHUB_OIDC_ISSUER}/.well-known/jwks`,{timeout:10_000,headers:{Accept:"application/json"}});
+  const jwk=(jwks.data?.keys||[]).find((x:any)=>String(x?.kid||"")===kid);
+  if(!jwk)throw new Error("A GitHub OIDC aláírókulcs nem található.");
+  const publicKey=crypto.createPublicKey({key:jwk,format:"jwk"} as any);
+  const claims=jwt.verify(token,publicKey,{algorithms:["RS256"],issuer:GITHUB_OIDC_ISSUER,audience:GITHUB_UAT_AUDIENCE}) as any;
+  if(String(claims?.repository||"")!==GITHUB_UAT_REPOSITORY)throw new Error("Nem engedélyezett GitHub repository.");
+  if(String(claims?.ref||"")!=="refs/heads/main")throw new Error("Az accounting UAT kizárólag main ágról futtatható.");
+  if(String(claims?.workflow_ref||"")!==GITHUB_UAT_WORKFLOW)throw new Error("Nem engedélyezett GitHub workflow.");
+  return claims;
+}
+
+/**
+ * GitHub Actions-only accounting UAT bootstrap.
+ * The caller must present a GitHub OIDC token signed by GitHub for the exact
+ * repository/workflow/main ref above. No reusable password or repository secret
+ * is introduced. The returned VIR JWT expires after 10 minutes.
+ */
+router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
+  const authorization=String(req.headers.authorization||"");
+  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
+  try{
+    const claims=await verifyGitHubAccountingUatToken(oidcToken);
+    await ensureAccountingUser();
+    const {rows}=await db.query(`SELECT id,email,login_name,role,location_id FROM users WHERE lower(COALESCE(email,''))='konyveles@kleoszalon.hu' OR lower(COALESCE(login_name,''))='könyvelés' ORDER BY CASE WHEN lower(COALESCE(email,''))='konyveles@kleoszalon.hu' THEN 0 ELSE 1 END LIMIT 1`);
+    const user=rows[0];
+    if(!user||!roleKeys(user.role).includes("accounting"))return res.status(409).json({error:"Az accounting UAT felhasználó nem áll rendelkezésre megfelelő szerepkörrel."});
+    const token=jwt.sign({id:user.id,userId:user.id,email:user.email,role:user.role,location_id:null,uat:true,uat_source:"github-actions"},JWT_SECRET,{expiresIn:"10m"});
+    console.info("[ACCOUNTING-UAT] short-lived token issued",{run_id:String(claims?.run_id||""),actor:String(claims?.actor||""),repository:String(claims?.repository||"")});
+    return res.json({success:true,token,expires_in_seconds:600,role:user.role,location_id:null});
+  }catch(error:any){
+    console.warn("[ACCOUNTING-UAT] OIDC bootstrap rejected:",error?.message||String(error));
+    return res.status(401).json({error:"Érvénytelen vagy nem engedélyezett GitHub UAT identitás."});
+  }
+});
 
 /**
  * POST /api/login
