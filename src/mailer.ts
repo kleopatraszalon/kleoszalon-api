@@ -1,4 +1,6 @@
 import nodemailer from "nodemailer";
+import crypto from "crypto";
+import { appendRawMessageToSent } from "./services/complaintMailbox";
 
 const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
 const SMTP_PORT = Number(process.env.SMTP_PORT || "587");
@@ -40,11 +42,62 @@ export type OutgoingMail = {
   attachments?: MailAttachment[];
 };
 
+function encHeader(value: string): string {
+  return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value,"utf8").toString("base64")}?=`;
+}
+function b64Lines(value: Buffer | string): string {
+  const b64 = Buffer.isBuffer(value) ? value.toString("base64") : Buffer.from(value,"utf8").toString("base64");
+  return b64.match(/.{1,76}/g)?.join("\r\n") || "";
+}
+function buildSentMime(message: OutgoingMail, messageId?: string): Buffer {
+  const mixed = `kleo-mixed-${crypto.randomBytes(8).toString("hex")}`;
+  const alt = `kleo-alt-${crypto.randomBytes(8).toString("hex")}`;
+  const html = message.html || `<p>${message.text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br/>")}</p>`;
+  const id = messageId || `<${crypto.randomUUID()}@kleoszalon.hu>`;
+  const lines: string[] = [
+    `From: ${encHeader(String(SMTP_FROM))}`,
+    `To: ${message.to}`,
+    `Subject: ${encHeader(message.subject)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: ${id}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${mixed}"`,
+    "",
+    `--${mixed}`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`,
+    "",
+    `--${alt}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    b64Lines(message.text),
+    `--${alt}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    b64Lines(html),
+    `--${alt}--`,
+  ];
+  for (const attachment of message.attachments || []) {
+    const filename = encHeader(String(attachment.filename || "attachment.bin").replace(/[\r\n"]/g,"_"));
+    lines.push(
+      `--${mixed}`,
+      `Content-Type: ${attachment.contentType || "application/octet-stream"}; name="${filename}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${filename}"`,
+      "",
+      b64Lines(attachment.content),
+    );
+  }
+  lines.push(`--${mixed}--`, "");
+  return Buffer.from(lines.join("\r\n"), "utf8");
+}
+
 export async function sendEmail(message: OutgoingMail) {
   console.log(`[MAIL] to=${message.to} subject=${message.subject} attachments=${message.attachments?.length || 0}`);
   if (DISABLE_SMTP || !transporter) {
     console.warn("📭 SMTP küldés kihagyva; az üzenet naplózva lett.");
-    return { sent: false, logged: true };
+    return { sent: false, logged: true, imapSaved: false };
   }
 
   try {
@@ -57,7 +110,14 @@ export async function sendEmail(message: OutgoingMail) {
       attachments: message.attachments,
     });
     console.log("✅ E-mail elküldve, messageId:", info.messageId);
-    return { sent: true, logged: false, messageId: info.messageId };
+    let imapSaved = false;
+    try {
+      imapSaved = await appendRawMessageToSent(buildSentMime(message, info.messageId));
+      if (imapSaved) console.log("✅ E-mail IMAP Sent mappába is mentve:", info.messageId);
+    } catch (imapError: any) {
+      console.warn("⚠️ SMTP sikeres, de az IMAP Sent szinkron nem sikerült:", imapError?.message || imapError);
+    }
+    return { sent: true, logged: false, messageId: info.messageId, imapSaved };
   } catch (err) {
     console.error("❌ E-mail küldési hiba:", err);
     throw err;
