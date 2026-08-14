@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
 import { ensureProductTaxonomyReady } from "../inventory/ensureProductTaxonomy";
+import { hasAnyRole } from "../security/roles";
 import inventoryOperationsRouter from "./inventoryOperations";
 
 const router = Router();
@@ -22,11 +23,29 @@ function money(value: unknown) {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
+const isGlobal = (req: any) => hasAnyRole(req.user?.role, ["admin", "manager"]);
+const ownLocation = (req: any) => req.user?.location_id == null ? null : String(req.user.location_id);
+const actor = (req: any) => req.user?.email || String(req.user?.id || "system");
+function scopedLocation(req: any, requested: string | null) {
+  if (isGlobal(req)) return requested;
+  const own = ownLocation(req);
+  if (!own) {
+    const error: any = new Error("A készletkezeléshez telephely-hozzárendelés szükséges.");
+    error.status = 403;
+    throw error;
+  }
+  return own;
+}
+function canAccessLocation(req: any, locationId: string | null) {
+  if (isGlobal(req)) return true;
+  const own = ownLocation(req);
+  return Boolean(own && locationId && own === locationId);
+}
 
-router.get("/", async (req, res, next) => {
+router.get("/", async (req: any, res, next) => {
   try {
     await ensureProductTaxonomyReady();
-    const locationId = normalizeLocationId(req.query.location_id);
+    const locationId = scopedLocation(req, normalizeLocationId(req.query.location_id));
     const params: any[] = [];
     const where = locationId === null
       ? "b.location_id IS NULL"
@@ -60,30 +79,34 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.patch("/balances/:id/settings", async (req, res, next) => {
+router.patch("/balances/:id/settings", async (req: any, res, next) => {
   try {
     const minQuantity = parseFiniteNumber(req.body?.min_quantity);
     const unitCost = parseFiniteNumber(req.body?.unit_cost);
     if (minQuantity === null || minQuantity < 0) return res.status(400).json({ message: "A minimum készlet nem lehet negatív." });
     if (unitCost === null || unitCost < 0) return res.status(400).json({ message: "A beszerzési ár nem lehet negatív." });
+    const current = await db.query(`SELECT id,location_id::text FROM product_stock_balances WHERE id=$1`, [req.params.id]);
+    if (!current.rows[0]) return res.status(404).json({ message: "A készletegyenleg nem található." });
+    const currentLocation = current.rows[0].location_id == null ? null : String(current.rows[0].location_id);
+    if (!canAccessLocation(req, currentLocation)) return res.status(403).json({ message: "Ehhez a telephelyi készlethez nincs jogosultsága." });
     const { rows } = await db.query(`
       UPDATE product_stock_balances
       SET min_quantity=$2,unit_cost=$3,updated_at=now()
       WHERE id=$1
       RETURNING id,product_id,location_id,quantity,min_quantity,unit_cost,(quantity*unit_cost)::numeric AS stock_value,updated_at
     `, [req.params.id, minQuantity, money(unitCost)]);
-    if (!rows[0]) return res.status(404).json({ message: "A készletegyenleg nem található." });
     res.json(rows[0]);
   } catch (err) {
     next(err);
   }
 });
 
-router.get("/movements", async (req, res, next) => {
+router.get("/movements", async (req: any, res, next) => {
   try {
     await ensureProductTaxonomyReady();
     const productId = req.query.product_id ? String(req.query.product_id) : null;
-    const locationId = normalizeLocationId(req.query.location_id);
+    const requestedLocation = normalizeLocationId(req.query.location_id);
+    const locationId = scopedLocation(req, requestedLocation);
     const limitRaw = Number(req.query.limit ?? 100);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 500) : 100;
     const params: any[] = [];
@@ -92,12 +115,10 @@ router.get("/movements", async (req, res, next) => {
       params.push(productId);
       filters.push(`m.product_id=$${params.length}`);
     }
-    if (req.query.location_id !== undefined) {
-      if (locationId === null) filters.push("m.location_id IS NULL");
-      else {
-        params.push(locationId);
-        filters.push(`m.location_id::text=$${params.length}::text`);
-      }
+    if (locationId === null) filters.push("m.location_id IS NULL");
+    else {
+      params.push(locationId);
+      filters.push(`m.location_id::text=$${params.length}::text`);
     }
     params.push(limit);
     const result = await db.query(`
@@ -112,7 +133,7 @@ router.get("/movements", async (req, res, next) => {
       JOIN products p ON p.id=m.product_id
       LEFT JOIN product_groups g ON g.id=p.product_group_id
       LEFT JOIN product_categories c ON c.id=p.product_category_id
-      ${filters.length ? `WHERE ${filters.join(" AND ")}` : ""}
+      WHERE ${filters.join(" AND ")}
       ORDER BY m.created_at DESC
       LIMIT $${params.length}
     `, params);
@@ -122,17 +143,17 @@ router.get("/movements", async (req, res, next) => {
   }
 });
 
-router.post("/movements", async (req, res, next) => {
+router.post("/movements", async (req: any, res, next) => {
   const client = await db.connect();
   try {
     const productId = req.body?.product_id ? String(req.body.product_id) : "";
-    const locationId = normalizeLocationId(req.body?.location_id);
+    const locationId = scopedLocation(req, normalizeLocationId(req.body?.location_id));
     const movementType = String(req.body?.movement_type ?? "").trim().toLowerCase() as MovementType;
     const requestedQuantity = parseFiniteNumber(req.body?.quantity);
     const incomingUnitCost = req.body?.unit_cost === "" || req.body?.unit_cost == null ? null : parseFiniteNumber(req.body?.unit_cost);
     const incomingMinQuantity = req.body?.min_quantity === "" || req.body?.min_quantity == null ? null : parseFiniteNumber(req.body?.min_quantity);
     const note = req.body?.note ? String(req.body.note).trim() : null;
-    const createdBy = req.body?.created_by ?? null;
+    const createdBy = actor(req);
 
     if (!productId) return res.status(400).json({ message: "A product_id megadása kötelező." });
     if (!["opening", "receipt", "adjustment"].includes(movementType)) return res.status(400).json({ message: "Érvénytelen készletmozgás típus." });

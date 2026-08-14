@@ -5,6 +5,7 @@ const {pool}=require('../dist/db');
 const workOrderEditor=require('../dist/routes/workOrderEditor').default;
 const cashier=require('../dist/routes/cashier').default;
 const finalization=require('../dist/routes/workOrderFinalization').default;
+const fastFinalization=require('../dist/routes/workOrderFinalizationFast').default;
 const workorders=require('../dist/routes/workordersScoped').default;
 const {ensureWorkOrderWorkflow}=require('../dist/workorders/ensureWorkOrderWorkflow');
 
@@ -41,7 +42,7 @@ async function main(){
  const customer=token({id:5,email:'customer@test.local',role:'customer',location_id:d.loc1});
 
  const app=express();app.use(express.json());
- app.use('/editor',workOrderEditor);app.use('/cashier',cashier);app.use('/finalization',finalization);app.use('/workorders',workorders);
+ app.use('/editor',workOrderEditor);app.use('/cashier',cashier);app.use('/finalization',finalization);app.use('/fast-finalization',fastFinalization);app.use('/workorders',workorders);
  app.use((err,_req,res,_next)=>{console.error('integration route error',err);res.status(500).json({message:err?.message||String(err),code:err?.code||null})});
  const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s))});
  const port=server.address().port,base=`http://127.0.0.1:${port}`;
@@ -93,6 +94,22 @@ async function main(){
   r=await req(base,`/workorders/${wid}`,{headers:auth(employee)});assert.equal(r.status,200);assert.equal(r.body.can_edit,false);
   r=await req(base,`/workorders/${wid}`,{headers:auth(customer)});assert.equal(r.status,200);assert.equal(r.body.can_edit,false);
   r=await req(base,`/workorders/not-a-uuid`,{headers:auth(admin)});assert.equal(r.status,400);
+
+  // Production regresszió: a Fast finalizáló a teljes router előtt fut. Ennek is
+  // kötelező ugyanabban a tranzakcióban raktárszinten levonnia a közvetlen terméket
+  // és a szolgáltatás BOM szerinti fogyóanyagot.
+  await q(`INSERT INTO service_material_requirements(service_id,product_id,default_quantity,unit,required,active,note) VALUES($1,$2,1,'db',true,true,'Fast finalizálás integrációs norma') ON CONFLICT(service_id,product_id) DO UPDATE SET default_quantity=EXCLUDED.default_quantity,active=true`,[d.service,d.product]);
+  const appointment2=(await q(`INSERT INTO appointments(location_id,employee_id,client_id,title,start_time,end_time,status) VALUES($1,$2,$3,'Fast készlet integráció',now()+interval '1 hour',now()+interval '1 hour 45 min','booked') RETURNING id`,[d.loc1,d.employee,d.customer])).rows[0].id;
+  r=await req(base,'/editor/create',{method:'POST',headers:auth(admin),body:JSON.stringify({location_id:d.loc1,appointment_id:appointment2,employee_id:d.employee,client_id:d.customer,status:'in_progress',title:'Fast készlet integráció',services:[{service_id:d.service,quantity:1}],products:[{product_id:d.product,quantity:1}]})});
+  assert.equal(r.status,201,`fast work order create: ${JSON.stringify(r.body)}`);const fastWid=r.body.id;assert.ok(fastWid);
+  r=await req(base,`/cashier/workorders/${fastWid}/settle`,{method:'POST',headers:auth(admin),body:JSON.stringify({payments:[{payment_method:'cash',amount:11000,note:'Fast inventory cash'}],close_financially:true})});
+  assert.equal(r.status,200,`fast cashier settle: ${JSON.stringify(r.body)}`);assert.equal(r.body.payment_status,'paid');
+  r=await req(base,`/fast-finalization/workorders/${fastWid}/finalize`,{method:'POST',headers:auth(admin),body:'{}'});
+  assert.equal(r.status,200,`fast finalize: ${JSON.stringify(r.body)}`);assert.equal(r.body.finalized,true);assert.equal(r.body.fast,true);assert.equal(r.body.inventory?.idempotent,false);assert.equal(Number(r.body.inventory?.consumed?.reduce((s,x)=>s+Number(x.quantity||0),0)),2);
+  const fastStock=(await q(`SELECT quantity FROM product_stock_balances WHERE product_id=$1 AND location_id=$2`,[d.product,d.loc1])).rows[0];assert.equal(Number(fastStock.quantity),6);
+  const fastState=(await q(`SELECT stock_consumed_at,status,document_status FROM work_orders WHERE id=$1`,[fastWid])).rows[0];assert.ok(fastState.stock_consumed_at);assert.equal(fastState.status,'completed');assert.equal(fastState.document_status,'completed');
+  const fastMovement=(await q(`SELECT warehouse_id,quantity,balance_after FROM inventory_movements WHERE work_order_id=$1 AND movement_type='work_order_consumption' ORDER BY id`,[fastWid])).rows;
+  assert.equal(fastMovement.length,1);assert.ok(fastMovement[0].warehouse_id);assert.equal(Number(fastMovement[0].quantity),-2);
 
   console.log('STAGE8 INTEGRATION: PASS');
  }finally{await new Promise(resolve=>server.close(resolve));await pool.end()}

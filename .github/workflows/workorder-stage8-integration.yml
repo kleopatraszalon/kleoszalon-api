@@ -49,4 +49,13 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/workorder_stage8_integration_schema.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260808_WORK_ORDER_OFFICIAL_NUMBER_ARCHIVE_V1.sql
       - name: Run work order integration
-        run: node tests/workorder_stage8.integration.js
+        shell: bash
+        run: |
+          set +e
+          node tests/workorder_stage8.integration.js 2>&1 | tee /tmp/stage8.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message=$(tail -n 80 /tmp/stage8.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+            echo "::error title=Stage8 integration failure::$message"
+          fi
+          exit "$status"

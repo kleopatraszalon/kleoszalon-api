@@ -5,6 +5,7 @@ import {evaluateClient} from '../loyalty/loyaltyProgramService';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {generateAndDeliverClosedWorkOrder} from '../workorders/workOrderDocument';
 import {repairLegacyWorkOrderTriggers} from '../workorders/repairLegacyWorkOrderTriggers';
+import {consumeWorkOrderInventory} from '../inventory/workOrderInventoryService';
 
 const router=Router();
 router.use(requireAuth);
@@ -59,6 +60,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     const [hasOrders,hasItems,hasPayments,hasArchive]=await Promise.all([tableExists('work_orders'),tableExists('work_order_items'),tableExists('work_order_payments'),tableExists('work_order_archive')]);
     if(!hasOrders||!hasItems||!hasPayments||!hasArchive)return next();
     const woCols=await columns('work_orders');
+    if(!woCols.has('stock_consumed_at'))return next();
     await c.query('BEGIN');
     let wo=(await c.query(`SELECT w.*,to_jsonb(w) _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];
     if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
@@ -91,6 +93,8 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     const financiallyClosed=Boolean(j.financial_closed_at)&&String(j.payment_status||'')==='paid';
     if(!financiallyClosed||paid+.009<due){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap csak teljesen kifizetett és pénzügyileg lezárt állapotban véglegesíthető.',code:'WORKORDER_NOT_FINANCIALLY_CLOSED',amount_due:due,amount_paid:paid})}
 
+    const inventory=await consumeWorkOrderInventory(c,wo,actor(req));
+
     const params:any[]=[wo.id];
     const buildSets=(includeStatus:boolean)=>{
       const sets:string[]=[];
@@ -102,6 +106,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
       if(woCols.has('amount_paid')){params.push(paid);sets.push(`amount_paid=$${params.length}`)}
       if(woCols.has('financial_closed_at'))sets.push(`financial_closed_at=COALESCE(financial_closed_at,now())`);
       if(woCols.has('financial_closed_by')&&textLike(woCols.get('financial_closed_by'))){params.push(actor(req));sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}
+      if(woCols.has('stock_consumed_at'))sets.push(`stock_consumed_at=COALESCE(stock_consumed_at,now())`);
       if(woCols.has('document_status'))sets.push(`document_status='completed'`);
       if(timestampLike(woCols.get('completed_at')))sets.push('completed_at=COALESCE(completed_at,now())');
       if(timestampLike(woCols.get('closed_at')))sets.push('closed_at=COALESCE(closed_at,now())');
@@ -130,16 +135,22 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     await c.query('RELEASE SAVEPOINT wo_finalize_status');
 
     const archive=await ensureArchiveRow(c,{...wo,status:'completed'},'completed');
-    if(woCols.has('archive_hash'))await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash]).catch(()=>undefined);
+    if(woCols.has('archive_hash')&&!wo.archive_hash){
+      await c.query('SAVEPOINT wo_archive_hash');
+      try{await c.query(`UPDATE work_orders SET archive_hash=COALESCE(archive_hash,$2) WHERE id=$1::uuid`,[wo.id,archive.snapshot_hash])}
+      catch(e:any){await c.query('ROLLBACK TO SAVEPOINT wo_archive_hash');console.warn('[workorder-finalization-fast] archive hash backfill skipped',e?.code||'',e?.message||e)}
+      await c.query('RELEASE SAVEPOINT wo_archive_hash');
+    }
     if(wo.client_id)await evaluateClient(c,String(wo.client_id),'workorder_finalized',actor(req));
     await c.query('COMMIT');
 
     const docs=queueDelivery(String(wo.id),false);
-    return res.json({finalized:true,fast:true,status_persisted:statusPersisted,work_order:{...wo,status:'completed'},archive,...docs});
+    return res.json({finalized:true,fast:true,status_persisted:statusPersisted,work_order:{...wo,status:'completed'},archive,inventory,...docs});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);
     console.error('[workorder-finalization-fast] failed',e?.code||'',e?.message||e);
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code:e.code});
+    if(String(e?.code||'').startsWith('INVENTORY_'))return res.status(Number(e?.status||409)).json({message:String(e?.message||'A készletművelet nem hajtható végre.'),code:e.code});
     if(e?.code==='57014'||e?.code==='55P03')return res.status(503).json({message:'A munkalap lezárását adatbázis-zárolás vagy timeout akadályozta.',code:e.code});
     return next(e);
   }finally{c.release()}
