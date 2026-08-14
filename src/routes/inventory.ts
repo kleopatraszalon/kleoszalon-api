@@ -4,9 +4,11 @@ import { requireFeature } from "../middleware/featureAccess";
 import { ensureProductTaxonomyReady } from "../inventory/ensureProductTaxonomy";
 import { hasAnyRole } from "../security/roles";
 import inventoryOperationsRouter from "./inventoryOperations";
+import inventoryLotsRouter from "./inventoryLots";
 
 const router = Router();
 router.use(requireFeature("inventory"));
+router.use("/ops", inventoryLotsRouter);
 router.use("/ops", inventoryOperationsRouter);
 
 type MovementType = "opening" | "receipt" | "adjustment";
@@ -163,10 +165,14 @@ router.post("/movements", async (req: any, res, next) => {
     if (incomingMinQuantity !== null && (incomingMinQuantity < 0 || !Number.isFinite(incomingMinQuantity))) return res.status(400).json({ message: "Érvénytelen minimum készlet." });
 
     await client.query("BEGIN");
-    const productCheck = await client.query(`SELECT id,name FROM products WHERE id=$1`, [productId]);
+    const productCheck = await client.query(`SELECT id,name,COALESCE(lot_tracking_enabled,false) AS lot_tracking_enabled FROM products WHERE id=$1`, [productId]);
     if (!productCheck.rows[0]) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "A termék nem található." });
+    }
+    if (productCheck.rows[0].lot_tracking_enabled) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ message: "Sarzskövetett termék készletét a Raktár / Sarzs és lejárat felületen kell módosítani.", code: "INVENTORY_LOT_OPERATION_REQUIRED" });
     }
 
     const balanceResult = await client.query(`
