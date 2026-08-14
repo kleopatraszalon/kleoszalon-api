@@ -1,0 +1,29 @@
+name: Booking live UAT
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/booking-live-uat.yml
+
+permissions:
+  contents: read
+
+jobs:
+  live-booking-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run controlled production booking UAT
+        env:
+          BOOKING_UAT_BASE: https://kleoszalon-api-1.onrender.com/api/public/marketing/booking
+          BOOKING_UAT_EMAIL: vir-booking-uat@example.com
+        run: node tests/booking_live_uat.mjs
