@@ -19,7 +19,9 @@ jobs:
       - name: Upgrade vulnerable production dependencies
         run: |
           npm install --save axios@^1.18.0 bcrypt@^6.0.0 express@^4.22.2 morgan@^1.10.2 multer@^2.2.0 nodemailer@^9.0.5
-          npm audit fix --omit=dev || true
+          npm audit fix --omit=dev --package-lock-only || true
+      - name: Restore full build dependencies
+        run: npm ci --no-fund
       - name: Regression tests
         run: npm test
       - name: Production build with concise diagnostics
@@ -37,10 +39,8 @@ jobs:
           fi
           exit $rc
       - name: Production dependency audit
-        if: always()
         run: npm audit --omit=dev || true
       - name: Commit hardened lockfile
-        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
