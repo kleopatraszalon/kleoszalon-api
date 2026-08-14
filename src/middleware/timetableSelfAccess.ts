@@ -17,6 +17,21 @@ async function resolveEmployee(req:AuthRequest){
   return rows[0]??null;
 }
 
+function scopeTimetableResponse(res:Response,locationId:string){
+  const originalJson=res.json.bind(res);
+  (res as any).json=(body:any)=>{
+    if(!body||typeof body!=="object")return originalJson(body);
+    const employees=Array.isArray(body.employees)?body.employees.filter((row:any)=>String(row?.location_id??"")===locationId):[];
+    const employeeIds=new Set(employees.map((row:any)=>String(row?.id??"")).filter(Boolean));
+    const appointments=Array.isArray(body.appointments)?body.appointments.filter((row:any)=>{
+      const appointmentLocation=String(row?.location_id??"");
+      if(appointmentLocation)return appointmentLocation===locationId;
+      return employeeIds.has(String(row?.employee_id??""));
+    }):[];
+    return originalJson({...body,employees,appointments});
+  };
+}
+
 async function guard(req:AuthRequest,res:Response,next:NextFunction){
   try{
     if(elevated(req))return next();
@@ -27,7 +42,9 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
     if(req.method==="GET"&&path==="/"){
       if(!receptionist(req))return res.status(403).json({error:"A teljes időpont-beosztás csak vezetői vagy recepciós felületen érhető el."});
       if(!employee.location_id)return res.status(403).json({error:"A recepciós fiókhoz nincs szalon rendelve."});
-      (req.query as any).location_id=String(employee.location_id);
+      const locationId=String(employee.location_id);
+      (req.query as any).location_id=locationId;
+      scopeTimetableResponse(res,locationId);
       return next();
     }
     if(req.method==="GET"&&path==="/schedule"){
