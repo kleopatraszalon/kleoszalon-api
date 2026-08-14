@@ -109,7 +109,8 @@ export function ensureNavInvoiceCore(){
         '20260808_NAV_ONLINE_INVOICE_V5_LIFECYCLE.sql',
         '20260811_NAV_ONLINE_INVOICE_41A.sql',
         '20260811_NAV_ONLINE_INVOICE_41B_XSD.sql',
-        '20260814_NAV_WORKORDER_GO_LIVE_V1.sql'
+        '20260814_NAV_WORKORDER_GO_LIVE_V1.sql',
+        '20260814_NAV_QUEUE_WORKER_V2.sql'
       ])await step(`sql:${file}`,()=>runSql(file));
       state.ready=true;
       state.last_success_at=new Date().toISOString();
