@@ -55,6 +55,9 @@ export function ensureFinanceNav(){
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
+      // The accounting role is applied last so permissions also cover finance menu rows
+      // created by the current release during the same bootstrap pass.
+      await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
     })().catch(err=>{ensurePromise=null;throw err});
   }
   return ensurePromise;
