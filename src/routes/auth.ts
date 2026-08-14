@@ -11,9 +11,11 @@ import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
 
 const router = express.Router();
 const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
-const GITHUB_UAT_AUDIENCE="kleoszalon-accounting-uat";
 const GITHUB_UAT_REPOSITORY="kleopatraszalon/kleoszalon-api";
-const GITHUB_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/accounting-authenticated-uat.yml@refs/heads/main";
+const ACCOUNTING_UAT_AUDIENCE="kleoszalon-accounting-uat";
+const ACCOUNTING_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/accounting-authenticated-uat.yml@refs/heads/main";
+const NAV_TEST_UAT_AUDIENCE="kleoszalon-nav-test-uat";
+const NAV_TEST_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/nav-real-test-uat.yml@refs/heads/main";
 
 function setAuthCookie(res: Response, token: string) {
   res.cookie("token", token, {
@@ -139,7 +141,7 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   });
 }
 
-async function verifyGitHubAccountingUatToken(token:string){
+async function verifyGitHubUatToken(token:string,audience:string,workflowRef:string){
   const decoded=jwt.decode(token,{complete:true}) as any;
   const kid=String(decoded?.header?.kid||"");
   if(!kid)throw new Error("GitHub OIDC token kid hiányzik.");
@@ -147,35 +149,55 @@ async function verifyGitHubAccountingUatToken(token:string){
   const jwk=(jwks.data?.keys||[]).find((x:any)=>String(x?.kid||"")===kid);
   if(!jwk)throw new Error("A GitHub OIDC aláírókulcs nem található.");
   const publicKey=crypto.createPublicKey({key:jwk,format:"jwk"} as any);
-  const claims=jwt.verify(token,publicKey,{algorithms:["RS256"],issuer:GITHUB_OIDC_ISSUER,audience:GITHUB_UAT_AUDIENCE}) as any;
+  const claims=jwt.verify(token,publicKey,{algorithms:["RS256"],issuer:GITHUB_OIDC_ISSUER,audience}) as any;
   if(String(claims?.repository||"")!==GITHUB_UAT_REPOSITORY)throw new Error("Nem engedélyezett GitHub repository.");
-  if(String(claims?.ref||"")!=="refs/heads/main")throw new Error("Az accounting UAT kizárólag main ágról futtatható.");
-  if(String(claims?.workflow_ref||"")!==GITHUB_UAT_WORKFLOW)throw new Error("Nem engedélyezett GitHub workflow.");
+  if(String(claims?.ref||"")!=="refs/heads/main")throw new Error("A production UAT kizárólag main ágról futtatható.");
+  if(String(claims?.workflow_ref||"")!==workflowRef)throw new Error("Nem engedélyezett GitHub workflow.");
   return claims;
 }
 
 /**
  * GitHub Actions-only accounting UAT bootstrap.
- * The caller must present a GitHub OIDC token signed by GitHub for the exact
- * repository/workflow/main ref above. No reusable password or repository secret
- * is introduced. The returned VIR JWT expires after 10 minutes.
+ * No reusable password or repository secret is introduced.
  */
 router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
   const authorization=String(req.headers.authorization||"");
   const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
   if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
   try{
-    const claims=await verifyGitHubAccountingUatToken(oidcToken);
+    const claims=await verifyGitHubUatToken(oidcToken,ACCOUNTING_UAT_AUDIENCE,ACCOUNTING_UAT_WORKFLOW);
     await ensureAccountingUser();
     const {rows}=await db.query(`SELECT id,email,login_name,role,location_id FROM users WHERE lower(COALESCE(email,''))='konyveles@kleoszalon.hu' OR lower(COALESCE(login_name,''))='könyvelés' ORDER BY CASE WHEN lower(COALESCE(email,''))='konyveles@kleoszalon.hu' THEN 0 ELSE 1 END LIMIT 1`);
     const user=rows[0];
     if(!user||!roleKeys(user.role).includes("accounting"))return res.status(409).json({error:"Az accounting UAT felhasználó nem áll rendelkezésre megfelelő szerepkörrel."});
-    const token=jwt.sign({id:user.id,userId:user.id,email:user.email,role:user.role,location_id:null,uat:true,uat_source:"github-actions"},JWT_SECRET,{expiresIn:"10m"});
+    const token=jwt.sign({id:user.id,userId:user.id,email:user.email,role:user.role,location_id:null,uat:true,uat_source:"github-actions",uat_scope:"accounting"},JWT_SECRET,{expiresIn:"10m"});
     console.info("[ACCOUNTING-UAT] short-lived token issued",{run_id:String(claims?.run_id||""),actor:String(claims?.actor||""),repository:String(claims?.repository||"")});
     return res.json({success:true,token,expires_in_seconds:600,role:user.role,location_id:null});
   }catch(error:any){
     console.warn("[ACCOUNTING-UAT] OIDC bootstrap rejected:",error?.message||String(error));
     return res.status(401).json({error:"Érvénytelen vagy nem engedélyezett GitHub UAT identitás."});
+  }
+});
+
+/**
+ * GitHub Actions-only NAV TEST UAT bootstrap.
+ * Exact repository + exact workflow + main ref + dedicated audience are required.
+ * The 10-minute admin token is generated only to cross the existing management/finance
+ * middleware for the automated NAV TEST chain; the workflow itself sends exclusively
+ * to the test environment and the server-side NAV guard keeps live UAT blocked.
+ */
+router.post("/uat/nav-test-token",async(req:Request,res:Response)=>{
+  const authorization=String(req.headers.authorization||"");
+  const oidcToken=/^Bearer\s+/i.test(authorization)?authorization.replace(/^Bearer\s+/i,"").trim():"";
+  if(!oidcToken)return res.status(401).json({error:"GitHub OIDC token szükséges."});
+  try{
+    const claims=await verifyGitHubUatToken(oidcToken,NAV_TEST_UAT_AUDIENCE,NAV_TEST_UAT_WORKFLOW);
+    const token=jwt.sign({id:"github-nav-test-uat",userId:"github-nav-test-uat",email:"nav-test-uat@kleoszalon.hu",role:["admin"],location_id:null,uat:true,uat_source:"github-actions",uat_scope:"nav_test"},JWT_SECRET,{expiresIn:"10m"});
+    console.info("[NAV-TEST-UAT] short-lived token issued",{run_id:String(claims?.run_id||""),actor:String(claims?.actor||""),repository:String(claims?.repository||"")});
+    return res.json({success:true,token,expires_in_seconds:600,role:["admin"],location_id:null,uat_scope:"nav_test"});
+  }catch(error:any){
+    console.warn("[NAV-TEST-UAT] OIDC bootstrap rejected:",error?.message||String(error));
+    return res.status(401).json({error:"Érvénytelen vagy nem engedélyezett GitHub NAV TEST UAT identitás."});
   }
 });
 
@@ -210,8 +232,6 @@ router.post("/login", async (req: Request, res: Response) => {
     const adminAccount = user && isAdminRole(user.role);
     const employee = adminAccount ? null : await findEmployee(loginIdentifier, user);
 
-    // Munkatárs/recepciós/vezető: az employees rekord az elsődleges,
-    // így a saját telephely és employee ID kerül a tokenbe.
     if (employee && (!user || isStaffRole(user.role) || !isAdminRole(user.role))) {
       return respondAsEmployee(res, employee, password, user?.role ?? employee.role);
     }
@@ -266,10 +286,6 @@ router.post("/login", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Visszafelé kompatibilis munkatársi belépési végpont.
- * Az új frontend már az egységes /api/login végpontot használja.
- */
 router.post("/employee-login", async (req: Request, res: Response) => {
   const loginName = String(req.body?.login_name || req.body?.username || "").trim();
   const password = String(req.body?.password || "");
