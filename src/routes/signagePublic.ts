@@ -1,6 +1,7 @@
 import { Router } from "express";
 import pool from "../db";
 import * as https from "https";
+import { classifyBookingCommunicationFailure } from "../booking/communicationFailureAnalysis";
 
 /**
  * Public Signage API (NO AUTH)
@@ -429,6 +430,36 @@ router.get("/nameday", async (_req, res) => {
       fetchedAt: nowIso(),
       source: "nameday.abalin.net",
     });
+  }
+});
+
+// TEMPORARY 2026-08-14: anonymized aggregate probe for the 1534 failed booking notifications.
+// No recipient, location, appointment id, or raw error text is returned. Remove after one production read.
+router.get("/booking-failure-probe-20260814", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const { rows } = await pool.query(`SELECT channel,event_type,error_text,failed_at,created_at FROM booking_communication_queue WHERE status='failed' ORDER BY COALESCE(failed_at,created_at) DESC`);
+    const causeMap = new Map<string, { key:string; label:string; priority:string; count:number }>();
+    const channelMap = new Map<string,number>();
+    const eventMap = new Map<string,number>();
+    const now = Date.now();
+    const day = 24*60*60*1000;
+    let failedLast24h=0,failedLast7d=0,missingErrorText=0;
+    for(const row of rows){
+      const cause=classifyBookingCommunicationFailure(row.error_text,row.channel);
+      const cur=causeMap.get(cause.key)||{key:cause.key,label:cause.label,priority:cause.priority,count:0};cur.count++;causeMap.set(cause.key,cur);
+      const channel=String(row.channel||"unknown");channelMap.set(channel,(channelMap.get(channel)||0)+1);
+      const event=String(row.event_type||"unknown");eventMap.set(event,(eventMap.get(event)||0)+1);
+      if(!String(row.error_text||"").trim())missingErrorText++;
+      const ts=new Date(row.failed_at||row.created_at).getTime();if(Number.isFinite(ts)){if(now-ts<=day)failedLast24h++;if(now-ts<=7*day)failedLast7d++;}
+    }
+    const dup=await pool.query(`WITH ordered AS (SELECT appointment_id,event_type,channel,recipient,created_at,LAG(created_at) OVER(PARTITION BY appointment_id,event_type,channel,recipient ORDER BY created_at) prev_created_at FROM booking_communication_queue WHERE appointment_id IS NOT NULL AND status<>'cancelled') SELECT COUNT(*)::int duplicate_rows FROM ordered WHERE prev_created_at IS NOT NULL AND created_at>=prev_created_at AND created_at-prev_created_at<=interval '10 seconds'`);
+    const total=rows.length;
+    const counts=(map:Map<string,number>)=>[...map.entries()].map(([key,count])=>({key,count})).sort((a,b)=>b.count-a.count);
+    const causes=[...causeMap.values()].sort((a,b)=>b.count-a.count).map(x=>({...x,percentage:total?Math.round(x.count/total*1000)/10:0}));
+    res.json({generated_at:nowIso(),total_failed:total,failed_last_24h:failedLast24h,failed_last_7d:failedLast7d,stale_older_than_7d:Math.max(0,total-failedLast7d),missing_error_text:missingErrorText,duplicate_candidates:Number(dup.rows[0]?.duplicate_rows||0),causes,channels:counts(channelMap),events:counts(eventMap)});
+  } catch (_e) {
+    res.status(500).json({error:"booking_failure_probe_failed"});
   }
 });
 
