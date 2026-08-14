@@ -11,47 +11,12 @@ const router = express.Router();
  * Napi beosztás:
  *  - admin: az ÖSSZES location aktív dolgozója
  *  - nem admin: csak a saját location_id dolgozói
- *
- * Válasz:
- * {
- *   date: "2025-11-11",
- *   locations: [
- *     {
- *       id: "location_uuid_vagy_null",
- *       name: "Telephely neve",
- *       employees: [
- *         {
- *           id: "employee_uuid",
- *           full_name: "Dolgozó Név",
- *           location_id: "...",
- *           location_name: "...",
- *           appointments: [
- *             {
- *               id: "...",
- *               title: "...",
- *               start: "2025-11-11T08:00:00.000Z",
- *               end:   "2025-11-11T08:30:00.000Z",
- *               status: "...",
- *               price: 12345,
- *               notes: "...",
- *               client_name: "...",
- *               service_name: "...",
- *               location_id: "...",
- *               location_name: "..."
- *             }
- *           ]
- *         }
- *       ]
- *     }
- *   ]
- * }
  */
 router.get("/", requireAuth, async (req: AuthRequest, res) => {
   try {
     const rawDate =
-      (req.query.date as string) || new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+      (req.query.date as string) || new Date().toISOString().slice(0, 10);
 
-    // Dátum formátum ellenőrzés
     if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
       return res
         .status(400)
@@ -62,14 +27,12 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
     const isAdmin = user.role === "admin";
     const userLocationId = user.location_id || null;
 
-    // Nem adminnál elvárjuk, hogy legyen location_id
     if (!isAdmin && !userLocationId) {
       return res
         .status(400)
         .json({ error: "A felhasználóhoz nincs location_id rendelve" });
     }
 
-    // 1) Aktív dolgozók lekérése
     let employeesSql = `
       SELECT 
         e.id,
@@ -101,8 +64,6 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
 
     const employeeIds = employees.map((e: any) => e.id);
 
-    // 2) Az adott napra eső időpontok lekérése az összes érintett dolgozóra
-    //    -> appointments tábla, ahogy az employee_calendar route-ban is használjuk
     const appointmentsSql = `
       SELECT
         a.id,
@@ -112,6 +73,31 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
         a.start_time,
         a.end_time,
         a.status,
+        CASE
+          WHEN lower(COALESCE(a.status,'')) IN ('completed','paid')
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND (
+                  lower(COALESCE(to_jsonb(w)->>'status',''))='completed'
+                  OR NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL
+                  OR NULLIF(to_jsonb(w)->>'archived_at','') IS NOT NULL
+                )
+            ) THEN 'work_order_closed'
+          WHEN lower(COALESCE(a.status,''))='in_progress'
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress'
+            ) THEN 'in_progress'
+          WHEN lower(COALESCE(a.status,''))='arrived'
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived'
+            ) THEN 'arrived'
+          ELSE COALESCE(NULLIF(lower(a.status),''),'waiting')
+        END AS operational_status,
         a.price,
         a.notes,
         l.name AS location_name,
@@ -129,12 +115,10 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
 
     const appointmentsResult = await pool.query(appointmentsSql, [
       employeeIds,
-      rawDate, // ::date
+      rawDate,
     ]);
 
     const appointments = appointmentsResult.rows;
-
-    // 3) Összekapcsolás dolgozókkal, lokációnként csoportosítva
 
     type AppointmentDto = {
       id: string;
@@ -142,6 +126,7 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
       start: string;
       end: string;
       status: string | null;
+      operational_status: string | null;
       price: number | null;
       notes: string | null;
       location_id: string | null;
@@ -185,6 +170,7 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
         start: a.start_time,
         end: a.end_time,
         status: a.status ?? null,
+        operational_status: a.operational_status ?? null,
         price: a.price ?? null,
         notes: a.notes ?? null,
         location_id: a.location_id ? String(a.location_id) : null,

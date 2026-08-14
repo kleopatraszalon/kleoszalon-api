@@ -70,7 +70,6 @@ function pick(cols: ColSet, names: string[]): string | null {
 }
 
 function buildEmployeesSelect(cols: ColSet) {
-  // name fields
   const fullNameCol = pick(cols, ["full_name", "fullname", "name", "display_name"]);
   const shortNameCol = pick(cols, ["short_name", "shortname", "nick", "nickname", "initials"]);
   const firstNameCol = pick(cols, ["first_name", "firstname", "given_name"]);
@@ -229,6 +228,31 @@ router.get("/", async (req: AuthRequest, res) => {
         a.start_time,
         a.end_time,
         a.status,
+        CASE
+          WHEN lower(COALESCE(a.status,'')) IN ('completed','paid')
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND (
+                  lower(COALESCE(to_jsonb(w)->>'status',''))='completed'
+                  OR NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL
+                  OR NULLIF(to_jsonb(w)->>'archived_at','') IS NOT NULL
+                )
+            ) THEN 'work_order_closed'
+          WHEN lower(COALESCE(a.status,''))='in_progress'
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress'
+            ) THEN 'in_progress'
+          WHEN lower(COALESCE(a.status,''))='arrived'
+            OR EXISTS(
+              SELECT 1 FROM work_orders w
+              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
+                AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived'
+            ) THEN 'arrived'
+          ELSE COALESCE(NULLIF(lower(a.status),''),'waiting')
+        END AS operational_status,
         a.notes,
         (
           CASE
