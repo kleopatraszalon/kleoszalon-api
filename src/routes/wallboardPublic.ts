@@ -1,5 +1,10 @@
 import { Router } from "express";
 import pool from "../db";
+import { requireAdmin } from "../middleware/requireRoles";
+import type { AuthRequest } from "../middleware/auth";
+import { getRuntimeSettingsSnapshot, saveRuntimeSettings } from "../services/virRuntimeSettings";
+import { applyGitHubReleaseEnvironment, applyRenderHighAvailability, getRenderInfrastructureStatus } from "../services/virInfrastructureControl";
+import { getComplaintMailboxStatus, startComplaintMailboxWorker } from "../services/complaintMailbox";
 
 const router = Router();
 
@@ -56,6 +61,37 @@ router.get("/wallboard", async (_req,res,next)=>{
     const discount=a?.discount_text?`<div class="discount">${escHtml(a.discount_text)}</div>`:"";
     res.type("html").send(`<!doctype html><html lang="hu"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="60"><title>Kleopátra WallBoard</title><style>*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#160d0a;color:#fff;font-family:Inter,Arial,sans-serif}.screen{height:100vh;display:grid;grid-template-columns:${a?.image_url?"1.1fr 1fr":"1fr"};background:radial-gradient(circle at 20% 20%,#5c173e 0,#24120e 45%,#120907 100%)}.media{background-size:cover;background-position:center;min-height:100%}.copy{display:flex;flex-direction:column;justify-content:center;padding:7vw}.eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:1.2vw;opacity:.7}.copy h1{font-size:4.5vw;line-height:1.02;margin:.35em 0 .25em;max-width:15ch}.copy p{font-size:1.8vw;line-height:1.4;max-width:34ch;opacity:.92}.discount{font-size:3vw;font-weight:800;color:#ffd88c;margin-top:.55em}.footer{position:fixed;right:2vw;bottom:1.5vw;font-size:1vw;opacity:.55}@media(max-aspect-ratio:1/1){.screen{grid-template-columns:1fr;grid-template-rows:45% 55%}.copy{padding:7vw}.copy h1{font-size:7vw}.copy p{font-size:3vw}.discount{font-size:5vw}.eyebrow{font-size:2vw}}</style></head><body><main class="screen">${image}<section class="copy"><div class="eyebrow">Kleopátra • Napi akció</div><h1>${escHtml(headline)}</h1><p>${escHtml(description)}</p>${discount}</section></main><div class="footer">Automatikus WallBoard feed • frissítés 60 mp</div></body></html>`);
   } catch(e){ next(e); }
+});
+
+// Admin-only runtime configuration. Mounted under /api/signage but every route
+// below performs its own authentication/role check before returning any data.
+router.get("/runtime-settings", requireAdmin, async (_req,res,next)=>{
+  try {
+    const [settings, render] = await Promise.all([getRuntimeSettingsSnapshot(), getRenderInfrastructureStatus()]);
+    res.json({ settings, render, mailbox: getComplaintMailboxStatus() });
+  } catch(e){ next(e); }
+});
+
+router.put("/runtime-settings", requireAdmin, async (req:AuthRequest,res,next)=>{
+  try {
+    const actor=String(req.user?.email||req.user?.id||"admin");
+    await saveRuntimeSettings(req.body?.settings||{},actor);
+    startComplaintMailboxWorker();
+    const [settings, render] = await Promise.all([getRuntimeSettingsSnapshot(), getRenderInfrastructureStatus()]);
+    res.json({ ok:true,settings,render,mailbox:getComplaintMailboxStatus() });
+  } catch(e){ next(e); }
+});
+
+router.post("/runtime-settings/github/apply", requireAdmin, async (_req,res,next)=>{
+  try { res.json(await applyGitHubReleaseEnvironment()); } catch(e){ next(e); }
+});
+
+router.post("/runtime-settings/render/verify", requireAdmin, async (_req,res,next)=>{
+  try { res.json(await getRenderInfrastructureStatus()); } catch(e){ next(e); }
+});
+
+router.post("/runtime-settings/render/apply", requireAdmin, async (_req,res,next)=>{
+  try { res.json(await applyRenderHighAvailability()); } catch(e){ next(e); }
 });
 
 export default router;
