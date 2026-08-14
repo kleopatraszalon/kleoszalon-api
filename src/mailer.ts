@@ -42,6 +42,41 @@ export type OutgoingMail = {
   attachments?: MailAttachment[];
 };
 
+export type EmailTransportHealth = {
+  ok: boolean;
+  configured: boolean;
+  enabled: boolean;
+  mode: "live" | "disabled" | "unconfigured" | "error";
+  error_code: string | null;
+  authentication_error: boolean;
+  checked_at: string;
+};
+
+function authLikeError(error: any): boolean {
+  const text = `${error?.code || ""} ${error?.responseCode || ""} ${error?.message || ""}`.toLowerCase();
+  return text.includes("eauth") || text.includes("authentication") || text.includes("invalid login") || text.includes("username and password not accepted") || /(^|\D)(401|403|534|535)(\D|$)/.test(text);
+}
+
+export async function verifyEmailTransport(): Promise<EmailTransportHealth> {
+  const checked_at = new Date().toISOString();
+  if (DISABLE_SMTP) return { ok: false, configured: Boolean(SMTP_USER && SMTP_PASS), enabled: false, mode: "disabled", error_code: "SMTP_DISABLED", authentication_error: false, checked_at };
+  if (!SMTP_USER || !SMTP_PASS || !transporter) return { ok: false, configured: false, enabled: true, mode: "unconfigured", error_code: "SMTP_NOT_CONFIGURED", authentication_error: false, checked_at };
+  try {
+    await transporter.verify();
+    return { ok: true, configured: true, enabled: true, mode: "live", error_code: null, authentication_error: false, checked_at };
+  } catch (error: any) {
+    return {
+      ok: false,
+      configured: true,
+      enabled: true,
+      mode: "error",
+      error_code: String(error?.code || error?.responseCode || "SMTP_VERIFY_FAILED").slice(0, 80),
+      authentication_error: authLikeError(error),
+      checked_at,
+    };
+  }
+}
+
 function encHeader(value: string): string {
   return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value,"utf8").toString("base64")}?=`;
 }
@@ -72,7 +107,7 @@ function buildSentMime(message: OutgoingMail, messageId?: string): Buffer {
     "",
     b64Lines(message.text),
     `--${alt}`,
-    "Content-Type: text/html; charset=UTF-8",
+    `Content-Type: text/html; charset=UTF-8`,
     "Content-Transfer-Encoding: base64",
     "",
     b64Lines(html),
