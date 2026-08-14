@@ -74,6 +74,26 @@ ALTER TABLE work_order_payments
   ADD COLUMN IF NOT EXISTS card_brand text,
   ADD COLUMN IF NOT EXISTS fee_amount numeric(14,2) NOT NULL DEFAULT 0;
 
+-- A régi live adatbázisokon ez a tábla korábban csak a cashier route első
+-- megnyitásakor jött létre. A Finance/NAV bootstrap azonban előbb fut, ezért
+-- a parity migráció saját maga biztosítja az alap táblát az ALTER előtt.
+CREATE TABLE IF NOT EXISTS cash_register_movements (
+  id bigserial PRIMARY KEY,
+  location_id text NOT NULL,
+  business_date date NOT NULL DEFAULT CURRENT_DATE,
+  direction varchar(8) NOT NULL CHECK (direction IN ('in','out')),
+  amount numeric(14,2) NOT NULL CHECK (amount > 0),
+  reason_code varchar(40) NOT NULL DEFAULT 'other',
+  note text,
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  voided_at timestamptz,
+  voided_by text,
+  void_reason text
+);
+CREATE INDEX IF NOT EXISTS cash_register_movements_scope_idx
+  ON cash_register_movements (location_id,business_date DESC,created_at DESC);
+
 ALTER TABLE cash_register_movements
   ADD COLUMN IF NOT EXISTS transaction_type_code text,
   ADD COLUMN IF NOT EXISTS reference_no text,

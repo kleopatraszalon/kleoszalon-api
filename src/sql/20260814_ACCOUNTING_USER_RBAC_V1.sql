@@ -16,34 +16,52 @@ BEGIN
  END IF;
 END $$;
 
-INSERT INTO access_roles(role_key,label,description,level,is_system,is_active,updated_at)
-VALUES('accounting','Könyvelés','Könyvelői moduladmin: teljes jogosultság a Pénzügyek, NAV, bér, Beszerzés és Raktár/Készlet modulokban minden telephelyre. A szükséges ügyfél-, dolgozói-, riport-, tudástár- és törzsadatok elérhetők. Globális rendszer- és jogosultságadminisztráció nem része a szerepkörnek; munkalap csak lezárt és archivált.',80,true,true,now())
-ON CONFLICT(role_key) DO UPDATE SET label=EXCLUDED.label,description=EXCLUDED.description,level=EXCLUDED.level,is_active=true,updated_at=now();
+-- A live UAT kimutatta, hogy egy részben migrált adatbázisban a szerepkör-regiszter
+-- lemaradhat a permission sorok mögött. A kanonikus mező neve `name`.
+UPDATE access_roles SET
+ name='Könyvelés',
+ description='Könyvelői moduladmin: teljes jogosultság a Pénzügyek, NAV, bér, Beszerzés és Raktár/Készlet modulokban minden telephelyre. A szükséges ügyfél-, dolgozói-, riport-, tudástár- és törzsadatok elérhetők. Globális rendszer- és jogosultságadminisztráció nem része a szerepkörnek; munkalap csak lezárt és archivált.',
+ level=80,is_system=true,is_active=true,updated_at=now()
+WHERE lower(role_key)='accounting';
+INSERT INTO access_roles(role_key,name,description,level,is_system,is_active,updated_at)
+SELECT 'accounting','Könyvelés','Könyvelői moduladmin: teljes jogosultság a Pénzügyek, NAV, bér, Beszerzés és Raktár/Készlet modulokban minden telephelyre. A szükséges ügyfél-, dolgozói-, riport-, tudástár- és törzsadatok elérhetők. Globális rendszer- és jogosultságadminisztráció nem része a szerepkörnek; munkalap csak lezárt és archivált.',80,true,true,now()
+WHERE NOT EXISTS(SELECT 1 FROM access_roles WHERE lower(role_key)='accounting');
 
--- Moduladmin jogosultságok a könyvelő napi munkaterületein.
-INSERT INTO role_feature_permissions(role_key,feature_key,can_view,can_create,can_edit,can_delete,can_export,scope_type,updated_at)
+-- A kanonikus szerepkör-regiszter két korábban fail-closed migrációval létrehozott
+-- szerepkörét is helyreállítjuk, ha egy régi live DB-ben a szerepkör sor hiányzik.
+INSERT INTO access_roles(role_key,name,description,level,is_system,is_active,updated_at)
+SELECT x.role_key,x.name,x.description,x.level,true,true,now()
+FROM (VALUES
+ ('salon_manager','Szalonvezető','Saját telephely operatív adatai, alapvetően olvasási jogosultsággal',60),
+ ('customer','Ügyfél','Saját foglalások, munkalapok és ügyfélfiók',10)
+) x(role_key,name,description,level)
+WHERE NOT EXISTS(SELECT 1 FROM access_roles ar WHERE lower(ar.role_key)=x.role_key);
+
+-- A role_feature_permissions kanonikus sémája egy feature-szintű `can_use` kaput tartalmaz.
+-- A műveletszintű CRUD/export jogokat a role_menu_permissions hordozza.
+INSERT INTO role_feature_permissions(role_key,feature_key,can_use,scope_type,updated_at)
 VALUES
- ('accounting','finance',true,true,true,true,true,'all_locations',now()),
- ('accounting','payroll',true,true,true,true,true,'all_locations',now()),
- ('accounting','inventory',true,true,true,true,true,'all_locations',now()),
- ('accounting','procurement',true,true,true,true,true,'all_locations',now()),
- ('accounting','hr',true,false,false,false,true,'all_locations',now()),
- ('accounting','employees',true,false,false,false,true,'all_locations',now()),
- ('accounting','clients',true,false,false,false,true,'all_locations',now()),
- ('accounting','crm',true,false,false,false,true,'all_locations',now()),
- ('accounting','reports',true,false,false,false,true,'all_locations',now()),
- ('accounting','management_dashboard',true,false,false,false,true,'all_locations',now()),
- ('accounting','knowledge_base',true,false,false,false,true,'all_locations',now()),
- ('accounting','audit',true,false,false,false,true,'all_locations',now()),
- ('accounting','marketing',true,false,false,false,true,'all_locations',now()),
- ('accounting','masterdata',true,false,false,false,true,'all_locations',now())
+ ('accounting','finance',true,'all_locations',now()),
+ ('accounting','payroll',true,'all_locations',now()),
+ ('accounting','inventory',true,'all_locations',now()),
+ ('accounting','procurement',true,'all_locations',now()),
+ ('accounting','hr',true,'all_locations',now()),
+ ('accounting','employees',true,'all_locations',now()),
+ ('accounting','clients',true,'all_locations',now()),
+ ('accounting','crm',true,'all_locations',now()),
+ ('accounting','reports',true,'all_locations',now()),
+ ('accounting','management_dashboard',true,'all_locations',now()),
+ ('accounting','knowledge_base',true,'all_locations',now()),
+ ('accounting','audit',true,'all_locations',now()),
+ ('accounting','marketing',true,'all_locations',now()),
+ ('accounting','masterdata',true,'all_locations',now())
 ON CONFLICT(role_key,feature_key) DO UPDATE SET
- can_view=EXCLUDED.can_view,can_create=EXCLUDED.can_create,can_edit=EXCLUDED.can_edit,can_delete=EXCLUDED.can_delete,can_export=EXCLUDED.can_export,scope_type='all_locations',updated_at=now();
+ can_use=EXCLUDED.can_use,scope_type='all_locations',updated_at=now();
 
 -- Alapból minden menü tiltott; kizárólag a könyvelési munkakörhöz szükséges területek kapnak hozzáférést.
-INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,manage_permissions,scope_type,updated_at)
+INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
 SELECT 'accounting',m.id,false,false,false,false,false,false,false,false,'all_locations',now() FROM menus m
-ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,can_view_financial=false,manage_permissions=false,scope_type='all_locations',updated_at=now();
+ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,can_view_financial=false,can_manage_permissions=false,scope_type='all_locations',updated_at=now();
 
 -- Teljes moduladmin: Pénzügy/NAV, bér, Beszerzés, Raktár/Készlet.
 UPDATE role_menu_permissions p SET
@@ -54,7 +72,7 @@ UPDATE role_menu_permissions p SET
  can_approve=true,
  can_export=true,
  can_view_financial=true,
- manage_permissions=false,
+ can_manage_permissions=false,
  scope_type='all_locations',
  updated_at=now()
 FROM menus m
@@ -74,7 +92,7 @@ UPDATE role_menu_permissions p SET
  can_approve=false,
  can_export=true,
  can_view_financial=true,
- manage_permissions=false,
+ can_manage_permissions=false,
  scope_type='all_locations',
  updated_at=now()
 FROM menus m
@@ -91,7 +109,7 @@ WHERE p.menu_id=m.id AND p.role_key='accounting' AND (
 
 -- Munkalap könyvelőként csak lezárt/archivált bizonylati forrás, olvasásra és exportra.
 UPDATE role_menu_permissions p SET
- can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=true,can_view_financial=true,manage_permissions=false,scope_type='all_locations',updated_at=now()
+ can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=true,can_view_financial=true,can_manage_permissions=false,scope_type='all_locations',updated_at=now()
 FROM menus m WHERE p.menu_id=m.id AND p.role_key='accounting' AND m.code='finance.workorders';
 
 INSERT INTO schema_migrations(version,description,applied_at)

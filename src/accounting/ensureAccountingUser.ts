@@ -19,35 +19,39 @@ async function ensureAccountingPermissions(){
   const results:boolean[]=[];
 
   results.push(await safeQuery('access role',`
-    INSERT INTO access_roles(role_key,label,description,level,is_system,is_active,updated_at)
-    VALUES('accounting','Könyvelés','Könyvelési moduladmin: pénzügy/NAV, bér, beszerzés és raktár-készlet teljes kezelése minden telephelyen; kapcsolódó adatokhoz szükséges hozzáféréssel.',80,true,true,now())
-    ON CONFLICT(role_key) DO UPDATE SET label=EXCLUDED.label,description=EXCLUDED.description,level=EXCLUDED.level,is_active=true,updated_at=now()
+    UPDATE access_roles SET
+      name='Könyvelés',
+      description='Könyvelési moduladmin: pénzügy/NAV, bér, beszerzés és raktár-készlet teljes kezelése minden telephelyen; kapcsolódó adatokhoz szükséges hozzáféréssel.',
+      level=80,is_system=true,is_active=true,updated_at=now()
+    WHERE lower(role_key)='accounting';
+    INSERT INTO access_roles(role_key,name,description,level,is_system,is_active,updated_at)
+    SELECT 'accounting','Könyvelés','Könyvelési moduladmin: pénzügy/NAV, bér, beszerzés és raktár-készlet teljes kezelése minden telephelyen; kapcsolódó adatokhoz szükséges hozzáféréssel.',80,true,true,now()
+    WHERE NOT EXISTS(SELECT 1 FROM access_roles WHERE lower(role_key)='accounting');
   `));
 
   results.push(await safeQuery('feature permissions',`
-    INSERT INTO role_feature_permissions(role_key,feature_key,can_view,can_create,can_edit,can_delete,can_export,scope_type,updated_at)
+    INSERT INTO role_feature_permissions(role_key,feature_key,can_use,scope_type,updated_at)
     VALUES
-      ('accounting','management_dashboard',true,false,false,false,true,'all_locations',now()),
-      ('accounting','finance',true,true,true,true,true,'all_locations',now()),
-      ('accounting','payroll',true,true,true,true,true,'all_locations',now()),
-      ('accounting','inventory',true,true,true,true,true,'all_locations',now()),
-      ('accounting','procurement',true,true,true,true,true,'all_locations',now()),
-      ('accounting','hr',true,false,false,false,true,'all_locations',now()),
-      ('accounting','employees',true,false,false,false,true,'all_locations',now()),
-      ('accounting','clients',true,false,false,false,true,'all_locations',now()),
-      ('accounting','crm',true,false,false,false,true,'all_locations',now()),
-      ('accounting','reports',true,false,false,false,true,'all_locations',now()),
-      ('accounting','knowledge_base',true,false,false,false,true,'all_locations',now()),
-      ('accounting','audit',true,false,false,false,true,'all_locations',now()),
-      ('accounting','marketing',true,false,false,false,true,'all_locations',now()),
-      ('accounting','masterdata',true,false,true,false,true,'all_locations',now())
+      ('accounting','management_dashboard',true,'all_locations',now()),
+      ('accounting','finance',true,'all_locations',now()),
+      ('accounting','payroll',true,'all_locations',now()),
+      ('accounting','inventory',true,'all_locations',now()),
+      ('accounting','procurement',true,'all_locations',now()),
+      ('accounting','hr',true,'all_locations',now()),
+      ('accounting','employees',true,'all_locations',now()),
+      ('accounting','clients',true,'all_locations',now()),
+      ('accounting','crm',true,'all_locations',now()),
+      ('accounting','reports',true,'all_locations',now()),
+      ('accounting','knowledge_base',true,'all_locations',now()),
+      ('accounting','audit',true,'all_locations',now()),
+      ('accounting','marketing',true,'all_locations',now()),
+      ('accounting','masterdata',true,'all_locations',now())
     ON CONFLICT(role_key,feature_key) DO UPDATE SET
-      can_view=EXCLUDED.can_view,can_create=EXCLUDED.can_create,can_edit=EXCLUDED.can_edit,
-      can_delete=EXCLUDED.can_delete,can_export=EXCLUDED.can_export,scope_type='all_locations',updated_at=now()
+      can_use=EXCLUDED.can_use,scope_type='all_locations',updated_at=now()
   `));
 
   results.push(await safeQuery('menu permission rows',`
-    INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,manage_permissions,scope_type,updated_at)
+    INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT 'accounting',m.id,false,false,false,false,false,false,false,false,'all_locations',now() FROM menus m
     ON CONFLICT(role_key,menu_id) DO NOTHING
   `));
@@ -55,7 +59,7 @@ async function ensureAccountingPermissions(){
   results.push(await safeQuery('module admin menu permissions',`
     UPDATE role_menu_permissions p SET
       can_view=true,can_create=true,can_edit=true,can_delete=true,can_approve=true,can_export=true,
-      can_view_financial=true,manage_permissions=false,scope_type='all_locations',updated_at=now()
+      can_view_financial=true,can_manage_permissions=false,scope_type='all_locations',updated_at=now()
     FROM menus m
     WHERE p.menu_id=m.id AND p.role_key='accounting' AND (
       m.code='finance' OR m.code LIKE 'finance.%' OR
@@ -71,7 +75,7 @@ async function ensureAccountingPermissions(){
       can_create=CASE WHEN m.code LIKE 'masterdata%' THEN true ELSE false END,
       can_edit=CASE WHEN m.code LIKE 'masterdata%' THEN true ELSE false END,
       can_delete=false,can_approve=false,can_export=true,can_view_financial=true,
-      manage_permissions=false,scope_type='all_locations',updated_at=now()
+      can_manage_permissions=false,scope_type='all_locations',updated_at=now()
     FROM menus m
     WHERE p.menu_id=m.id AND p.role_key='accounting' AND (
       m.code='dashboard' OR m.code LIKE 'dashboard%' OR
@@ -86,7 +90,7 @@ async function ensureAccountingPermissions(){
   results.push(await safeQuery('workorder source permission',`
     UPDATE role_menu_permissions p SET
       can_view=true,can_create=false,can_edit=false,can_delete=false,can_approve=false,
-      can_export=true,can_view_financial=true,manage_permissions=false,scope_type='all_locations',updated_at=now()
+      can_export=true,can_view_financial=true,can_manage_permissions=false,scope_type='all_locations',updated_at=now()
     FROM menus m WHERE p.menu_id=m.id AND p.role_key='accounting' AND m.code='finance.workorders'
   `));
 
