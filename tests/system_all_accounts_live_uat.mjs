@@ -35,7 +35,7 @@ async function req(path, options = {}) {
     ...options,
     headers: {
       "content-type": "application/json",
-      "user-agent": "Kleopatra-VIR-All-Accounts-UAT/1.0",
+      "user-agent": "Kleopatra-VIR-All-Accounts-UAT/1.1",
       ...(options.headers || {}),
     },
   });
@@ -156,7 +156,11 @@ async function adminSystemChecks(session) {
   }
 
   const health = await authReq("/api/transactions/system-health", session.token);
-  add("system", "System-health endpoint", health.status === 200 ? "PASS" : "FAIL", `HTTP ${health.status}; overall=${health.body?.status || "?"}; total=${health.body?.summary?.total ?? "?"}`);
+  const safeHealthDetail = health.status === 200
+    ? `HTTP 200; overall=${health.body?.status || "?"}; total=${health.body?.summary?.total ?? "?"}`
+    : `HTTP ${health.status}; error=${health.body?.error || health.body?.message || "?"}; bootstrap_stage=${health.body?.bootstrap_stage || "?"}; db_code=${health.body?.db_code || "?"}; constraint=${health.body?.constraint || "?"}`;
+  add("system", "System-health endpoint", health.status === 200 ? "PASS" : "FAIL", safeHealthDetail);
+  if (health.status !== 200) console.log(`DIAG | system-health | ${JSON.stringify(health.body)}`);
   if (health.status === 200 && Array.isArray(health.body?.checks)) {
     for (const check of health.body.checks) {
       const s = classifyHealthCheck(check);
@@ -187,7 +191,7 @@ async function accountingCheck() {
 async function frontendSmoke() {
   for (const path of ["/", "/login"]) {
     try {
-      const r = await fetch(`${FRONTEND_BASE}${path}`, { redirect: "follow", headers: { "user-agent": "Kleopatra-VIR-All-Accounts-UAT/1.0" } });
+      const r = await fetch(`${FRONTEND_BASE}${path}`, { redirect: "follow", headers: { "user-agent": "Kleopatra-VIR-All-Accounts-UAT/1.1" } });
       add("frontend", `GET ${path}`, r.status === 200 ? "PASS" : "FAIL", `HTTP ${r.status}`);
     } catch (e) { add("frontend", `GET ${path}`, "FAIL", e?.message || String(e)); }
   }
