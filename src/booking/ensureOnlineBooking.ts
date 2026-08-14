@@ -113,6 +113,25 @@ export async function ensureOnlineBooking() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
 
+    -- Foglalási kommunikáció: a végleges hibát megőrizzük auditként, de külön
+    -- jelölhető, ha az infrastruktúra-incidens már helyreállt. A suppressed
+    -- státusz a szándékosan letiltott/log-only szolgáltatót kezeli.
+    DO $$
+    BEGIN
+      IF to_regclass('public.booking_communication_queue') IS NOT NULL THEN
+        ALTER TABLE booking_communication_queue
+          ADD COLUMN IF NOT EXISTS resolved_at timestamptz,
+          ADD COLUMN IF NOT EXISTS resolution_code text,
+          ADD COLUMN IF NOT EXISTS resolution_note text;
+        ALTER TABLE booking_communication_queue DROP CONSTRAINT IF EXISTS booking_communication_queue_status_ck;
+        ALTER TABLE booking_communication_queue ADD CONSTRAINT booking_communication_queue_status_ck
+          CHECK(status IN ('pending','processing','sent','failed','cancelled','suppressed')) NOT VALID;
+        CREATE INDEX IF NOT EXISTS booking_communication_unresolved_failed_idx
+          ON booking_communication_queue(failed_at DESC)
+          WHERE status='failed' AND resolved_at IS NULL;
+      END IF;
+    END $$;
+
     -- A régi live adatbázisban a work_order_items/work_order_payments táblák
     -- az archiváló trigger által használt időbélyeg nélkül is létezhetnek.
     -- A lemondás terminális munkalapállapotot állít be, ezért ezeket még a
