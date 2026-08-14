@@ -22,11 +22,25 @@ jobs:
           npm audit fix --omit=dev || true
       - name: Regression tests
         run: npm test
-      - name: Production build
-        run: npm run build
+      - name: Production build with concise diagnostics
+        shell: bash
+        run: |
+          set +e
+          npm run build > /tmp/build.log 2>&1
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "--- TypeScript build errors ---"
+            grep -E "error TS[0-9]+|TS[0-9]+:|src/.*\.(ts|tsx)" /tmp/build.log | tail -200 || true
+            echo "--- End TypeScript build errors ---"
+          else
+            echo "Production build PASS"
+          fi
+          exit $rc
       - name: Production dependency audit
+        if: always()
         run: npm audit --omit=dev || true
       - name: Commit hardened lockfile
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
