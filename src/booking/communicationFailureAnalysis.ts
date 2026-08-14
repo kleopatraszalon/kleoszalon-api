@@ -29,9 +29,9 @@ const CAUSES: Record<BookingCommunicationFailureCauseKey, BookingCommunicationFa
   },
   invalid_recipient: {
     key: "invalid_recipient",
-    label: "Hibás vagy elutasított címzett",
+    label: "Hibás vagy hiányzó címzett",
     priority: "medium",
-    recommended_action: "A CRM-ben javítsd vagy tiltsd a hibás e-mail címet/telefonszámot; csak javítás után küldd újra.",
+    recommended_action: "A CRM-ben javítsd vagy pótold az e-mail címet/telefonszámot; csak érvényes címzettel küldd újra.",
   },
   rate_limit: {
     key: "rate_limit",
@@ -104,6 +104,10 @@ export function classifyBookingCommunicationFailure(
   ) return CAUSES.authentication;
 
   if (
+    text.includes("no recipients defined") ||
+    text.includes("no recipient") ||
+    text.includes("missing recipient") ||
+    text.includes("recipient missing") ||
     text.includes("eenvelope") ||
     text.includes("invalid recipient") ||
     text.includes("invalid address") ||
