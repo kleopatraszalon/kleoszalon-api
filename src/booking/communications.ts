@@ -2,7 +2,7 @@ import db from "../db";
 import { sendEmail, verifyEmailTransport, type EmailTransportHealth } from "../mailer";
 import { sendSms } from "../sms";
 import ensureOnlineBooking from "./ensureOnlineBooking";
-import { classifyBookingCommunicationFailure } from "./communicationFailureAnalysis";
+import { classifyBookingCommunicationFailure, stripBookingCommunicationRetryPrefix } from "./communicationFailureAnalysis";
 
 const fmtDate=(value:any)=>new Date(value).toLocaleDateString("hu-HU",{year:"numeric",month:"long",day:"numeric",timeZone:"Europe/Budapest"});
 const fmtTime=(value:any)=>new Date(value).toLocaleTimeString("hu-HU",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Budapest"});
@@ -109,21 +109,38 @@ export async function queueAppointmentCommunications(appointmentId:string,event:
 export async function resolveRecoveredBookingCommunicationAuthFailures(){
   await ensureOnlineBooking();
   const emailTransport=await verifyEmailTransport();
-  if(!emailTransport.ok)return{resolved:0,email_transport:emailTransport};
-
-  const {rows}=await db.query(`SELECT id,error_text,channel FROM booking_communication_queue
+  const {rows}=await db.query(`SELECT id,error_text,channel,recipient FROM booking_communication_queue
     WHERE status='failed' AND resolved_at IS NULL AND channel='email'`);
-  const ids=rows
-    .filter((row:any)=>classifyBookingCommunicationFailure(row.error_text,row.channel).key==="authentication")
-    .map((row:any)=>String(row.id));
-  if(!ids.length)return{resolved:0,email_transport:emailTransport};
 
-  const result=await db.query(`UPDATE booking_communication_queue
-    SET resolved_at=now(),resolution_code='smtp_auth_recovered',
-        resolution_note='SMTP hitelesítés helyreállt; történeti infrastruktúra-incidens lezárva. Automatikus tömeges újraküldés nem történt.',
-        updated_at=now()
-    WHERE id = ANY($1::uuid[]) AND resolved_at IS NULL`,[ids]);
-  return{resolved:result.rowCount||0,email_transport:emailTransport};
+  const authIds=emailTransport.ok?rows
+    .filter((row:any)=>classifyBookingCommunicationFailure(row.error_text,row.channel).key==="authentication")
+    .map((row:any)=>String(row.id)):[];
+  const missingRecipientIds=rows
+    .filter((row:any)=>{
+      const raw=stripBookingCommunicationRetryPrefix(row.error_text).toLowerCase();
+      return !String(row.recipient||"").trim()||raw.includes("no recipients defined");
+    })
+    .map((row:any)=>String(row.id));
+
+  let resolvedAuth=0,resolvedMissingRecipient=0;
+  if(authIds.length){
+    const result=await db.query(`UPDATE booking_communication_queue
+      SET resolved_at=now(),resolution_code='smtp_auth_recovered',
+          resolution_note='SMTP hitelesítés helyreállt; történeti infrastruktúra-incidens lezárva. Automatikus tömeges újraküldés nem történt.',
+          updated_at=now()
+      WHERE id = ANY($1::uuid[]) AND resolved_at IS NULL`,[authIds]);
+    resolvedAuth=result.rowCount||0;
+  }
+  if(missingRecipientIds.length){
+    const result=await db.query(`UPDATE booking_communication_queue
+      SET resolved_at=now(),resolution_code='missing_recipient_historical',
+          resolution_note='A történeti üzenethez nem volt címzett, ezért biztonságosan nem küldhető újra. Az eset adatminőségi hibaként lezárva.',
+          updated_at=now()
+      WHERE id = ANY($1::uuid[]) AND resolved_at IS NULL`,[missingRecipientIds]);
+    resolvedMissingRecipient=result.rowCount||0;
+  }
+
+  return{resolved:resolvedAuth+resolvedMissingRecipient,resolved_auth:resolvedAuth,resolved_missing_recipient:resolvedMissingRecipient,email_transport:emailTransport};
 }
 
 export async function processDueBookingCommunications(limit=50){
@@ -138,6 +155,16 @@ export async function processDueBookingCommunications(limit=50){
       ORDER BY scheduled_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,[limit]);
     summary.processed=rows.length;
     for(const item of rows){
+      if(!String(item.recipient||"").trim()){
+        summary.suppressed+=1;
+        await cx.query(`UPDATE booking_communication_queue
+          SET status='suppressed',failed_at=NULL,error_text='Címzett hiányzik; küldés nem történt.',
+              resolved_at=now(),resolution_code='missing_recipient',
+              resolution_note='A tétel küldési próbálkozás nélkül suppressed állapotba került, mert nincs címzett.',updated_at=now()
+          WHERE id=$1`,[item.id]);
+        continue;
+      }
+
       if(item.channel==="email"&&!emailTransport.ok){
         if(emailTransport.mode==="disabled"||emailTransport.mode==="unconfigured"){
           summary.suppressed+=1;
