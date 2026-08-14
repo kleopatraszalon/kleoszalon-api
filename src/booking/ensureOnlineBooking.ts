@@ -4,6 +4,19 @@ export async function ensureOnlineBooking() {
   await pool.query(`
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+    -- A live adatbázisban az appointments időmezői örökölt sémából
+    -- timestamp without time zone típusúak is lehetnek. A foglalási API viszont
+    -- ISO-8601 abszolút időpontokat ad/kap. Az overloadolt függvény a két
+    -- sémaváltozatot azonos UTC-instant szemantikára hozza adatátírás nélkül.
+    CREATE OR REPLACE FUNCTION kleo_booking_utc(p_value timestamp without time zone)
+    RETURNS timestamptz LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+      SELECT p_value AT TIME ZONE 'Europe/Budapest'
+    $$;
+    CREATE OR REPLACE FUNCTION kleo_booking_utc(p_value timestamp with time zone)
+    RETURNS timestamptz LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+      SELECT p_value
+    $$;
+
     ALTER TABLE appointments
       ADD COLUMN IF NOT EXISTS booking_source text NOT NULL DEFAULT 'internal',
       ADD COLUMN IF NOT EXISTS cancellation_reason text,
@@ -147,7 +160,7 @@ export async function ensureOnlineBooking() {
           COALESCE(NULLIF(a.title,''),'Online foglalás'),a.notes,'waiting',a.employee_id,a.client_id,
           client_row.client_name,client_row.phone,client_row.email,a.location_id,a.id,false,false,
           'public-online-booking',now(),wo_number,now(),
-          jsonb_build_object('source',a.booking_source,'appointment_id',a.id,'start_time',a.start_time,'end_time',a.end_time,'voice_event_id',a.voice_event_id)
+          jsonb_build_object('source',a.booking_source,'appointment_id',a.id,'start_time',kleo_booking_utc(a.start_time),'end_time',kleo_booking_utc(a.end_time),'voice_event_id',a.voice_event_id)
         ) RETURNING id INTO wo_id;
 
         UPDATE appointments SET work_order_id=wo_id,work_order_number=wo_number WHERE id=a.id;

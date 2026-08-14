@@ -29,7 +29,8 @@ router.get("/:token",async(req,res)=>{
     await ensureOnlineBooking();
     const token=String(req.params.token||"").trim();
     if(!UUID_RE.test(token))return res.status(404).json({error:"A foglalási hivatkozás érvénytelen."});
-    const {rows}=await db.query(`SELECT a.id::text,a.location_id::text,a.employee_id::text,a.title,a.start_time,a.end_time,a.status,a.confirmation_required,
+    const {rows}=await db.query(`SELECT a.id::text,a.location_id::text,a.employee_id::text,a.title,
+      kleo_booking_utc(a.start_time) start_time,kleo_booking_utc(a.end_time) end_time,a.status,a.confirmation_required,
       COALESCE(l.name,'Kleopátra Szalon') location_name,COALESCE(e.full_name,'Szakember') employee_name,COALESCE(c.full_name,c.name,'Vendég') client_name,
       COALESCE((SELECT array_agg(aps.service_id::text ORDER BY aps.sort_order,aps.created_at) FROM appointment_services aps WHERE aps.appointment_id=a.id),ARRAY[]::text[]) service_ids,
       COALESCE((SELECT json_agg(json_build_object('id',aps.service_id::text,'name',COALESCE(s.name,'Szolgáltatás'),'duration_minutes',aps.duration_minutes,'price',aps.price) ORDER BY aps.sort_order,aps.created_at) FROM appointment_services aps LEFT JOIN services s ON s.id=aps.service_id WHERE aps.appointment_id=a.id),'[]'::json) services
@@ -46,9 +47,9 @@ router.post("/:token/reschedule",async(req,res)=>{
   try{
     await ensureOnlineBooking();await ensureBookingWorkOrderSchema(cx);await cx.query("BEGIN");
     const token=String(req.params.token||"").trim();if(!UUID_RE.test(token)){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalási hivatkozás érvénytelen."});}
-    const appointment=(await cx.query(`SELECT * FROM appointments WHERE cancellation_token=$1::uuid FOR UPDATE`,[token])).rows[0];
+    const appointment=(await cx.query(`SELECT a.*,kleo_booking_utc(a.start_time) booking_start_time,kleo_booking_utc(a.end_time) booking_end_time FROM appointments a WHERE cancellation_token=$1::uuid FOR UPDATE`,[token])).rows[0];
     if(!appointment){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalás nem található."});}
-    if(inactiveStatuses.has(String(appointment.status||"").toLowerCase())||new Date(appointment.end_time)<=new Date()){await cx.query("ROLLBACK");return res.status(409).json({error:"Ez az időpont már nem módosítható online."});}
+    if(inactiveStatuses.has(String(appointment.status||"").toLowerCase())||new Date(appointment.booking_end_time)<=new Date()){await cx.query("ROLLBACK");return res.status(409).json({error:"Ez az időpont már nem módosítható online."});}
     const wo=await assertMutableWorkOrder(cx,appointment);
     const serviceRows=(await cx.query(`SELECT service_id::text service_id,duration_minutes,price FROM appointment_services WHERE appointment_id=$1::uuid ORDER BY sort_order,created_at`,[appointment.id])).rows;
     if(!serviceRows.length){await cx.query("ROLLBACK");return res.status(409).json({error:"A foglalás szolgáltatáslistája hiányos; kérjük, egyeztessen a szalonnal."});}
@@ -70,8 +71,8 @@ router.post("/:token/reschedule",async(req,res)=>{
     const breakConflict=(await cx.query(`SELECT id FROM appointment_technical_breaks WHERE employee_id=$1::uuid AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`,[employeeId,start.toISOString(),end.toISOString()])).rows[0];
     if(conflict||breakConflict){await cx.query("ROLLBACK");return res.status(409).json({error:"Ez az időpont időközben foglalttá vált. Válasszon másikat."});}
     const nextStatus=cfg.require_staff_confirmation?"pending":"confirmed";
-    const before={start_time:appointment.start_time,end_time:appointment.end_time,employee_id:appointment.employee_id,status:appointment.status};
-    const updated=(await cx.query(`UPDATE appointments SET employee_id=$2::uuid,start_time=$3::timestamptz,end_time=$4::timestamptz,status=$5,confirmation_required=$6,confirmed_at=$7::timestamptz,updated_at=now() WHERE id=$1::uuid RETURNING *`,[appointment.id,employeeId,start.toISOString(),end.toISOString(),nextStatus,Boolean(cfg.require_staff_confirmation),cfg.require_staff_confirmation?null:new Date().toISOString()])).rows[0];
+    const before={start_time:appointment.booking_start_time,end_time:appointment.booking_end_time,employee_id:appointment.employee_id,status:appointment.status};
+    const updated=(await cx.query(`UPDATE appointments SET employee_id=$2::uuid,start_time=$3::timestamptz,end_time=$4::timestamptz,status=$5,confirmation_required=$6,confirmed_at=$7::timestamptz,updated_at=now() WHERE id=$1::uuid RETURNING id,status,employee_id,confirmation_required,kleo_booking_utc(start_time) start_time,kleo_booking_utc(end_time) end_time`,[appointment.id,employeeId,start.toISOString(),end.toISOString(),nextStatus,Boolean(cfg.require_staff_confirmation),cfg.require_staff_confirmation?null:new Date().toISOString()])).rows[0];
     if(wo)await cx.query(`UPDATE work_orders SET employee_id=$2::uuid,updated_at=now() WHERE id=$1::uuid`,[wo.id,employeeId]);
     const after={start_time:updated.start_time,end_time:updated.end_time,employee_id:updated.employee_id,status:updated.status};
     await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,before_data,after_data,note) VALUES($1::uuid,'public_rescheduled','public-token',$2::jsonb,$3::jsonb,$4)`,[appointment.id,JSON.stringify(before),JSON.stringify(after),String(req.body?.note||"Vendég által nyilvános kezelőlinkről áthelyezve").slice(0,500)]);
@@ -86,11 +87,11 @@ router.post("/:token/cancel",async(req,res)=>{
   try{
     await ensureOnlineBooking();await ensureBookingWorkOrderSchema(cx);await cx.query("BEGIN");
     const token=String(req.params.token||"").trim();if(!UUID_RE.test(token)){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalási hivatkozás érvénytelen."});}
-    const appointment=(await cx.query(`SELECT * FROM appointments WHERE cancellation_token=$1::uuid FOR UPDATE`,[token])).rows[0];
+    const appointment=(await cx.query(`SELECT a.*,kleo_booking_utc(a.start_time) booking_start_time FROM appointments a WHERE cancellation_token=$1::uuid FOR UPDATE`,[token])).rows[0];
     if(!appointment||inactiveStatuses.has(String(appointment.status||"").toLowerCase())){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalás nem található vagy már nem mondható le."});}
     const wo=await assertMutableWorkOrder(cx,appointment);
     const reason=String(req.body?.reason||"Vendég által online lemondva").trim().slice(0,500)||"Vendég által online lemondva";
-    const before={status:appointment.status,start_time:appointment.start_time,employee_id:appointment.employee_id};
+    const before={status:appointment.status,start_time:appointment.booking_start_time,employee_id:appointment.employee_id};
     const updated=(await cx.query(`UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=now(),updated_at=now() WHERE id=$1::uuid RETURNING *`,[appointment.id,reason])).rows[0];
     if(wo)await cx.query(`UPDATE work_orders SET status='cancelled',status_updated_at=now(),updated_at=now() WHERE id=$1::uuid`,[wo.id]);
     await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,before_data,after_data,note) VALUES($1::uuid,'public_cancelled','public-token',$2::jsonb,$3::jsonb,$4)`,[appointment.id,JSON.stringify(before),JSON.stringify({status:updated.status,cancelled_at:updated.cancelled_at}),reason]);

@@ -1,6 +1,7 @@
 import db from "../db";
 import { sendEmail } from "../mailer";
 import { sendSms } from "../sms";
+import ensureOnlineBooking from "./ensureOnlineBooking";
 
 const fmtDate=(value:any)=>new Date(value).toLocaleDateString("hu-HU",{year:"numeric",month:"long",day:"numeric",timeZone:"Europe/Budapest"});
 const fmtTime=(value:any)=>new Date(value).toLocaleTimeString("hu-HU",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Budapest"});
@@ -35,8 +36,9 @@ function preferredChannels(a:any):Array<{channel:Channel;recipient:string}>{
 }
 
 export async function queueAppointmentCommunications(appointmentId:string,event:AppointmentEvent){
+  await ensureOnlineBooking();
   const {rows}=await db.query(`
-    SELECT a.id,a.location_id,a.client_id,a.start_time,a.end_time,a.status,a.cancellation_token,
+    SELECT a.id,a.location_id,a.client_id,kleo_booking_utc(a.start_time) start_time,kleo_booking_utc(a.end_time) end_time,a.status,a.cancellation_token,
            COALESCE(c.full_name,c.name,'Vendég') client_name,c.email,c.phone,c.preferred_contact,
            COALESCE(e.full_name,e.name,'Szakember') employee_name,
            COALESCE(l.name,'Kleopátra Szalon') location_name,
