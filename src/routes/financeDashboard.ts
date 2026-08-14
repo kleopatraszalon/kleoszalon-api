@@ -86,11 +86,14 @@ router.get('/',async(req:AuthRequest,res,next)=>{
       FROM paid_workorders p LEFT JOIN employees e ON e.id=p.employee_id
       GROUP BY p.employee_id,e.full_name,e.name ORDER BY revenue DESC LIMIT 30`,params,[]);
 
+    // This query only needs location scope. Using [businessDate, locationId] while
+    // referencing only $2 leaves PostgreSQL with an untyped, unused $1 when
+    // locationId is NULL (network-wide accounting scope), causing SQLSTATE 42P18.
     const commissionRows=await safeRows(`SELECT ce.employee_id::text employee_id,COALESCE(NULLIF(e.full_name,''),NULLIF(e.name,''),'Nincs munkatárs') employee_name,
       COUNT(*)::int event_count,COALESCE(SUM(ce.base_amount),0)::numeric base_amount,COALESCE(SUM(ce.tip_amount),0)::numeric tip_amount
       FROM work_order_commission_events ce JOIN work_orders wo ON wo.id=ce.work_order_id LEFT JOIN employees e ON e.id=ce.employee_id
-      WHERE ce.status='open' AND ($2::uuid IS NULL OR wo.location_id=$2::uuid)
-      GROUP BY ce.employee_id,e.full_name,e.name ORDER BY base_amount DESC LIMIT 30`,params,[]);
+      WHERE ce.status='open' AND ($1::uuid IS NULL OR wo.location_id=$1::uuid)
+      GROUP BY ce.employee_id,e.full_name,e.name ORDER BY base_amount DESC LIMIT 30`,[locationId],[]);
 
     const closingRows=await safeRows(`SELECT c.*,COALESCE(l.name,'Minden telephely') location_name FROM cash_register_closings c
       LEFT JOIN locations l ON l.id=c.location_id WHERE c.business_date=$1::date AND ($2::uuid IS NULL OR c.location_id=$2::uuid)
