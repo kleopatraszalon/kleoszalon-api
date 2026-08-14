@@ -6,15 +6,17 @@ const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const clients=read('src/routes/clients.ts');
 const duplicate=read('src/routes/clientDuplicateReview.ts');
+const formsFinal=read('src/routes/clientFormVersionsFinal.ts');
 const forms=read('src/routes/clientFormVersions.ts');
 const governance=read('src/routes/clientGovernance.ts');
 const menu=read('src/menu/ensureMenuHealth.ts');
 
-test('CRM finalization layers duplicate review and versioned forms before core client routes',()=>{
+test('CRM finalization layers duplicate review and guarded versioned forms before core client routes',()=>{
   assert.match(clients,/clientDuplicateReviewRouter/);
-  assert.match(clients,/clientFormVersionsRouter/);
+  assert.match(clients,/clientFormVersionsFinalRouter/);
   assert.ok(clients.indexOf('router.use(clientDuplicateReviewRouter)')<clients.indexOf('router.use(clientsCoreRouter)'));
-  assert.ok(clients.indexOf('router.use(clientFormVersionsRouter)')<clients.indexOf('router.use(clientsCoreRouter)'));
+  assert.ok(clients.indexOf('router.use(clientFormVersionsFinalRouter)')<clients.indexOf('router.use(clientsCoreRouter)'));
+  assert.match(formsFinal,/router\.use\(clientFormVersionsRouter\)/);
 });
 
 test('duplicate review uses canonical Stage16 transactional merge instead of a second merge implementation',()=>{
