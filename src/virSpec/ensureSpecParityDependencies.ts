@@ -1,4 +1,5 @@
 import pool from "../db";
+import { ensureRuntimeSettingsSchema, hydrateRuntimeSettings } from "../services/virRuntimeSettings";
 
 let ensurePromise: Promise<void> | null = null;
 
@@ -6,6 +7,9 @@ let ensurePromise: Promise<void> | null = null;
  * Tables used across the legacy-spec parity modules that must exist even when
  * optional workers/pages have not been opened yet. This runs before app.listen,
  * so complaint attachments and review moderation cannot race first-use schema creation.
+ *
+ * Runtime infrastructure/mail settings are also hydrated here so the IMAP worker
+ * receives the encrypted VIR-managed configuration before it starts.
  */
 export function ensureSpecParityDependencies(): Promise<void> {
   if (!ensurePromise) {
@@ -96,10 +100,16 @@ export function ensureSpecParityDependencies(): Promise<void> {
         updated_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE(campaign_id, platform)
       );
-    `).then(() => undefined).catch((error) => {
-      ensurePromise = null;
-      throw error;
-    });
+    `)
+      .then(async () => {
+        await ensureRuntimeSettingsSchema();
+        await hydrateRuntimeSettings();
+      })
+      .then(() => undefined)
+      .catch((error) => {
+        ensurePromise = null;
+        throw error;
+      });
   }
   return ensurePromise;
 }
