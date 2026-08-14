@@ -1,4 +1,12 @@
 import { randomUUID } from "crypto";
+import { ensureInventoryLotSchema } from "./ensureInventoryLotSchema";
+import {
+  allocateInventoryLots,
+  receiveInventoryLot,
+  receiveTransferLots,
+  recordMovementLotAllocations,
+  type LotReceiptInput,
+} from "./inventoryLotService";
 
 const EPS = 0.0001;
 const money = (v: unknown) => {
@@ -181,8 +189,10 @@ export async function postWarehouseReceipt(client: any, args: {
   quantity: number;
   incomingUnitCost: number;
   movementType?: string;
+  lot?: LotReceiptInput | null;
   meta: MovementMeta;
 }) {
+  await ensureInventoryLotSchema();
   const quantity = Number(args.quantity || 0);
   if (!(quantity > EPS)) throw inventoryError("A bevételezett mennyiségnek pozitívnak kell lennie.", "INVENTORY_INVALID_QUANTITY", 400);
   const balance = await balanceForUpdate(client, args.warehouse.id, args.productId);
@@ -200,8 +210,25 @@ export async function postWarehouseReceipt(client: any, args: {
 
   await client.query(`UPDATE inventory_warehouse_balances SET quantity=$2,unit_cost=$3,updated_at=now() WHERE id=$1`, [balance.id, after, newCost]);
   await syncLegacyInventoryAggregate(client, args.productId, args.warehouse.location_id == null ? null : String(args.warehouse.location_id));
-  const movement = await insertMovement(client, args.warehouse, args.productId, args.movementType || "receipt", quantity, after, newCost, args.meta);
-  return { warehouse_id: args.warehouse.id, quantity, balance_after: after, unit_cost: newCost, movement };
+  const movementType = args.movementType || "receipt";
+  const movement = await insertMovement(client, args.warehouse, args.productId, movementType, quantity, after, newCost, args.meta);
+  const lotAllocations = movementType === "transfer_in"
+    ? await receiveTransferLots(client, {
+        warehouseId: args.warehouse.id,
+        productId: args.productId,
+        quantity,
+        operationGroupId: movement.operation_group_id || args.meta.operationGroupId || null,
+        unitCost: newCost,
+      })
+    : await receiveInventoryLot(client, {
+        warehouseId: args.warehouse.id,
+        productId: args.productId,
+        quantity,
+        unitCost: newCost,
+        input: args.lot || null,
+      });
+  await recordMovementLotAllocations(client, movement.id, lotAllocations, 1);
+  return { warehouse_id: args.warehouse.id, quantity, balance_after: after, unit_cost: newCost, movement, lot_allocations: lotAllocations };
 }
 
 export async function postWarehouseIssue(client: any, args: {
@@ -209,8 +236,11 @@ export async function postWarehouseIssue(client: any, args: {
   productId: string;
   quantity: number;
   movementType?: string;
+  specificLotId?: string | null;
+  allowExpiredLot?: boolean;
   meta: MovementMeta;
 }) {
+  await ensureInventoryLotSchema();
   const quantity = Number(args.quantity || 0);
   if (!(quantity > EPS)) throw inventoryError("A kiadott mennyiségnek pozitívnak kell lennie.", "INVENTORY_INVALID_QUANTITY", 400);
   const balance = await balanceForUpdate(client, args.warehouse.id, args.productId);
@@ -220,9 +250,18 @@ export async function postWarehouseIssue(client: any, args: {
   if (setting.prevent_negative_stock !== false && after < -EPS) {
     throw inventoryError(`A(z) ${args.warehouse.name} raktár készlete nem elegendő. Elérhető: ${currentQty}, szükséges: ${quantity}.`, "INVENTORY_INSUFFICIENT_STOCK");
   }
+  const lotAllocations = await allocateInventoryLots(client, {
+    warehouseId: args.warehouse.id,
+    productId: args.productId,
+    quantity,
+    aggregateQuantity: currentQty,
+    specificLotId: args.specificLotId || null,
+    allowExpired: Boolean(args.allowExpiredLot),
+  });
   const unitCost = Number(balance.unit_cost || 0);
   await client.query(`UPDATE inventory_warehouse_balances SET quantity=$2,updated_at=now() WHERE id=$1`, [balance.id, after]);
   await syncLegacyInventoryAggregate(client, args.productId, args.warehouse.location_id == null ? null : String(args.warehouse.location_id));
   const movement = await insertMovement(client, args.warehouse, args.productId, args.movementType || "writeoff", -quantity, after, unitCost, args.meta);
-  return { warehouse_id: args.warehouse.id, quantity: -quantity, balance_after: after, unit_cost: unitCost, movement };
+  await recordMovementLotAllocations(client, movement.id, lotAllocations, -1);
+  return { warehouse_id: args.warehouse.id, quantity: -quantity, balance_after: after, unit_cost: unitCost, movement, lot_allocations: lotAllocations };
 }
