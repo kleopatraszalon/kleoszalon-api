@@ -19,7 +19,7 @@ type PlannedRequirement = Requirement & { warehouse: any };
 export async function consumeWorkOrderInventory(client: any, workOrder: any, createdBy: string) {
   await ensureInventoryOperationsSchema();
   await ensureInventoryHardeningSchema();
-  await ensureInventoryLotSchema();
+  await ensureInventoryLotSchema(client);
   if (workOrder.stock_consumed_at) return { consumed: [], replenishment_requests: [], idempotent: true };
 
   const direct = (await client.query(`
