@@ -45,33 +45,45 @@ jobs:
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         run: curl -fsS --retry 3 --max-time 30 -X POST "$RENDER_DEPLOY_HOOK_URL"
 
-      - name: Verify live API and database
+      - name: Wait for deployed API, readiness and WallBoard feed
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         shell: bash
         run: |
           set -euo pipefail
           live=0
-          for attempt in $(seq 1 48); do
-            body="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health" 2>/dev/null || true)"
-            if BODY="$body" node -e "const x=JSON.parse(process.env.BODY||'{}'); process.exit(x.ok===true && x.db && x.db.ok===true ? 0 : 1)"; then
+          for attempt in $(seq 1 60); do
+            health="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health" 2>/dev/null || true)"
+            ready="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health/ready" 2>/dev/null || true)"
+            wallboard="$(curl -fsS --max-time 20 "$API_BASE_URL/api/signage/wallboard/daily-action.json" 2>/dev/null || true)"
+
+            if HEALTH="$health" READY="$ready" WALLBOARD="$wallboard" node - <<'NODE'
+          const health = JSON.parse(process.env.HEALTH || '{}');
+          const ready = JSON.parse(process.env.READY || '{}');
+          const wallboard = JSON.parse(process.env.WALLBOARD || '{}');
+          const ok = health.ok === true && health.db?.ok === true
+            && ready.ok === true
+            && wallboard.version === '1.0'
+            && Object.prototype.hasOwnProperty.call(wallboard, 'action');
+          process.exit(ok ? 0 : 1);
+          NODE
+            then
               live=1
+              printf '%s\n' "$ready" > /tmp/ready.json
+              printf '%s\n' "$wallboard" > /tmp/wallboard.json
               break
             fi
+
+            echo "Waiting for new Render release markers ($attempt/60)..."
             sleep 10
           done
+
           if [ "$live" -ne 1 ]; then
-            echo "Render API health/DB smoke failed."
+            echo "New Render API release did not expose health/readiness/WallBoard markers."
             exit 1
           fi
-          echo "Render API health/DB smoke PASS"
 
-      - name: Verify HA readiness endpoint
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS --max-time 20 "$API_BASE_URL/api/health/ready" | tee /tmp/ready.json
-          node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('/tmp/ready.json','utf8'));if(x.ok!==true)process.exit(1);console.log('API readiness PASS; single-instance-failure-ready=',!!x.single_instance_failure_ready)"
+          node -e "const x=require('/tmp/ready.json'); console.log('API readiness PASS; single-instance-failure-ready=',!!x.single_instance_failure_ready)"
+          node -e "const x=require('/tmp/wallboard.json'); console.log('WallBoard feed PASS; active-action=',!!x.action)"
 
       - name: Verify cashier API authentication boundary
         if: env.RENDER_DEPLOY_HOOK_URL != ''
