@@ -75,10 +75,17 @@ export const pool = new Pool({
   keepAlive: true,
 });
 
-// server-side statement timeout to avoid hanging queries
+// Server-side session settings. The VIR operates on Hungarian business days,
+// therefore CURRENT_DATE and timestamptz::date must follow Europe/Budapest
+// rather than the hosting platform's UTC default. PG_TIMEZONE remains an
+// explicit deployment override for controlled non-Hungarian environments.
 pool.on("connect", (client) => {
   const st = Number(process.env.PG_STATEMENT_TIMEOUT_MS ?? 8000);
+  const timezone = process.env.PG_TIMEZONE?.trim() || "Europe/Budapest";
   client.query(`SET statement_timeout = ${st}`).catch(() => {});
+  client
+    .query("SELECT set_config('TimeZone', $1, false)", [timezone])
+    .catch((err) => console.error("❌ PG timezone beállítási hiba:", err));
 });
 
 pool.on("error", (err) => {
