@@ -1,0 +1,147 @@
+name: NAV real TEST UAT
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/routes/auth.ts'
+      - 'src/routes/navTestUat.ts'
+      - 'src/routes/navOnlineInvoice.ts'
+      - 'src/routes/navOnlineInvoiceStatus.ts'
+      - 'src/nav/**'
+      - '.github/workflows/nav-real-test-uat.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  nav-real-test-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      API_BASE_URL: https://kleoszalon-api-1.onrender.com
+    steps:
+      - name: Acquire short-lived NAV TEST UAT session
+        shell: bash
+        run: |
+          set -euo pipefail
+          success=0
+          for attempt in $(seq 1 60); do
+            oidc_response="$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-nav-test-uat")"
+            oidc_token="$(OIDC="$oidc_response" node -e "const x=JSON.parse(process.env.OIDC||'{}');process.stdout.write(String(x.value||''))")"
+            if [ -z "$oidc_token" ]; then echo "GitHub OIDC token missing"; exit 1; fi
+            code="$(curl -sS --max-time 30 -o /tmp/nav-auth.json -w '%{http_code}' -X POST -H "Authorization: Bearer $oidc_token" "$API_BASE_URL/api/uat/nav-test-token" || true)"
+            if [ "$code" = "200" ]; then success=1; break; fi
+            echo "Waiting for deployed NAV TEST UAT bootstrap ($attempt/60), HTTP=$code"
+            sleep 10
+          done
+          if [ "$success" -ne 1 ]; then cat /tmp/nav-auth.json || true; exit 1; fi
+          vir_token="$(node -e "const x=require('/tmp/nav-auth.json');if(!x.success||!x.token||x.uat_scope!=='nav_test')process.exit(1);process.stdout.write(x.token)")"
+          echo "::add-mask::$vir_token"
+          echo "VIR_TOKEN=$vir_token" >> "$GITHUB_ENV"
+          echo "NAV TEST UAT authentication PASS"
+
+      - name: Prove TEST environment and configured credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/nav-env.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-test-uat/environment")"
+          if [ "$code" != "200" ]; then cat /tmp/nav-env.json; exit 1; fi
+          node - <<'NODE'
+          const x=require('/tmp/nav-env.json');
+          if(x.ok!==true||x.environment!=='test'||x.test_ready!==true)process.exit(1);
+          const c=x.credentials_configured||{};
+          if(!c.technical_login||!c.technical_password||!c.signing_key||!c.exchange_key)process.exit(1);
+          if(x.live_submission_blocked!==true)process.exit(1);
+          console.log('NAV environment PASS: TEST only, credentials complete, live blocked');
+          NODE
+
+      - name: Real NAV TEST tokenExchange
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 40 -o /tmp/nav-connection.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-online-invoice/connection-test")"
+          if [ "$code" != "200" ]; then echo "NAV tokenExchange HTTP=$code"; cat /tmp/nav-connection.json; exit 1; fi
+          node -e "const x=require('/tmp/nav-connection.json');if(x.ok!==true||x.environment!=='test')process.exit(1);console.log('Real NAV TEST tokenExchange PASS, request_id='+String(x.request_id||''))"
+
+      - name: Verify local official XSD validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/xsd.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-online-invoice/xsd-status")"
+          if [ "$code" != "200" ]; then cat /tmp/xsd.json; exit 1; fi
+          node -e "const x=require('/tmp/xsd.json');if(x.ok!==true||x.ready!==true||x.fail_closed!==true)process.exit(1);console.log('NAV XSD runtime PASS')"
+
+      - name: Create isolated NAV UAT fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/fixture.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" -H 'Content-Type: application/json' --data '{}' "$API_BASE_URL/api/transactions/nav-test-uat/fixture")"
+          if [ "$code" != "201" ]; then echo "Fixture HTTP=$code"; cat /tmp/fixture.json; exit 1; fi
+          invoice_id="$(node -e "const x=require('/tmp/fixture.json');if(!x.ok||x.environment!=='test'||x.live_submission_blocked!==true||!x.invoice?.id)process.exit(1);process.stdout.write(String(x.invoice.id))")"
+          echo "INVOICE_ID=$invoice_id" >> "$GITHUB_ENV"
+          echo "NAV TEST fixture PASS"
+
+      - name: XSD-validate fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 60 -o /tmp/xsd-validate.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-online-invoice/invoices/$INVOICE_ID/xsd-validate")"
+          if [ "$code" != "200" ]; then echo "XSD validation HTTP=$code"; cat /tmp/xsd-validate.json; exit 1; fi
+          node -e "const x=require('/tmp/xsd-validate.json');if(x.ok!==true||x.operation!=='CREATE'||x.xsd?.valid!==true)process.exit(1);console.log('Fixture XSD validation PASS')"
+
+      - name: Prepare NAV submission
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 60 -o /tmp/prepare.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-online-invoice/invoices/$INVOICE_ID/prepare")"
+          if [ "$code" != "201" ]; then echo "Prepare HTTP=$code"; cat /tmp/prepare.json; exit 1; fi
+          submission_id="$(node -e "const x=require('/tmp/prepare.json');if(!x.submission?.id||x.submission?.environment!=='test'||x.operation!=='CREATE'||x.xsd_validation?.status!=='passed')process.exit(1);process.stdout.write(String(x.submission.id))")"
+          echo "SUBMISSION_ID=$submission_id" >> "$GITHUB_ENV"
+          echo "NAV TEST prepare PASS"
+
+      - name: Submit to real NAV TEST manageInvoice
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 70 -o /tmp/submit.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" -H 'Content-Type: application/json' --data '{"uat_test_only":true}' "$API_BASE_URL/api/transactions/nav-online-invoice/submissions/$SUBMISSION_ID/submit")"
+          if [ "$code" != "200" ]; then echo "NAV TEST manageInvoice HTTP=$code"; cat /tmp/submit.json; exit 1; fi
+          node - <<'NODE'
+          const x=require('/tmp/submit.json');
+          if(x.ok!==true||x.environment!=='test'||!x.transaction_id||x.operation!=='CREATE')process.exit(1);
+          console.log('Real NAV TEST manageInvoice PASS; transactionId received');
+          NODE
+
+      - name: Poll real NAV TEST transaction status
+        shell: bash
+        run: |
+          set -euo pipefail
+          terminal=0
+          for attempt in $(seq 1 18); do
+            code="$(curl -sS --max-time 40 -o /tmp/refresh.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-online-invoice/submissions/$SUBMISSION_ID/refresh")"
+            if [ "$code" = "200" ]; then
+              status="$(node -e "const x=require('/tmp/refresh.json');process.stdout.write(String(x.status||''))")"
+              echo "NAV TEST status attempt $attempt: $status"
+              if [ "$status" = "done" ] || [ "$status" = "warning" ]; then terminal=1; break; fi
+              if [ "$status" = "error" ] || [ "$status" = "aborted" ]; then cat /tmp/refresh.json; exit 1; fi
+            else
+              echo "Status refresh HTTP=$code"
+              cat /tmp/refresh.json || true
+            fi
+            sleep 10
+          done
+          if [ "$terminal" -ne 1 ]; then echo 'NAV TEST transaction did not reach an accepted terminal state'; cat /tmp/refresh.json || true; exit 1; fi
+          node -e "const x=require('/tmp/refresh.json');if(x.environment!=='test'||Number(x.error_count||0)!==0)process.exit(1);console.log('Real NAV TEST queryTransactionStatus PASS; terminal='+x.status+', warnings='+Number(x.warning_count||0))"
+
+      - name: Verify idempotency and audit chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 30 -o /tmp/resubmit.json -w '%{http_code}' -X POST -H "Authorization: Bearer $VIR_TOKEN" -H 'Content-Type: application/json' --data '{"uat_test_only":true}' "$API_BASE_URL/api/transactions/nav-online-invoice/submissions/$SUBMISSION_ID/submit")"
+          if [ "$code" != "200" ]; then cat /tmp/resubmit.json; exit 1; fi
+          node -e "const x=require('/tmp/resubmit.json');if(x.ok!==true||x.idempotent!==true||x.environment!=='test'||!x.transaction_id)process.exit(1);console.log('NAV submit idempotency PASS')"
+          code="$(curl -sS --max-time 30 -o /tmp/chain.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-test-uat/chain/$INVOICE_ID")"
+          if [ "$code" != "200" ]; then cat /tmp/chain.json; exit 1; fi
+          node -e "const x=require('/tmp/chain.json');if(x.ok!==true||!Array.isArray(x.submissions)||!x.submissions.some(s=>s.id===process.env.SUBMISSION_ID&&s.environment==='test'&&s.transaction_id))process.exit(1);console.log('NAV TEST audit chain PASS')"
