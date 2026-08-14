@@ -4,6 +4,7 @@ import clientFormVersionsFinalRouter from './clientFormVersionsFinal';
 import clientGovernanceRouter from './clientGovernance';
 import systemHardeningRouter from './systemHardening';
 import clientReceptionContextRouter from './clientReceptionContext';
+import marketingAutomationRouter from './marketingAutomation';
 import clientsCoreRouter from './clientsCore';
 
 const router=Router();
@@ -12,6 +13,7 @@ router.use(clientDuplicateReviewRouter);
 router.use(clientFormVersionsFinalRouter);
 router.use(clientGovernanceRouter);
 router.use(clientReceptionContextRouter);
+router.use('/marketing-automation',marketingAutomationRouter);
 router.use(clientsCoreRouter);
 
 export default router;
