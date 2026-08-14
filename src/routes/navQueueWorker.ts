@@ -8,6 +8,7 @@ const router=Router();
 if(process.env.NODE_ENV!=='test')startNavQueueWorker();
 router.use(requireAuth,requireManagement);
 const truthy=(v:any)=>/^(1|true|yes|on)$/i.test(String(v||'').trim());
+const digits=(v:any)=>String(v||'').replace(/\D/g,'');
 
 async function selectedConfig(locationId:string){
   return (await db.query(`SELECT * FROM nav_online_invoice_settings WHERE active=true AND ($1::text='' OR location_id::text=$1 OR location_id IS NULL) ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END LIMIT 1`,[locationId])).rows[0]||null;
@@ -30,6 +31,54 @@ function safeAutomation(c:any){
     live_secrets_in_environment:['NAV_TECHNICAL_LOGIN','NAV_TECHNICAL_PASSWORD','NAV_SIGNING_KEY','NAV_EXCHANGE_KEY'].every(k=>Boolean(String(process.env[k]||'').trim()))
   };
 }
+function readiness(c:any,worker:any){
+  const checks:any[]=[];
+  const add=(id:string,label:string,ok:boolean,source:'local'|'nav'|'deployment',blocking=true)=>checks.push({id,label,ok,source,blocking});
+  if(!c){
+    add('config','Aktív NAV Online Számla konfiguráció',false,'local');
+    return{ready_for_test:false,ready_for_live:false,checks,missing:checks.filter(x=>!x.ok).map(x=>x.id),nav_required:['technical_login','technical_password','xml_signing_key','xml_exchange_key']};
+  }
+  const safe=safeAutomation(c)!;
+  const issuerTax=digits(c.supplier_tax_number);
+  add('supplier_name','Kibocsátó hivatalos neve',Boolean(String(c.supplier_name||'').trim()),'local');
+  add('supplier_tax_number','Kibocsátó 11 számjegyű adószáma',issuerTax.length===11,'local');
+  add('supplier_address','Kibocsátó teljes címe',Boolean(String(c.supplier_postal_code||'').trim()&&String(c.supplier_city||'').trim()&&String(c.supplier_address||'').trim()),'local');
+  add('invoice_prefix','Számlaprefix',Boolean(String(c.invoice_prefix||'').trim()),'local');
+  add('software_id','Számlázóprogram azonosító',Boolean(String(c.software_id||'').trim()),'local');
+  add('technical_login','NAV technikai felhasználónév',safe.credentials_configured.technical_login,'nav');
+  add('technical_password','NAV technikai jelszó',safe.credentials_configured.technical_password,'nav');
+  add('xml_signing_key','NAV XML aláírókulcs',safe.credentials_configured.signing_key,'nav');
+  add('xml_exchange_key','NAV XML cserekulcs',safe.credentials_configured.exchange_key,'nav');
+  add('worker','Automatikus NAV queue worker telepítve és engedélyezve',Boolean(worker?.enabled),'local');
+  add('auto_refresh','Automatikus NAV státuszfrissítés engedélyezve',Boolean(c.auto_refresh),'local');
+  const baseReady=checks.filter(x=>x.blocking&&['local','nav'].includes(x.source)).every(x=>x.ok);
+  const testEnvironment=String(c.environment)==='test';
+  add('test_environment','Aktív konfiguráció TEST környezetben',testEnvironment,'local');
+  const readyForTest=baseReady&&testEnvironment;
+  const liveEnvironment=String(c.environment)==='live';
+  add('live_environment','Aktív konfiguráció LIVE környezetben',liveEnvironment,'deployment');
+  add('live_db_gate','DB live_submit_enabled kapu',Boolean(c.live_submit_enabled),'deployment');
+  add('live_env_gate','NAV_LIVE_SUBMIT_ENABLED deployment kapu',safe.live_env_gate,'deployment');
+  add('live_secrets','Mind a négy NAV hitelesítő adat deployment secretként van tárolva',safe.live_secrets_in_environment,'deployment');
+  add('live_auto_test_only_off','TEST-only automatikus küldés kikapcsolva',!Boolean(c.auto_submit_test_only),'deployment');
+  const liveChecks=checks.filter(x=>x.blocking&&x.id!=='test_environment');
+  const readyForLive=liveChecks.every(x=>x.ok);
+  return{
+    ready_for_test:readyForTest,
+    ready_for_live:readyForLive,
+    environment:String(c.environment),
+    checks,
+    missing:checks.filter(x=>x.blocking&&!x.ok).map(x=>x.id),
+    nav_required:['technical_login','technical_password','xml_signing_key','xml_exchange_key'],
+    external_validation_required:['NAV TEST tokenExchange','NAV TEST manageInvoice CREATE','NAV TEST queryTransactionStatus DONE','NAV TEST MODIFY','NAV TEST STORNO','könyvelői számlakép/ÁFA ellenőrzés','első kontrollált LIVE pilot']
+  };
+}
+
+router.get('/go-live-readiness',async(req:AuthRequest,res,next)=>{try{
+  const locationId=String(req.query.location_id||req.user?.location_id||'').trim();
+  const [config,worker]=await Promise.all([selectedConfig(locationId),getNavQueueWorkerStatus()]);
+  res.json({ok:true,readiness:readiness(config,worker),automation:safeAutomation(config)});
+}catch(e){next(e)}});
 
 router.get('/queue-worker/status',async(req:AuthRequest,res,next)=>{try{
   const locationId=String(req.query.location_id||req.user?.location_id||'').trim();
