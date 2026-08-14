@@ -43,7 +43,7 @@ function roleKeys(raw: unknown): string[] {
   } catch {}
   return value
     .split(",")
-    .map(x => x.split("[").join("").split("]").join("").split("\"").join("").trim().toLowerCase())
+    .map(x => x.split("[").join("").split("]").join("").trim().toLowerCase())
     .filter(Boolean);
 }
 
