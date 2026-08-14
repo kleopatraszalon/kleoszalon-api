@@ -1,12 +1,14 @@
 import db from "../db";
-import { sendEmail } from "../mailer";
+import { sendEmail, verifyEmailTransport, type EmailTransportHealth } from "../mailer";
 import { sendSms } from "../sms";
 import ensureOnlineBooking from "./ensureOnlineBooking";
+import { classifyBookingCommunicationFailure } from "./communicationFailureAnalysis";
 
 const fmtDate=(value:any)=>new Date(value).toLocaleDateString("hu-HU",{year:"numeric",month:"long",day:"numeric",timeZone:"Europe/Budapest"});
 const fmtTime=(value:any)=>new Date(value).toLocaleTimeString("hu-HU",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Budapest"});
 const MAX_SEND_ATTEMPTS=3;
 const retryDelayMinutes=(attempt:number)=>Math.min(60,5*Math.pow(2,Math.max(0,attempt-1)));
+const PROVIDER_RECHECK_MINUTES=Math.max(10,Math.min(120,Number(process.env.BOOKING_PROVIDER_RECHECK_MINUTES||30)));
 
 type AppointmentEvent="created"|"confirmed"|"cancelled"|"rescheduled"|"completed";
 type Channel="email"|"sms";
@@ -104,9 +106,31 @@ export async function queueAppointmentCommunications(appointmentId:string,event:
   return{queued,channels:channels.map(x=>x.channel)};
 }
 
+export async function resolveRecoveredBookingCommunicationAuthFailures(){
+  await ensureOnlineBooking();
+  const emailTransport=await verifyEmailTransport();
+  if(!emailTransport.ok)return{resolved:0,email_transport:emailTransport};
+
+  const {rows}=await db.query(`SELECT id,error_text,channel FROM booking_communication_queue
+    WHERE status='failed' AND resolved_at IS NULL AND channel='email'`);
+  const ids=rows
+    .filter((row:any)=>classifyBookingCommunicationFailure(row.error_text,row.channel).key==="authentication")
+    .map((row:any)=>String(row.id));
+  if(!ids.length)return{resolved:0,email_transport:emailTransport};
+
+  const result=await db.query(`UPDATE booking_communication_queue
+    SET resolved_at=now(),resolution_code='smtp_auth_recovered',
+        resolution_note='SMTP hitelesítés helyreállt; történeti infrastruktúra-incidens lezárva. Automatikus tömeges újraküldés nem történt.',
+        updated_at=now()
+    WHERE id = ANY($1::uuid[]) AND resolved_at IS NULL`,[ids]);
+  return{resolved:result.rowCount||0,email_transport:emailTransport};
+}
+
 export async function processDueBookingCommunications(limit=50){
+  await ensureOnlineBooking();
+  const emailTransport:EmailTransportHealth=await verifyEmailTransport();
   const cx=await db.connect();
-  const summary={processed:0,sent:0,suppressed:0,retry_scheduled:0,failed:0};
+  const summary={processed:0,sent:0,suppressed:0,provider_blocked:0,retry_scheduled:0,failed:0,email_transport:emailTransport};
   try{
     await cx.query("BEGIN");
     const {rows}=await cx.query(`SELECT * FROM booking_communication_queue
@@ -114,6 +138,23 @@ export async function processDueBookingCommunications(limit=50){
       ORDER BY scheduled_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,[limit]);
     summary.processed=rows.length;
     for(const item of rows){
+      if(item.channel==="email"&&!emailTransport.ok){
+        if(emailTransport.mode==="disabled"||emailTransport.mode==="unconfigured"){
+          summary.suppressed+=1;
+          await cx.query(`UPDATE booking_communication_queue
+            SET status='suppressed',failed_at=NULL,error_text=$2,updated_at=now()
+            WHERE id=$1`,[item.id,emailTransport.mode==="disabled"?"E-mail küldés szándékosan letiltva (SMTP disabled); üzenet nem került kiküldésre.":"E-mail szolgáltató nincs konfigurálva; üzenet suppressed állapotba került, kiküldés nem történt."]);
+          continue;
+        }
+
+        summary.provider_blocked+=1;
+        const nextRetry=new Date(Date.now()+PROVIDER_RECHECK_MINUTES*60_000).toISOString();
+        await cx.query(`UPDATE booking_communication_queue
+          SET status='pending',scheduled_at=$2::timestamptz,failed_at=NULL,error_text=$3,updated_at=now()
+          WHERE id=$1`,[item.id,nextRetry,`SMTP előellenőrzés sikertelen (${emailTransport.error_code||"SMTP_VERIFY_FAILED"}); küldés nem történt, próbálkozás nem fogyott.`]);
+        continue;
+      }
+
       const attempt=Number(item.attempt_count||0)+1;
       await cx.query(`UPDATE booking_communication_queue SET status='processing',attempt_count=$2,updated_at=now() WHERE id=$1`,[item.id,attempt]);
       try{
@@ -136,7 +177,7 @@ export async function processDueBookingCommunications(limit=50){
           await cx.query(`UPDATE booking_communication_queue SET status='pending',scheduled_at=$2::timestamptz,failed_at=NULL,error_text=$3,updated_at=now() WHERE id=$1`,[item.id,nextRetry,`Küldési hiba, újrapróbálás ${attempt}/${MAX_SEND_ATTEMPTS}: ${message}`]);
         }else{
           summary.failed+=1;
-          await cx.query(`UPDATE booking_communication_queue SET status='failed',failed_at=now(),error_text=$2,updated_at=now() WHERE id=$1`,[item.id,`Végleges küldési hiba ${attempt}/${MAX_SEND_ATTEMPTS}: ${message}`]);
+          await cx.query(`UPDATE booking_communication_queue SET status='failed',failed_at=now(),error_text=$2,resolved_at=NULL,resolution_code=NULL,resolution_note=NULL,updated_at=now() WHERE id=$1`,[item.id,`Végleges küldési hiba ${attempt}/${MAX_SEND_ATTEMPTS}: ${message}`]);
         }
       }
     }
