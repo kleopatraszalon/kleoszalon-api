@@ -20,6 +20,10 @@ async function nextOfficialNumber(c:any){
   return String((await c.query(`SELECT next_internal_invoice_number() invoice_no`)).rows[0]?.invoice_no||'');
 }
 function draftNumber(workOrderId:string){return `KLEO-TERV-${new Date().getFullYear()}-${workOrderId.replace(/-/g,'').slice(0,12).toUpperCase()}`}
+function finalized(wo:any){
+  const j=wo?._json||wo||{};
+  return Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)||String(j.status||wo?.status||'')==='completed'||String(j.document_status||'')==='completed';
+}
 function billing(wo:any){
   const j=wo?._json||wo||{};
   const tax=digits(j.billing_tax_number);
@@ -57,8 +61,8 @@ async function syncInvoiceFromWorkOrder(c:any,inv:any,wo:any){
   const items=(await c.query(`SELECT * FROM work_order_items WHERE work_order_id::text=$1 ORDER BY created_at,id`,[wo.id])).rows;
   if(!items.length)throw new Error('A munkalapon nincs számlázható tétel.');
   const cfg=await activeNavConfig(c,wo.location_id);
-  const vatRate=Number(cfg?.default_vat_rate??0.27);
-  if(!Number.isFinite(vatRate)||vatRate<0||vatRate>1)throw new Error('Az alapértelmezett ÁFA-kulcs érvénytelen.');
+  const defaultVatRate=Number(cfg?.default_vat_rate??0.27);
+  if(!Number.isFinite(defaultVatRate)||defaultVatRate<0||defaultVatRate>1)throw new Error('Az alapértelmezett ÁFA-kulcs érvénytelen.');
   const rawGross=money(items.reduce((s:number,x:any)=>s+Number(x.line_total||0),0));
   const orderDiscount=Math.max(0,money((wo._json||wo).discount_amount||0));
   const invoiceGross=money(Math.max(0,rawGross-orderDiscount));
@@ -67,6 +71,8 @@ async function syncInvoiceFromWorkOrder(c:any,inv:any,wo:any){
   const lines:any[]=[];
   for(let i=0;i<items.length;i++){
     const x=items[i],qty=Math.max(Number(x.quantity||1),0.0001),raw=money(x.line_total||0);
+    const vatRate=Number(x.vat_rate??defaultVatRate);
+    if(!Number.isFinite(vatRate)||vatRate<0||vatRate>1)throw new Error(`${i+1}. munkalaptétel ÁFA-kulcsa érvénytelen.`);
     const adjustedGross=i===items.length-1?money(invoiceGross-allocatedGross):money(rawGross>0?raw-(orderDiscount*raw/rawGross):raw);
     allocatedGross=money(allocatedGross+adjustedGross);
     const net=money(adjustedGross/(1+vatRate)),vat=money(adjustedGross-net);
@@ -78,7 +84,7 @@ async function syncInvoiceFromWorkOrder(c:any,inv:any,wo:any){
   const updated=(await c.query(`UPDATE finance_invoices SET partner_name=$2,customer_name=$2,partner_tax_no=$3,customer_tax_number=$3,customer_vat_status=$4,customer_country_code=$5,customer_postal_code=$6,customer_city=$7,customer_address=$8,net_total=$9,vat_total=$10,gross_total=$11,payment_method=$12,payment_date=CURRENT_DATE,currency='HUF',exchange_rate=1,updated_at=now() WHERE id=$1 RETURNING *`,[inv.id,b.name||'Magánszemély',b.tax_number||null,b.vat_status,b.country_code,b.postal_code||null,b.city||null,b.address||null,money(lines.reduce((s,x)=>s+x.net_amount,0)),money(lines.reduce((s,x)=>s+x.vat_amount,0)),invoiceGross,method])).rows[0];
   await c.query(`DELETE FROM finance_invoice_lines WHERE invoice_id=$1`,[inv.id]);
   for(const l of lines)await c.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,service_id,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10,$11)`,[inv.id,l.line_number,l.description,l.quantity,l.unit_price_net,l.vat_rate,l.net_amount,l.vat_amount,l.gross_amount,l.service_id,l.product_id]);
-  return{invoice:updated,lines,raw_gross:rawGross,discount:orderDiscount,tip_excluded:money((wo._json||wo).tip_amount||0)}
+  return{invoice:updated,lines,raw_gross:rawGross,discount:orderDiscount,tip_excluded:money((wo._json||wo).tip_amount||0),total_net:totalNet,total_vat:totalVat}
 }
 async function ensureDraft(c:any,wo:any,req:AuthRequest){
   let inv=await latestInvoice(c,String(wo.id));
@@ -94,8 +100,12 @@ router.get('/workorders/:id/readiness',async(req,res,next)=>{
   const wo=await workOrder(db,req.params.id);if(!wo)return res.status(404).json({message:'A munkalap nem található.'});
   const inv=await latestInvoice(db,req.params.id),b=billing(wo),cfg=await activeNavConfig(db,wo.location_id);
   const itemCount=Number((await db.query(`SELECT COUNT(*)::int n FROM work_order_items WHERE work_order_id::text=$1`,[req.params.id])).rows[0]?.n||0);
-  const errors=billingErrors(b);if(String((wo._json||wo).payment_status||'')!=='paid'&&!(wo._json||wo).fully_paid)errors.push('A munkalap nincs teljesen kifizetve.');if(!itemCount)errors.push('Nincs számlázható munkalaptétel.');if(!cfg)errors.push('Nincs aktív NAV konfiguráció ehhez a szalonhoz.');
-  res.json({ok:errors.length===0,errors,warnings:Number((wo._json||wo).tip_amount||0)>0?['A borravaló nem kerül a számlára; csak a szolgáltatás/termék ellenértéke számlázódik.']:[],billing:b,work_order:{id:String(wo.id),number:wo.work_order_number,payment_status:(wo._json||wo).payment_status,fully_paid:Boolean((wo._json||wo).fully_paid),invoice_status:(wo._json||wo).invoice_status,item_count:itemCount},invoice:inv,nav_config:{configured:Boolean(cfg),environment:cfg?.environment||null,supplier_name:cfg?.supplier_name||null,supplier_tax_number:cfg?.supplier_tax_number||null,live_submit_enabled:Boolean(cfg?.live_submit_enabled)}})
+  const errors=billingErrors(b);
+  if(!finalized(wo))errors.push('A munkalap nincs véglegesítve és archiválva. Hivatalos számla csak lezárt munkalapból állítható ki.');
+  if(String((wo._json||wo).payment_status||'')!=='paid'&&!(wo._json||wo).fully_paid)errors.push('A munkalap nincs teljesen kifizetve.');
+  if(!itemCount)errors.push('Nincs számlázható munkalaptétel.');
+  if(!cfg)errors.push('Nincs aktív NAV konfiguráció ehhez a szalonhoz.');
+  res.json({ok:errors.length===0,errors,warnings:Number((wo._json||wo).tip_amount||0)>0?['A borravaló nem kerül a számlára; csak a szolgáltatás/termék ellenértéke számlázódik.']:[],billing:b,work_order:{id:String(wo.id),number:wo.work_order_number,finalized:finalized(wo),payment_status:(wo._json||wo).payment_status,fully_paid:Boolean((wo._json||wo).fully_paid),invoice_status:(wo._json||wo).invoice_status,item_count:itemCount},invoice:inv,nav_config:{configured:Boolean(cfg),environment:cfg?.environment||null,supplier_name:cfg?.supplier_name||null,supplier_tax_number:cfg?.supplier_tax_number||null,live_submit_enabled:Boolean(cfg?.live_submit_enabled)}})
  }catch(e){next(e)}
 });
 
@@ -117,7 +127,9 @@ router.get('/workorders/:id',async(req,res,next)=>{
 router.post('/workorders/:id/draft',async(req:AuthRequest,res,next)=>{
   const c=await db.connect();try{
     await c.query('BEGIN');const wo=await workOrder(c,req.params.id,true);if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
-    const j=wo._json||wo;if(String(j.payment_status||'')!=='paid'&&!j.fully_paid){await c.query('ROLLBACK');return res.status(409).json({message:'Számlatervezet csak teljesen kifizetett munkalaphoz készíthető.'})}
+    const j=wo._json||wo;
+    if(!finalized(wo)){await c.query('ROLLBACK');return res.status(409).json({message:'Számlatervezet csak véglegesített és archivált munkalaphoz készíthető.',code:'WORKORDER_NOT_FINALIZED'})}
+    if(String(j.payment_status||'')!=='paid'&&!j.fully_paid){await c.query('ROLLBACK');return res.status(409).json({message:'Számlatervezet csak teljesen kifizetett munkalaphoz készíthető.'})}
     const inv=await ensureDraft(c,wo,req);if(inv.issued_at||String(inv.document_kind)==='tax_invoice'){await c.query('COMMIT');return res.json(inv)}
     const synced=await syncInvoiceFromWorkOrder(c,inv,wo);await c.query(`UPDATE work_orders SET invoice_status='requested' WHERE id=$1`,[wo.id]);await c.query('COMMIT');return res.json({...synced.invoice,invoice_lines:synced.lines,tip_excluded:synced.tip_excluded})
   }catch(e:any){await c.query('ROLLBACK').catch(()=>undefined);console.error('[workorder-invoice-fast] draft failed',e?.code||'',e?.message||e);next(e)}finally{c.release()}
@@ -126,7 +138,9 @@ router.post('/workorders/:id/draft',async(req:AuthRequest,res,next)=>{
 router.post('/workorders/:id/issue',async(req:AuthRequest,res,next)=>{
  const c=await db.connect();try{
   await c.query('BEGIN');const wo=await workOrder(c,req.params.id,true);if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
-  const j=wo._json||wo;if(String(j.payment_status||'')!=='paid'&&!j.fully_paid){await c.query('ROLLBACK');return res.status(409).json({message:'Számla csak teljesen kifizetett munkalapból állítható ki.'})}
+  const j=wo._json||wo;
+  if(!finalized(wo)){await c.query('ROLLBACK');return res.status(409).json({message:'Hivatalos számla csak véglegesített és archivált munkalapból állítható ki.',code:'WORKORDER_NOT_FINALIZED'})}
+  if(String(j.payment_status||'')!=='paid'&&!j.fully_paid){await c.query('ROLLBACK');return res.status(409).json({message:'Számla csak teljesen kifizetett munkalapból állítható ki.'})}
   const b=billing(wo),errors=billingErrors(b);if(errors.length){await c.query('ROLLBACK');return res.status(409).json({message:'A számla kiállításához hiányosak a számlázási adatok.',errors})}
   const cfg=await activeNavConfig(c,wo.location_id);if(!cfg){await c.query('ROLLBACK');return res.status(409).json({message:'A számla kiállításához nincs aktív NAV/kibocsátói konfiguráció.'})}
   let inv=await ensureDraft(c,wo,req);if(inv.issued_at||String(inv.document_kind)==='tax_invoice'){await c.query('COMMIT');return res.json({...inv,idempotent:true})}
