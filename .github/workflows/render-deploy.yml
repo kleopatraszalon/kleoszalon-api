@@ -85,6 +85,18 @@ jobs:
           node -e "const x=require('/tmp/ready.json'); console.log('API readiness PASS; single-instance-failure-ready=',!!x.single_instance_failure_ready)"
           node -e "const x=require('/tmp/wallboard.json'); console.log('WallBoard feed PASS; active-action=',!!x.action)"
 
+      - name: Temporary SMTP recovery state
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 "$API_BASE_URL/api/signage/booking-mail-recovery-probe-20260814" | tee /tmp/booking-mail-recovery.json
+          node - <<'NODE'
+          const x=require('/tmp/booking-mail-recovery.json');
+          if(!x.email_transport || !Number.isFinite(Number(x.active_failed))) process.exit(1);
+          console.log('BOOKING_MAIL_RECOVERY='+JSON.stringify(x));
+          NODE
+
       - name: Verify cashier API authentication boundary
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         shell: bash
