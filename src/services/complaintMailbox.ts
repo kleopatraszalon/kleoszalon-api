@@ -70,17 +70,17 @@ function env(name: string): string {
 }
 
 function getConfig(): MailboxConfig | null {
-  const host = env("COMPLAINT_IMAP_HOST") || env("IMAP_HOST");
-  const user = env("COMPLAINT_IMAP_USER") || env("IMAP_USER") || env("SMTP_USER");
-  const pass = env("COMPLAINT_IMAP_PASS") || env("IMAP_PASS") || env("SMTP_PASS");
+  const host = env("COMPLAINT_IMAP_HOST");
+  const user = env("COMPLAINT_IMAP_USER");
+  const pass = env("COMPLAINT_IMAP_PASS");
   if (!host || !user || !pass) return null;
   return {
     host,
-    port: Number(env("COMPLAINT_IMAP_PORT") || env("IMAP_PORT") || 993),
+    port: Number(env("COMPLAINT_IMAP_PORT") || 993),
     user,
     pass,
     inbox: env("COMPLAINT_IMAP_MAILBOX") || "INBOX",
-    sent: env("COMPLAINT_IMAP_SENT_MAILBOX") || env("IMAP_SENT_MAILBOX") || "Sent",
+    sent: env("COMPLAINT_IMAP_SENT_MAILBOX") || "Sent",
     complaintAddress: env("COMPLAINT_EMAIL") || "vendegpanasz@kleoszalon.hu",
   };
 }
@@ -108,7 +108,7 @@ function q(value: string): string {
 
 class MinimalImapClient {
   private socket: TLSSocket | null = null;
-  private buffer = Buffer.alloc(0);
+  private buffer: Buffer = Buffer.alloc(0);
   private tagNo = 0;
   private waiters: Array<() => void> = [];
   private socketError: Error | null = null;
