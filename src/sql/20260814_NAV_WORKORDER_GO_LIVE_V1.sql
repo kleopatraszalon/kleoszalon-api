@@ -5,6 +5,15 @@ ALTER TABLE nav_online_invoice_settings
   ADD COLUMN IF NOT EXISTS live_enabled_at timestamptz,
   ADD COLUMN IF NOT EXISTS live_enabled_by text;
 
+ALTER TABLE work_orders
+  ADD COLUMN IF NOT EXISTS billing_name text,
+  ADD COLUMN IF NOT EXISTS billing_vat_status text,
+  ADD COLUMN IF NOT EXISTS billing_tax_number text,
+  ADD COLUMN IF NOT EXISTS billing_country_code varchar(2) DEFAULT 'HU',
+  ADD COLUMN IF NOT EXISTS billing_postal_code text,
+  ADD COLUMN IF NOT EXISTS billing_city text,
+  ADD COLUMN IF NOT EXISTS billing_address text;
+
 ALTER TABLE finance_invoices
   ADD COLUMN IF NOT EXISTS customer_vat_status text,
   ADD COLUMN IF NOT EXISTS exchange_rate numeric(18,6) NOT NULL DEFAULT 1,
