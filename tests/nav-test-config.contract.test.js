@@ -7,8 +7,14 @@ const src=fs.readFileSync(path.join(process.cwd(),'src/routes/navTestUat.ts'),'u
 const tx=fs.readFileSync(path.join(process.cwd(),'src/routes/transactions.ts'),'utf8');
 
 test('NAV UAT configuration write is management-only through the mounted test router',()=>{
-  assert.match(tx,/router\.use\("\/nav-test-uat",requireManagement,ensureFinanceReady,requireFeature\("finance"\),navTestUatRouter\)/);
+  assert.match(tx,/router\.use\("\/nav-test-uat",requireManagement,ensureNavInvoiceReady,requireFeature\("finance"\),navTestUatRouter\)/);
   assert.match(src,/router\.put\('\/configuration'/);
+});
+
+test('NAV UAT is isolated from unrelated full finance bootstrap failures',()=>{
+  assert.match(tx,/const ensureNavInvoiceReady=/);
+  assert.match(tx,/router\.use\("\/nav-test-uat",requireManagement,ensureNavInvoiceReady/);
+  assert.doesNotMatch(tx,/router\.use\("\/nav-test-uat",requireManagement,ensureFinanceReady/);
 });
 
 test('NAV UAT configuration can never switch to live environment',()=>{

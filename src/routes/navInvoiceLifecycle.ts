@@ -104,6 +104,7 @@ router.post('/invoices/:id/correction-draft',async(req:AuthRequest,res)=>{
 
 router.post('/invoices/:id/queue',async(req:AuthRequest,res,next)=>{try{
   const b=await invoiceBundle(req.params.id);if(!b)return res.status(404).json({message:'A számla nem található.'});
+  if(String(b.inv.document_kind||'')!=='tax_invoice'||!b.inv.issued_at)return res.status(409).json({message:'A NAV beküldési sorba csak hivatalosan kiállított számla tehető. A belső számlatervezet nem küldhető a NAV felé.',code:'NAV_INVOICE_NOT_ISSUED'});
   const v=validate(b.inv,b.lines);if(v.errors.length)return res.status(409).json({message:'A számla NAV validációja hibás.',errors:v.errors});
   const op=String(req.body?.operation||b.inv.invoice_type||'CREATE').toUpperCase();const operation=op==='NORMAL'?'CREATE':op;
   if(!['CREATE','MODIFY','STORNO'].includes(operation))return res.status(400).json({message:'Érvénytelen NAV számlaművelet.'});
