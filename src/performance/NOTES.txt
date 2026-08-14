@@ -1,0 +1,4 @@
+Dashboard cache default: 20s
+Management summary cache default: 15s
+Menu response cache default: 15s
+Slow aggregate warning threshold: 500ms
