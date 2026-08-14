@@ -1,0 +1,32 @@
+name: System all-accounts live UAT
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - uat/all-accounts-system-check-20260814
+    paths:
+      - tests/system_all_accounts_live_uat.mjs
+      - .github/workflows/system-all-accounts-live-uat.yml
+
+permissions:
+  contents: read
+
+jobs:
+  all-accounts-live-uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run all-account production UAT
+        env:
+          API_BASE: https://kleoszalon-api-1.onrender.com
+          FRONTEND_BASE: https://kleoszalon-frontend.onrender.com
+          DEMO_PASSWORD: Teszt1234!
+          ACCOUNTING_UAT_PASSWORD: ${{ secrets.ACCOUNTING_UAT_PASSWORD }}
+        run: node tests/system_all_accounts_live_uat.mjs
