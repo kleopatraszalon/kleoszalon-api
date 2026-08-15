@@ -1,50 +1,69 @@
-name: Security fix agent v2
+name: Production readiness gate
+
 on:
   push:
     branches:
       - agent/security-regression-hardening-20260814
+  workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  harden:
+  production-readiness:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/security-regression-hardening-20260814
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Upgrade vulnerable production dependencies
-        run: |
-          npm install --save axios@^1.18.0 bcrypt@^6.0.0 express@^4.22.2 morgan@^1.10.2 multer@^2.2.0 nodemailer@^9.0.5
-          npm audit fix --omit=dev --package-lock-only || true
-      - name: Restore full build dependencies
-        run: npm ci --no-fund
-      - name: Regression tests
-        run: npm test
-      - name: Production build with concise diagnostics
+
+      # 1. TELJES INSTALL — kizárólag a lockfile alapján, reprodukálható módon.
+      - name: 1 - Clean full install
+        run: npm ci --no-fund --no-audit
+
+      # 2. REGRESSZIÓ — a jelenlegi VIR baseline pontosan 320 sikeres teszt.
+      - name: 2 - Run 320 regression tests
         shell: bash
         run: |
-          set +e
-          npm run build > /tmp/build.log 2>&1
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "--- TypeScript build errors ---"
-            grep -E "error TS[0-9]+|TS[0-9]+:|src/.*\.(ts|tsx)" /tmp/build.log | tail -200 || true
-            echo "--- End TypeScript build errors ---"
-          else
-            echo "Production build PASS"
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/regression.log
+
+          tests=$(grep -E '^# tests [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+          passed=$(grep -E '^# pass [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+          failed=$(grep -E '^# fail [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+
+          echo "Regression summary: tests=${tests:-unknown}, pass=${passed:-unknown}, fail=${failed:-unknown}"
+
+          if [ "$tests" != "320" ] || [ "$passed" != "320" ] || [ "${failed:-1}" != "0" ]; then
+            echo "ERROR: Regression gate requires exactly 320 tests, 320 passes and 0 failures."
+            exit 1
           fi
-          exit $rc
-      - name: Production dependency audit
-        run: npm audit --omit=dev || true
-      - name: Commit hardened lockfile
+
+      # 3. TYPESCRIPT PRODUCTION BUILD — minden TS hiba blokkolja az élesítést.
+      - name: 3 - TypeScript production build
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "fix: harden production dependencies [skip ci]"
-          git push origin HEAD:agent/security-regression-hardening-20260814
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/build.log
+
+      # 4. PRODUCTION DEPENDENCY AUDIT — high/critical sérülékenység blokkol.
+      # NINCS npm audit fix --force, és ez a workflow semmilyen dependency-t nem módosít.
+      - name: 4 - Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Readiness summary
+        if: success()
+        run: |
+          echo "PRODUCTION READINESS GATE: PASS"
+          echo "Install: PASS"
+          echo "Regression: 320/320 PASS"
+          echo "TypeScript production build: PASS"
+          echo "Production dependency audit (high/critical): PASS"
+          echo "Breaking npm audit fix --force: NOT USED"
