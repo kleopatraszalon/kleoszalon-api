@@ -199,6 +199,7 @@ router.post("/publish", asyncRoute(async (req,res)=>{
  */
 router.get("/", async (req: AuthRequest, res) => {
   const { from, to } = req.query as any;
+  const locationId = String(req.query.location_id || "").trim() || null;
 
   if (!from || !to) {
     return res.status(400).json({ error: "from és to query param kötelező (YYYY-MM-DD)" });
@@ -207,7 +208,9 @@ router.get("/", async (req: AuthRequest, res) => {
   try {
     const cols = await loadEmployeesCols();
     const employeesSql = buildEmployeesSelect(cols);
-    const employeesRes = await pool.query(employeesSql);
+    const employeesRes = locationId
+      ? await pool.query(`SELECT * FROM (${employeesSql}) scoped_employees WHERE location_id=$1::uuid`, [locationId])
+      : await pool.query(employeesSql);
 
     const apRes = await pool.query(
       `
@@ -291,9 +294,10 @@ router.get("/", async (req: AuthRequest, res) => {
       LEFT JOIN clients c ON c.id = a.client_id
       WHERE a.start_time >= ($1::date)::timestamp
         AND a.start_time <  (($2::date + INTERVAL '1 day')::timestamp)
+        AND ($3::uuid IS NULL OR a.location_id=$3::uuid)
       ORDER BY a.start_time ASC
       `,
-      [from, to]
+      [from, to, locationId]
     );
 
     return res.json({
