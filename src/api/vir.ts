@@ -11,6 +11,27 @@ type VirQueryParams = {
   limit?: string;
 };
 
+type CacheEntry<T> = { value: T; expiresAt: number };
+const REPORT_CACHE_TTL_MS = 30_000;
+const reportCache = new Map<string, CacheEntry<any>>();
+
+async function cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = reportCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.value as T;
+  const value = await loader();
+  reportCache.set(key, { value, expiresAt: now + REPORT_CACHE_TTL_MS });
+  if (reportCache.size > 500) {
+    for (const [cacheKey, entry] of reportCache) {
+      if (entry.expiresAt <= now) reportCache.delete(cacheKey);
+    }
+  }
+  return value;
+}
+
+const cacheKey = (name: string, parts: Array<string | number | null | undefined>) =>
+  `${name}:${parts.map((part) => String(part ?? "*")).join(":")}`;
+
 function parseDateInput(value: string | undefined, fallback: string): string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return fallback;
   return value;
@@ -49,17 +70,12 @@ router.get("/dashboard", requireAuth, async (req: AuthRequest, res: Response) =>
     const today = new Date();
     const defaultTo = today.toISOString().slice(0, 10);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
     const locationId = getScopedLocationId(req);
-
-    const sql = `
-      SELECT *
-      FROM public.vir_dashboard_summary($1::date, $2::date, $3::uuid)
-    `;
-
-    const { rows } = await pool.query(sql, [from, to, locationId]);
+    const rows = await cached(cacheKey("dashboard", [from, to, locationId]), async () =>
+      (await pool.query(`SELECT * FROM public.vir_dashboard_summary($1::date, $2::date, $3::uuid)`, [from, to, locationId])).rows
+    );
     return res.json({
       ok: true,
       summary: rows[0] || {
@@ -85,18 +101,12 @@ router.get("/revenue-series", requireAuth, async (req: AuthRequest, res: Respons
     const today = new Date();
     const defaultTo = today.toISOString().slice(0, 10);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
     const locationId = getScopedLocationId(req);
-
-    const sql = `
-      SELECT *
-      FROM public.vir_revenue_series($1::date, $2::date, $3::uuid)
-      ORDER BY day
-    `;
-
-    const { rows } = await pool.query(sql, [from, to, locationId]);
+    const rows = await cached(cacheKey("revenue-series", [from, to, locationId]), async () =>
+      (await pool.query(`SELECT * FROM public.vir_revenue_series($1::date, $2::date, $3::uuid) ORDER BY day`, [from, to, locationId])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -107,11 +117,9 @@ router.get("/top-services", requireAuth, async (req: AuthRequest, res: Response)
   try {
     const query = (req.query || {}) as VirQueryParams;
     const limit = parseLimit(query.limit, 10, 50);
-    const sql = `
-      SELECT *
-      FROM public.vir_top_services($1::integer)
-    `;
-    const { rows } = await pool.query(sql, [limit]);
+    const rows = await cached(cacheKey("top-services", [limit]), async () =>
+      (await pool.query(`SELECT * FROM public.vir_top_services($1::integer)`, [limit])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -122,11 +130,9 @@ router.get("/top-staff", requireAuth, async (req: AuthRequest, res: Response) =>
   try {
     const query = (req.query || {}) as VirQueryParams;
     const limit = parseLimit(query.limit, 10, 50);
-    const sql = `
-      SELECT *
-      FROM public.vir_top_staff($1::integer)
-    `;
-    const { rows } = await pool.query(sql, [limit]);
+    const rows = await cached(cacheKey("top-staff", [limit]), async () =>
+      (await pool.query(`SELECT * FROM public.vir_top_staff($1::integer)`, [limit])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -136,21 +142,15 @@ router.get("/top-staff", requireAuth, async (req: AuthRequest, res: Response) =>
 router.get("/source-performance", requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const locationId = getScopedLocationId(req);
-    const sql = `
-      SELECT
-        source_channel,
-        location_id,
-        appointments_count,
-        completed_count,
-        cancelled_count,
-        no_show_count,
-        revenue_total,
-        paid_total
-      FROM public.vw_vir_source_performance
-      WHERE ($1::uuid IS NULL OR location_id = $1::uuid)
-      ORDER BY revenue_total DESC NULLS LAST, appointments_count DESC
-    `;
-    const { rows } = await pool.query(sql, [locationId]);
+    const rows = await cached(cacheKey("source-performance", [locationId]), async () =>
+      (await pool.query(`
+        SELECT source_channel, location_id, appointments_count, completed_count, cancelled_count,
+               no_show_count, revenue_total, paid_total
+        FROM public.vw_vir_source_performance
+        WHERE ($1::uuid IS NULL OR location_id = $1::uuid)
+        ORDER BY revenue_total DESC NULLS LAST, appointments_count DESC
+      `, [locationId])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -163,27 +163,19 @@ router.get("/cancellation-stats", requireAuth, async (req: AuthRequest, res: Res
     const today = new Date();
     const defaultTo = today.toISOString().slice(0, 10);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
     const locationId = getScopedLocationId(req);
-
-    const sql = `
-      SELECT
-        day,
-        location_id,
-        total_appointments,
-        cancelled_count,
-        no_show_count,
-        cancellation_rate_percent,
-        no_show_rate_percent
-      FROM public.vw_vir_cancellation_stats
-      WHERE day BETWEEN $1::date AND $2::date
-        AND ($3::uuid IS NULL OR location_id = $3::uuid)
-      ORDER BY day
-    `;
-
-    const { rows } = await pool.query(sql, [from, to, locationId]);
+    const rows = await cached(cacheKey("cancellation-stats", [from, to, locationId]), async () =>
+      (await pool.query(`
+        SELECT day, location_id, total_appointments, cancelled_count, no_show_count,
+               cancellation_rate_percent, no_show_rate_percent
+        FROM public.vw_vir_cancellation_stats
+        WHERE day BETWEEN $1::date AND $2::date
+          AND ($3::uuid IS NULL OR location_id = $3::uuid)
+        ORDER BY day
+      `, [from, to, locationId])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -196,25 +188,18 @@ router.get("/kiosk-conversion", requireAuth, async (req: AuthRequest, res: Respo
     const today = new Date();
     const defaultTo = today.toISOString().slice(0, 10);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
     const locationId = getScopedLocationId(req);
-
-    const sql = `
-      SELECT
-        day,
-        location_id,
-        kiosk_appointments,
-        kiosk_completed,
-        kiosk_revenue
-      FROM public.vw_vir_kiosk_conversion
-      WHERE day BETWEEN $1::date AND $2::date
-        AND ($3::uuid IS NULL OR location_id = $3::uuid)
-      ORDER BY day
-    `;
-
-    const { rows } = await pool.query(sql, [from, to, locationId]);
+    const rows = await cached(cacheKey("kiosk-conversion", [from, to, locationId]), async () =>
+      (await pool.query(`
+        SELECT day, location_id, kiosk_appointments, kiosk_completed, kiosk_revenue
+        FROM public.vw_vir_kiosk_conversion
+        WHERE day BETWEEN $1::date AND $2::date
+          AND ($3::uuid IS NULL OR location_id = $3::uuid)
+        ORDER BY day
+      `, [from, to, locationId])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
@@ -224,21 +209,14 @@ router.get("/kiosk-conversion", requireAuth, async (req: AuthRequest, res: Respo
 router.get("/signage-impact", requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const locationId = getScopedLocationId(req);
-    const sql = `
-      SELECT
-        deal_id,
-        title,
-        location_id,
-        active_from,
-        active_to,
-        appointments_during_campaign,
-        revenue_during_campaign
-      FROM public.vw_vir_signage_campaign_impact
-      WHERE ($1::uuid IS NULL OR location_id = $1::uuid)
-      ORDER BY active_from DESC, revenue_during_campaign DESC NULLS LAST
-    `;
-
-    const { rows } = await pool.query(sql, [locationId]);
+    const rows = await cached(cacheKey("signage-impact", [locationId]), async () =>
+      (await pool.query(`
+        SELECT deal_id, title, location_id, active_from, active_to, appointments_during_campaign, revenue_during_campaign
+        FROM public.vw_vir_signage_campaign_impact
+        WHERE ($1::uuid IS NULL OR location_id = $1::uuid)
+        ORDER BY active_from DESC, revenue_during_campaign DESC NULLS LAST
+      `, [locationId])).rows
+    );
     return res.json({ ok: true, rows });
   } catch (error) {
     return res.status(500).json({ ok: false, error: toErrorMessage(error) });
