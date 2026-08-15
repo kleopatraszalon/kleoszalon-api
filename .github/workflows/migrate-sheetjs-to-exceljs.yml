@@ -1,0 +1,108 @@
+name: Migrate SheetJS to ExcelJS
+on:
+  push:
+    branches:
+      - agent/security-regression-hardening-20260814
+    paths:
+      - src/utils/excel.ts
+      - .github/workflows/migrate-sheetjs-to-exceljs.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/security-regression-hardening-20260814
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Rewrite SheetJS call sites
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def edit(path, replacements):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              original = s
+              for old, new in replacements:
+                  if old not in s:
+                      raise SystemExit(f'Expected pattern missing in {path}: {old[:120]!r}')
+                  s = s.replace(old, new)
+              if s == original:
+                  raise SystemExit(f'No changes made in {path}')
+              p.write_text(s, encoding='utf-8')
+
+          edit('src/routes/productsImport.ts', [
+              ('import * as XLSX from "xlsx";', 'import { readFirstSheetRows } from "../utils/excel";'),
+              ('const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: false });\n    const ws = wb.Sheets[wb.SheetNames[0]];\n    if (!ws) return res.status(400).json({ error: "Az Excel munkafüzet üres." });\n    raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null, raw: true });',
+               'raw = await readFirstSheetRows<Record<string, unknown>>(req.file.buffer, { defval: null, raw: true });')
+          ])
+
+          edit('src/routes/servicesImport.ts', [
+              ('import * as XLSX from "xlsx";', 'import { readFirstSheetRows } from "../utils/excel";'),
+              ('function parseWorkbook(buffer: Buffer): Row[] {', 'async function parseWorkbook(buffer: Buffer): Promise<Row[]> {'),
+              ('const wb = XLSX.read(buffer, { type:"buffer", cellDates:false });\n  const sheet = wb.Sheets[wb.SheetNames[0]];\n  if (!sheet) throw new Error("Az Excel munkafüzet üres.");\n  const raw = XLSX.utils.sheet_to_json<Record<string,unknown>>(sheet,{defval:null,raw:true});',
+               'const raw = await readFirstSheetRows<Record<string,unknown>>(buffer,{defval:null,raw:true});'),
+              ('rows=parseWorkbook(req.file.buffer);', 'rows=await parseWorkbook(req.file.buffer);')
+          ])
+
+          edit('src/routes/servicesImportV2.ts', [
+              ('import * as XLSX from "xlsx";', 'import { readFirstSheetRows } from "../utils/excel";'),
+              ('function parseWorkbook(buffer: Buffer): AltegioRow[] {', 'async function parseWorkbook(buffer: Buffer): Promise<AltegioRow[]> {'),
+              ('const wb = XLSX.read(buffer, { type: "buffer", cellDates: false });\n  const ws = wb.Sheets[wb.SheetNames[0]];\n  if (!ws) throw new Error("Az Excel munkafüzet üres.");\n  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null, raw: true });',
+               'const raw = await readFirstSheetRows<Record<string, unknown>>(buffer, { defval: null, raw: true });'),
+              ('rows = parseWorkbook(req.file.buffer);', 'rows = await parseWorkbook(req.file.buffer);')
+          ])
+
+          edit('src/routes/clientsCore.ts', [
+              ('import * as XLSX from "xlsx";', 'import { excelSerialToDate, readFirstSheetRows } from "../utils/excel";'),
+              ('const d = XLSX.SSF.parse_date_code(v);\n    if (d) return new Date(Date.UTC(d.y, d.m - 1, d.d, d.H || 0, d.M || 0, Math.floor(d.S || 0))).toISOString();',
+               'const d = excelSerialToDate(v);\n    if (d) return d.toISOString();'),
+              ('const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });\n    const ws = wb.Sheets[wb.SheetNames[0]];\n    const rows = XLSX.utils.sheet_to_json<Record<string,any>>(ws, { defval: "", raw: false });',
+               'const rows = await readFirstSheetRows<Record<string,any>>(req.file.buffer, { defval: "", raw: false });')
+          ])
+
+          edit('src/routes/virSpecParity.ts', [
+              ('import * as XLSX from "xlsx";', 'import { rowsToXlsxBuffer } from "../utils/excel";'),
+              ('if(format==="xlsx"){const wb=XLSX.utils.book_new(),ws=XLSX.utils.json_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,"Riport");const buf=XLSX.write(wb,{type:"buffer",bookType:"xlsx"}) as Buffer;',
+               'if(format==="xlsx"){const buf=await rowsToXlsxBuffer(rows,"Riport");')
+          ])
+
+      - name: Replace vulnerable dependency
+        run: |
+          npm uninstall xlsx
+          npm install --save exceljs@4.4.0
+      - name: Ensure SheetJS is gone
+        run: |
+          if grep -R --line-number --exclude-dir=node_modules --exclude=package-lock.json 'from "xlsx"\|require(["'"']xlsx["'"'])' src package.json; then
+            echo 'ERROR: xlsx usage remains'
+            exit 1
+          fi
+          npm ls xlsx && exit 1 || true
+          npm ls exceljs
+      - name: Regression gate
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/regression.log
+          tests=$(grep -E '^# tests [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+          passed=$(grep -E '^# pass [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+          failed=$(grep -E '^# fail [0-9]+$' /tmp/regression.log | tail -1 | awk '{print $3}')
+          test "$tests" = '320' && test "$passed" = '320' && test "${failed:-1}" = '0'
+      - name: TypeScript production build
+        run: npm run build
+      - name: High and critical production audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Commit verified migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/routes/productsImport.ts src/routes/servicesImport.ts src/routes/servicesImportV2.ts src/routes/clientsCore.ts src/routes/virSpecParity.ts src/utils/excel.ts package.json package-lock.json
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: replace vulnerable SheetJS dependency with ExcelJS"
+          git push origin HEAD:agent/security-regression-hardening-20260814
