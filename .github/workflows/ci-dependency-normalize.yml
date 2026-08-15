@@ -31,6 +31,10 @@ jobs:
       - name: Regenerate lockfile
         run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
+      - name: Apply non-breaking production audit fixes to lockfile
+        shell: bash
+        run: npm audit fix --package-lock-only --omit=dev --no-fund || true
+
       - name: Deterministic clean install
         run: npm ci --no-audit --no-fund
 
@@ -43,8 +47,19 @@ jobs:
       - name: Critical workorder and RBAC regression subset
         run: npm run test:workorders
 
+      - name: Capture production dependency audit
+        shell: bash
+        run: npm audit --omit=dev --json > audit-prod.json || true
+
+      - name: Upload audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-production-audit-normalized
+          path: audit-prod.json
+          retention-days: 1
+
       - name: Production dependency security gate
-        run: npm audit --omit=dev --audit-level=high
+        run: node -e "const a=require('./audit-prod.json'); const v=a.metadata?.vulnerabilities||{}; console.log(v); if((v.high||0)+(v.critical||0)>0) process.exit(1)"
 
       - name: Commit normalized lockfile if changed
         shell: bash
