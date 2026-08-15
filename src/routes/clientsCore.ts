@@ -208,6 +208,8 @@ router.get("/", async (req: AuthRequest, res) => {
     const q = `%${String(req.query.q || "").trim()}%`;
     const status = String(req.query.status || "all");
     const tagId = String(req.query.tag_id || "").trim() || null;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 100) || 100));
+    const offset = Math.max(0, Number(req.query.offset || 0) || 0);
     const { rows } = await pool.query(`
       SELECT c.id,(to_jsonb(c)->>'location_id') location_id,
         COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','Névtelen ügyfél') name,
@@ -236,7 +238,7 @@ router.get("/", async (req: AuthRequest, res) => {
           OR ($3='inactive' AND NOT COALESCE((to_jsonb(c)->>'is_active')::boolean,true)))
         AND ($4::text IS NULL)
       ORDER BY lower(COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','')) ASC
-      LIMIT 20000`, [locationId, q, status, tagId]);
+      LIMIT $5::integer OFFSET $6::integer`, [locationId, q, status, tagId, limit, offset]);
     res.json(rows);
   } catch (error) { fail(res, error); }
 });
