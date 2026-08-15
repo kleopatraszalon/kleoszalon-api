@@ -2,7 +2,7 @@ import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import multer from "multer";
-import * as XLSX from "xlsx";
+import { excelSerialToDate, readFirstSheetRows } from "../utils/excel";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -113,8 +113,8 @@ const dateValue = (v:any): string | null => {
   if (v === null || v === undefined || v === "") return null;
   if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString();
   if (typeof v === "number") {
-    const d = XLSX.SSF.parse_date_code(v);
-    if (d) return new Date(Date.UTC(d.y, d.m - 1, d.d, d.H || 0, d.M || 0, Math.floor(d.S || 0))).toISOString();
+    const d = excelSerialToDate(v);
+    if (d) return d.toISOString();
   }
   const s = text(v); const dt = new Date(s); return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
 };
@@ -245,9 +245,7 @@ router.post("/import-altegio-xlsx", upload.single("file"), async (req: AuthReque
   if (!req.file?.buffer) return res.status(400).json({ error: "XLSX fájl szükséges." });
   const db = await pool.connect();
   try {
-    const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json<Record<string,any>>(ws, { defval: "", raw: false });
+    const rows = await readFirstSheetRows<Record<string,any>>(req.file.buffer, { defval: "", raw: false });
     const locationId = effectiveLocation(req);
     await db.query("BEGIN");
     const existing = await db.query(`SELECT id,phone,email FROM clients WHERE ($1::uuid IS NULL OR location_id=$1::uuid)`, [locationId]);

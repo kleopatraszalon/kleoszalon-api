@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
-import * as XLSX from "xlsx";
+import { readFirstSheetRows } from "../utils/excel";
 import pool from "../db";
 
 const router = Router();
@@ -82,11 +82,8 @@ async function ensureSchema() {
   `);
 }
 
-function parseWorkbook(buffer: Buffer): Row[] {
-  const wb = XLSX.read(buffer, { type:"buffer", cellDates:false });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  if (!sheet) throw new Error("Az Excel munkafüzet üres.");
-  const raw = XLSX.utils.sheet_to_json<Record<string,unknown>>(sheet,{defval:null,raw:true});
+async function parseWorkbook(buffer: Buffer): Promise<Row[]> {
+  const raw = await readFirstSheetRows<Record<string,unknown>>(buffer,{defval:null,raw:true});
   if (!raw.length) throw new Error("Az Excel fájl nem tartalmaz adatsort.");
   const required=["Kategória","ID","Név","Szakemberek ID azonosítója","Időtartam"];
   const headers=new Set(Object.keys(raw[0]).map(h=>h.replace(/^\uFEFF/,"").trim()));
@@ -105,7 +102,7 @@ function parseWorkbook(buffer: Buffer): Row[] {
 router.post("/import/altegio", requireImportAdmin, upload.single("file"), async (req:Request,res:Response)=>{
   if(!req.file?.buffer) return res.status(400).json({error:"Az Excel fájl feltöltése kötelező."});
   let rows:Row[];
-  try { rows=parseWorkbook(req.file.buffer); if(!rows.length) return res.status(400).json({error:"A fájlban nincs importálható szolgáltatás."}); await ensureSchema(); }
+  try { rows=await parseWorkbook(req.file.buffer); if(!rows.length) return res.status(400).json({error:"A fájlban nincs importálható szolgáltatás."}); await ensureSchema(); }
   catch(e:any){ console.error("Altegio import előkészítési hiba:",e); return res.status(400).json({error:e?.message||"Az Excel fájl nem olvasható."}); }
 
   const categories:string[]=[]; const seen=new Set<string>(); const services=new Map<number,Row[]>();

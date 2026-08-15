@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import PDFDocument from "pdfkit";
-import * as XLSX from "xlsx";
+import { rowsToXlsxBuffer } from "../utils/excel";
 import pool from "../db";
 import type { AuthRequest } from "../middleware/auth";
 import { getComplaintMailboxStatus, storeComplaintAttachment, syncComplaintMailbox } from "../services/complaintMailbox";
@@ -198,7 +198,7 @@ virSpecParityRouter.get("/reports/:id/export", async (req,res,next)=>{try{
   const source=String(def.source_key) as ReportSource;if(!REPORT_SOURCES.includes(source))return res.status(400).json({message:"Nem engedélyezett adatforrás."});
   let rows=await reportRows(source);rows=filterRows(rows,def.filters||{});rows=sortRows(rows,def.sort_by||null,def.sort_dir);rows=projectRows(rows,Array.isArray(def.columns)?def.columns:[]);
   const format=String(req.query.format||def.default_format||"pdf").toLowerCase();const base=slugify(def.name)||"vir-report";
-  if(format==="xlsx"){const wb=XLSX.utils.book_new(),ws=XLSX.utils.json_to_sheet(rows);XLSX.utils.book_append_sheet(wb,ws,"Riport");const buf=XLSX.write(wb,{type:"buffer",bookType:"xlsx"}) as Buffer;res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");res.setHeader("Content-Disposition",`attachment; filename=${base}.xlsx`);return res.send(buf)}
+  if(format==="xlsx"){const buf=await rowsToXlsxBuffer(rows,"Riport");res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");res.setHeader("Content-Disposition",`attachment; filename=${base}.xlsx`);return res.send(buf)}
   const pdf=await genericPdf(def.name,rows);res.setHeader("Content-Type","application/pdf");res.setHeader("Content-Disposition",`attachment; filename=${base}.pdf`);res.send(pdf);
 }catch(e){next(e)}});
 

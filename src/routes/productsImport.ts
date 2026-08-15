@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import multer from "multer";
-import * as XLSX from "xlsx";
+import { readFirstSheetRows } from "../utils/excel";
 import pool from "../db";
 import { classifyProduct, TAXONOMY_VERSION, normalizeTaxonomyText } from "../inventory/productTaxonomy";
 import { ensureProductTaxonomySchema, ensureTaxonomyNodes } from "../inventory/ensureProductTaxonomy";
@@ -37,10 +37,7 @@ router.post("/import/altegio", upload.single("file"), async (req: Request, res: 
   if (!req.file?.buffer) return res.status(400).json({ error: "Az Excel fájl feltöltése kötelező." });
   let raw: Record<string, unknown>[] = [];
   try {
-    const wb = XLSX.read(req.file.buffer, { type: "buffer", cellDates: false });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    if (!ws) return res.status(400).json({ error: "Az Excel munkafüzet üres." });
-    raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: null, raw: true });
+    raw = await readFirstSheetRows<Record<string, unknown>>(req.file.buffer, { defval: null, raw: true });
     if (!raw.length) return res.status(400).json({ error: "Az Excel nem tartalmaz termékadatot." });
   } catch (e: any) {
     return res.status(400).json({ error: "Az Altegio termék Excel nem olvasható.", detail: e?.message });
