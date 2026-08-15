@@ -71,6 +71,9 @@ jobs:
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add package-lock.json
             git commit -m 'security: normalize backend lockfile'
-            git pull --rebase origin agent/ci-final-hardening-20260815
+            git reset --hard HEAD
+            git clean -fd
+            git fetch origin agent/ci-final-hardening-20260815
+            git rebase origin/agent/ci-final-hardening-20260815
             git push origin HEAD:agent/ci-final-hardening-20260815
           fi
