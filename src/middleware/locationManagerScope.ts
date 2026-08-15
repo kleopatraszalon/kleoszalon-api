@@ -16,6 +16,7 @@ export type LocationScopeKind =
 function normalizeRole(value:string){
   const role=value.trim().toLowerCase();
   if(["üzletvezető","uzletvezeto","store_manager","branch_manager"].includes(role)) return "location_manager";
+  if(["administrator","rendszergazda","superadmin","super_admin"].includes(role)) return "admin";
   return role;
 }
 
@@ -32,10 +33,42 @@ function roleKeys(req:AuthRequest):string[]{
 }
 
 function isLocationManager(req:AuthRequest){return roleKeys(req).includes("location_manager");}
+function isGlobalManager(req:AuthRequest){const roles=roleKeys(req);return roles.includes("admin")||roles.includes("manager");}
+function canManageEmployees(req:AuthRequest){return isGlobalManager(req)||isLocationManager(req);}
 function ownLocation(req:AuthRequest){return req.user?.location_id==null?"":String(req.user.location_id).trim();}
 function isId(value:string){return /^[0-9a-f-]{8,}$/i.test(value)||/^\d+$/.test(value);}
 function pathParts(req:AuthRequest){return String(req.path||"").split("/").filter(Boolean);}
 function sameLocation(value:unknown,locationId:string){return String(value??"")===locationId;}
+
+function safeEmployeeRow(row:any){
+  if(!row||typeof row!=="object") return row;
+  return {
+    id:row.id,
+    location_id:row.location_id,
+    location_name:row.location_name,
+    full_name:row.full_name,
+    first_name:row.first_name,
+    last_name:row.last_name,
+    email:row.email,
+    phone:row.phone,
+    position_id:row.position_id,
+    position_name:row.position_name,
+    photo_url:row.photo_url,
+    active:row.active,
+  };
+}
+
+function safePositionRow(row:any){
+  if(!row||typeof row!=="object") return row;
+  return {
+    id:row.id,
+    name:row.name,
+    code:row.code,
+    description:row.description,
+    is_active:row.is_active,
+    employee_count:row.employee_count,
+  };
+}
 
 function forceLocation(req:AuthRequest,locationId:string){
   (req.query as any).location_id=locationId;
@@ -103,6 +136,33 @@ function sanitizeCreatedEmployee(req:AuthRequest,locationId:string){
 async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:LocationScopeKind){
   try{
     softenChecklistMy(req,res,kind);
+
+    if(kind==="employees"){
+      const parts=pathParts(req);
+      const manager=canManageEmployees(req);
+      const isWrite=req.method!=="GET"&&req.method!=="HEAD"&&req.method!=="OPTIONS";
+      const sensitiveRead=parts[0]==="duplicates"||parts[1]==="wages";
+
+      if((isWrite||sensitiveRead)&&!manager){
+        return res.status(403).json({error:"Dolgozói, bér- és HR-adatok módosítása csak vezetői jogosultsággal végezhető."});
+      }
+
+      // Ordinary authenticated staff may need a staff picker, but never payroll,
+      // login or role metadata. Scope such reads to the user's own salon.
+      if(!manager&&req.method==="GET"&&parts.length===0){
+        const locationId=ownLocation(req);
+        if(!locationId)return res.status(403).json({error:"A felhasználói fiókhoz nincs telephely rendelve."});
+        transformJson(res,(body:any)=>Array.isArray(body)?body.filter((row:any)=>sameLocation(row?.location_id,locationId)).map(safeEmployeeRow):body);
+      }
+      if(!manager&&req.method==="GET"&&parts.length===1&&parts[0]==="positions"){
+        transformJson(res,(body:any)=>Array.isArray(body)?body.map(safePositionRow):body);
+      }
+      if(!manager&&req.method==="GET"&&parts[0]&&isId(parts[0])){
+        const locationId=ownLocation(req);
+        if(!locationId||!(await entityInLocation("employees",parts[0],locationId)))return res.status(404).json({error:"A munkatárs nem ehhez az üzlethez tartozik."});
+      }
+    }
+
     if(!isLocationManager(req)) return next();
     const locationId=ownLocation(req);
     if(!locationId) return res.status(403).json({error:"Az üzletvezetői fiókhoz nincs telephely rendelve."});

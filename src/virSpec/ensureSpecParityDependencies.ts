@@ -1,5 +1,6 @@
 import pool from "../db";
 import { ensureRuntimeSettingsSchema, hydrateRuntimeSettings } from "../services/virRuntimeSettings";
+import { ensureVirPerformanceIndexes } from "../performance/ensureVirPerformanceIndexes";
 
 let ensurePromise: Promise<void> | null = null;
 
@@ -104,6 +105,9 @@ export function ensureSpecParityDependencies(): Promise<void> {
       .then(async () => {
         await ensureRuntimeSettingsSchema();
         await hydrateRuntimeSettings();
+        // Performance tuning must never make startup fail: each optional legacy
+        // table/index is checked and isolated by ensureVirPerformanceIndexes.
+        await ensureVirPerformanceIndexes();
       })
       .then(() => undefined)
       .catch((error) => {
