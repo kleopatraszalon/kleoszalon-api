@@ -42,7 +42,10 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     }
 
     const requestedEmployee=String(req.query.employee_id||'').trim();
-    const key=`${locationId}:${requestedEmployee||'-'}`;
+    // Cache entries must be authorization-scope specific. Without the scope
+    // discriminator an admin response could be served to a receptionist or
+    // location manager who happens to request the same location/employee.
+    const key=`${admin?'admin':'scoped'}:${locationId}:${requestedEmployee||'-'}`;
     const cached=cache.get(key);
     if(cached&&cached.expires>Date.now()){
       const locations=await locationsPromise;
