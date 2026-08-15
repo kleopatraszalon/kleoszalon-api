@@ -12,6 +12,9 @@ let workOrderColumnsCache:Timed<Set<string>>|null=null;
 async function relationExists(name:string){const now=Date.now(),cached=relationCache.get(name);if(cached&&cached.expiresAt>now)return cached.value;const q=await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${name}`]);const value=Boolean(q.rows[0]?.ok);relationCache.set(name,{value,expiresAt:now+META_TTL_MS});return value}
 async function workOrderColumns(){const now=Date.now();if(workOrderColumnsCache&&workOrderColumnsCache.expiresAt>now)return workOrderColumnsCache.value;const q=await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders'`);const value=new Set<string>(q.rows.map((r:any)=>String(r.column_name)));workOrderColumnsCache={value,expiresAt:now+META_TTL_MS};return value}
 const positiveInt=(raw:any,fallback:number,max:number)=>{const n=Number.parseInt(String(raw??''),10);return Number.isFinite(n)&&n>0?Math.min(n,max):fallback};
+type WorkOrderGroup='all'|'new'|'open'|'closed';
+const groupOf=(raw:any):WorkOrderGroup=>{const value=String(raw||'all').toLowerCase();return value==='new'||value==='open'||value==='closed'?value:'all'};
+const groupSql=(group:WorkOrderGroup,alias='w')=>group==='new'?`${alias}.status='waiting'`:group==='open'?`${alias}.status IN ('arrived','in_progress')`:group==='closed'?`COALESCE(${alias}.status,'') NOT IN ('waiting','arrived','in_progress')`:'TRUE';
 
 router.get('/',async(req,res,next)=>{try{
   const locationId=String(req.query.location_id||'').trim();
@@ -22,10 +25,12 @@ router.get('/',async(req,res,next)=>{try{
     ?`SELECT v.*,w.work_order_number,w.locked_at,w.archived_at,w.archive_hash,w.location_id,w.appointment_id FROM v_work_orders_list v JOIN work_orders w ON w.id=v.id WHERE ${baseWhere}`
     :`SELECT w.* FROM work_orders w WHERE ${baseWhere}`;
   if(!paginated){const{rows}=await db.query(`${selectSql} ORDER BY ${hasView?'v':'w'}.created_at DESC`,[locationId]);return res.json(rows)}
-  const page=positiveInt(req.query.page,1,1000000),limit=positiveInt(req.query.limit,50,200),offset=(page-1)*limit;
-  const count=(await db.query(`SELECT COUNT(*)::int total FROM work_orders w WHERE ${baseWhere}`,[locationId])).rows[0]?.total||0;
-  const{rows}=await db.query(`${selectSql} ORDER BY ${hasView?'v':'w'}.created_at DESC LIMIT $2 OFFSET $3`,[locationId,limit,offset]);
-  res.json({items:rows,page,limit,total:count,total_pages:Math.max(1,Math.ceil(count/limit))})
+  const group=groupOf(req.query.group),page=positiveInt(req.query.page,1,1000000),limit=positiveInt(req.query.limit,50,200),offset=(page-1)*limit;
+  const countRow=(await db.query(`SELECT COUNT(*)::int all_count,COUNT(*) FILTER(WHERE w.status='waiting')::int new_count,COUNT(*) FILTER(WHERE w.status IN ('arrived','in_progress'))::int open_count,COUNT(*) FILTER(WHERE COALESCE(w.status,'') NOT IN ('waiting','arrived','in_progress'))::int closed_count FROM work_orders w WHERE ${baseWhere}`,[locationId])).rows[0]||{};
+  const counts={all:Number(countRow.all_count||0),new:Number(countRow.new_count||0),open:Number(countRow.open_count||0),closed:Number(countRow.closed_count||0)};
+  const total=counts[group];
+  const{rows}=await db.query(`${selectSql} AND ${groupSql(group)} ORDER BY ${hasView?'v':'w'}.created_at DESC LIMIT $2 OFFSET $3`,[locationId,limit,offset]);
+  res.json({items:rows,page,limit,total,total_pages:Math.max(1,Math.ceil(total/limit)),group,counts})
 }catch(e){next(e)}});
 router.get('/:id/archive',async(req,res,next)=>{try{const{rows}=await db.query(`SELECT id,work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash FROM work_order_archive WHERE work_order_id=$1::uuid`,[req.params.id]);if(!rows[0])return res.status(404).json({message:'Ehhez a munkalaphoz még nincs lezárt archív példány.'});res.json(rows[0])}catch(e){next(e)}});
 router.get('/:id',async(req,res,next)=>{try{const hasView=await relationExists('v_work_order_details');let header:any;if(hasView)header=(await db.query(`SELECT v.*,w.work_order_number,w.source_created_at,w.source_snapshot,w.locked_at,w.locked_reason,w.archived_at,w.archive_hash,w.location_id,w.appointment_id,w.client_id FROM v_work_order_details v JOIN work_orders w ON w.id=v.id WHERE v.id=$1::uuid`,[req.params.id])).rows[0];else header=(await db.query(`SELECT * FROM work_orders WHERE id=$1::uuid`,[req.params.id])).rows[0];if(!header)return res.status(404).json({message:'A munkalap nem található'});const items=(await db.query(`SELECT * FROM work_order_items WHERE work_order_id=$1::uuid ORDER BY created_at`,[req.params.id])).rows;const payments=(await db.query(`SELECT * FROM work_order_payments WHERE work_order_id=$1::uuid ORDER BY paid_at`,[req.params.id]).catch(()=>({rows:[]} as any))).rows;res.json({...header,items,payments})}catch(e){next(e)}});

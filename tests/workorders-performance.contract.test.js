@@ -9,7 +9,7 @@ const migration = fs.readFileSync(path.join(__dirname, '..', 'src', 'sql', '2026
 test('workorders route keeps legacy response and exposes opt-in pagination', () => {
   assert.match(route, /req\.query\.paginated/);
   assert.match(route, /if\(!paginated\).*res\.json\(rows\)/s);
-  assert.match(route, /items:rows,page,limit,total:count,total_pages/);
+  assert.match(route, /items:rows,page,limit,total,total_pages/);
   assert.match(route, /Math\.min\(n,max\)/);
 });
 
@@ -24,7 +24,16 @@ test('workorders metadata checks use TTL cache', () => {
 test('workorders pagination is bounded and uses database limit and offset', () => {
   assert.match(route, /positiveInt\(req\.query\.limit,50,200\)/);
   assert.match(route, /LIMIT \$2 OFFSET \$3/);
-  assert.match(route, /COUNT\(\*\)::int total FROM work_orders/);
+  assert.match(route, /COUNT\(\*\)::int all_count/);
+});
+
+test('paginated workorders support server-side status groups and full-set counters', () => {
+  assert.match(route, /type WorkOrderGroup='all'\|'new'\|'open'\|'closed'/);
+  assert.match(route, /groupOf\(req\.query\.group\)/);
+  assert.match(route, /COUNT\(\*\) FILTER\(WHERE w\.status='waiting'\)::int new_count/);
+  assert.match(route, /COUNT\(\*\) FILTER\(WHERE w\.status IN \('arrived','in_progress'\)\)::int open_count/);
+  assert.match(route, /closed:Number\(countRow\.closed_count\|\|0\)/);
+  assert.match(route, /group,counts/);
 });
 
 test('workorder list migration covers global and location ordered queries', () => {
