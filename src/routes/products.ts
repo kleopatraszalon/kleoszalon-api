@@ -17,12 +17,37 @@ router.use(requireAuth);
 router.use(requireMenuPermissionByMethod("masterdata.products"));
 router.use(productsImportRouter);
 
+const META_CACHE_TTL_MS = 5 * 60 * 1000;
+type Cached<T> = { value: T; expiresAt: number };
+const columnCache = new Map<string, Cached<Set<string>>>();
+let stockTableCache: Cached<boolean> | null = null;
+
 async function cols(table: string) {
+  const now = Date.now();
+  const cached = columnCache.get(table);
+  if (cached && cached.expiresAt > now) return cached.value;
   const r = await pool.query(
     `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
     [table],
   );
-  return new Set(r.rows.map((x: any) => x.column_name));
+  const value = new Set<string>(r.rows.map((x: any) => x.column_name));
+  columnCache.set(table, { value, expiresAt: now + META_CACHE_TTL_MS });
+  return value;
+}
+
+async function hasStockBalancesTable() {
+  const now = Date.now();
+  if (stockTableCache && stockTableCache.expiresAt > now) return stockTableCache.value;
+  const stock = await pool.query(`SELECT to_regclass('public.product_stock_balances') IS NOT NULL ok`);
+  const value = Boolean(stock.rows[0]?.ok);
+  stockTableCache = { value, expiresAt: now + META_CACHE_TTL_MS };
+  return value;
+}
+
+function positiveInt(value: unknown, fallback: number, max: number) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
 }
 
 function map(r: any) {
@@ -96,17 +121,80 @@ router.get("/", async (req: Request, res: Response) => {
   try {
     await ensureProductTaxonomyReady();
     const pc = await cols("products");
+    const includeInactive = String(req.query.include_inactive || "") === "1";
+    const hasStock = await hasStockBalancesTable();
+    const paginated = String(req.query.paginated || "") === "1";
+
+    if (paginated) {
+      const page = positiveInt(req.query.page, 1, 1_000_000);
+      const limit = positiveInt(req.query.limit, 100, 200);
+      const offset = (page - 1) * limit;
+      const q = String(req.query.q || "").trim().slice(0, 120);
+      const values: any[] = [];
+      const filters: string[] = [];
+
+      if (pc.has("is_active") && !includeInactive) filters.push(`COALESCE(p.is_active,true)=true`);
+      if (q) {
+        values.push(`%${q}%`);
+        const searchParam = `$${values.length}::text`;
+        const searchable = ["name", "internal_code", "barcode", "brand", "line_name"].filter((name) => pc.has(name));
+        if (searchable.length) {
+          filters.push(`(${searchable.map((name) => `COALESCE(p.${name}::text,'') ILIKE ${searchParam}`).join(" OR ")})`);
+        }
+      }
+      const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+      const countValues = [...values];
+      const totalResult = await pool.query(`SELECT COUNT(*)::int AS total FROM products p ${where}`, countValues);
+
+      values.push(limit);
+      const limitParam = `$${values.length}::int`;
+      values.push(offset);
+      const offsetParam = `$${values.length}::int`;
+      const stockJoin = hasStock
+        ? `LEFT JOIN (
+            SELECT psb.product_id, SUM(psb.quantity)::numeric AS available_stock
+            FROM product_stock_balances psb
+            JOIN page_products selected ON selected.id=psb.product_id
+            GROUP BY psb.product_id
+          ) sb ON sb.product_id=p.id`
+        : "";
+      const stockSel = hasStock
+        ? `,sb.available_stock,sb.available_stock stock_quantity`
+        : `,NULL::numeric available_stock,NULL::numeric stock_quantity`;
+      const sql = `
+        WITH page_products AS (
+          SELECT p.id
+          FROM products p
+          LEFT JOIN product_groups g0 ON g0.id=p.product_group_id
+          LEFT JOIN product_categories c0 ON c0.id=p.product_category_id
+          ${where}
+          ORDER BY COALESCE(g0.sort_order,999),COALESCE(c0.sort_order,999),p.name,p.id
+          LIMIT ${limitParam} OFFSET ${offsetParam}
+        )
+        ${productSelect(stockSel)}
+        JOIN page_products selected_page ON selected_page.id=p.id
+        ${stockJoin}
+        ORDER BY COALESCE(g.sort_order,999),COALESCE(c.sort_order,999),p.name,p.id
+      `;
+      const { rows } = await pool.query(sql, values);
+      return res.json({
+        items: rows.map(map),
+        total: Number(totalResult.rows[0]?.total || 0),
+        page,
+        limit,
+      });
+    }
+
     const active = pc.has("is_active") ? `WHERE ($1::boolean) OR COALESCE(p.is_active,true)=true` : "";
-    const stock = await pool.query(`SELECT to_regclass('public.product_stock_balances') IS NOT NULL ok`);
-    const stockJoin = stock.rows[0]?.ok
+    const stockJoin = hasStock
       ? `LEFT JOIN (SELECT product_id,SUM(quantity)::numeric available_stock FROM product_stock_balances GROUP BY product_id) sb ON sb.product_id=p.id`
       : "";
-    const stockSel = stock.rows[0]?.ok
+    const stockSel = hasStock
       ? `,sb.available_stock,sb.available_stock stock_quantity`
       : `,NULL::numeric available_stock,NULL::numeric stock_quantity`;
     const sql = `${productSelect(stockSel)} ${stockJoin} ${active}
       ORDER BY COALESCE(g.sort_order,999),COALESCE(c.sort_order,999),p.name`;
-    const { rows } = await pool.query(sql, pc.has("is_active") ? [String(req.query.include_inactive || "") === "1"] : []);
+    const { rows } = await pool.query(sql, pc.has("is_active") ? [includeInactive] : []);
     res.json(rows.map(map));
   } catch (err: any) {
     console.error("GET /products hiba:", err);
