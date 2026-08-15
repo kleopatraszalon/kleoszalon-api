@@ -1,0 +1,55 @@
+name: VIR release candidate gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/vir-release-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-build-rbac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Full contract regression suite
+        run: npm test
+
+      - name: TypeScript production build
+        run: npm run build
+
+      - name: Critical workorder and RBAC regression subset
+        run: npm run test:workorders
+
+  production-baseline-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: API liveness
+        run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/health
+
+      - name: Public daily actions integration
+        run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/daily-actions
+
+      - name: Public booking integration
+        run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/booking/config
