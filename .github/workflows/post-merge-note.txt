@@ -1,1 +1,0 @@
-Post-merge verification is enforced by the VIR release candidate gate on pushes to main.
