@@ -52,4 +52,4 @@ jobs:
         run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/daily-actions
 
       - name: Public booking integration
-        run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/booking/config
+        run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/booking/health
