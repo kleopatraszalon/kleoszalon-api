@@ -2,6 +2,7 @@ import {Router} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {hasAnyRole} from '../security/roles';
+import {recordWorkOrderArrival} from '../services/clientLateness';
 
 const router=Router();
 router.use(requireAuth);
@@ -28,8 +29,6 @@ async function workOrderColumnTypes(){
   return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]));
 }
 
-// Accounting gets an intentionally separate work-order projection. Only completed AND archived/locked
-// records are ever returned, and the projection is always read-only.
 router.get('/dashboard/summary',async(req:AuthRequest,res,next)=>{
   if(!isAccounting(req.user?.role))return next();
   try{
@@ -74,7 +73,6 @@ router.get('/',async(req:AuthRequest,res,next)=>{
   }catch(error){return next(error)}
 });
 
-// Protect direct and nested /workorders/:id/... URLs too; hiding rows in the list is not a security boundary.
 router.use('/:id',async(req:AuthRequest,res,next)=>{
   if(!isAccounting(req.user?.role)||!uuidLike(String(req.params.id||'')))return next();
   try{
@@ -125,7 +123,12 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     if(isTimestamp(types.get('updated_at')||''))sets.push('updated_at=now()');
 
     const updated=(await db.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id::text=$1 RETURNING *`,[req.params.id,requested])).rows[0];
-    return res.json({...updated,hotfix:true});
+    let lateness:any=null;
+    if(requested==='arrived'||requested==='in_progress'){
+      try{lateness=await recordWorkOrderArrival(String(req.params.id))}
+      catch(error:any){console.warn('[workorders-lifecycle-hotfix] lateness tracking skipped',error?.code||'',error?.message||error)}
+    }
+    return res.json({...updated,hotfix:true,lateness});
   }catch(e:any){
     const code=String(e?.code||'');
     console.error('[workorders-lifecycle-hotfix] failed',code,e?.table||'',e?.column||'',e?.constraint||'',e?.message||e);
