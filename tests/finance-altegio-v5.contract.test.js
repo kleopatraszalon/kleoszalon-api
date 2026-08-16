@@ -4,6 +4,7 @@ const schema=fs.readFileSync(path.join(__dirname,'../src/sql/20260813_FINANCE_AL
 const tx=fs.readFileSync(path.join(__dirname,'../src/routes/transactions.ts'),'utf8');
 const menu=fs.readFileSync(path.join(__dirname,'../src/finance/ensureFinanceV5Menu.ts'),'utf8');
 const bootstrap=fs.readFileSync(path.join(__dirname,'../src/finance/ensureFinanceNav.ts'),'utf8');
+const integrity=fs.readFileSync(path.join(__dirname,'../src/finance/financialIntegrity.ts'),'utf8');
 
 test('finance v5 schema covers Altegio-style master and transaction data',()=>{
   for(const name of ['finance_partners','finance_payment_methods','finance_documents','finance_settings_v5','financial_accounts','financial_movements'])assert.match(schema,new RegExp(name));
@@ -13,7 +14,7 @@ test('finance v5 schema covers Altegio-style master and transaction data',()=>{
 
 test('finance v5 api covers accounts partners transactions documents reports and settings',()=>{
   for(const endpoint of ['/dashboard','/accounts','/transfers','/partners','/categories','/payment-methods','/movements','/documents','/reports/pl','/reports/daily-cash','/settings','/online-payment'])assert.ok(route.includes(`"${endpoint}`),endpoint);
-  assert.match(route,/fee_movement/);assert.match(route,/\/movements\/:id\/cancel/);assert.match(route,/payment_status='cancelled'/);
+  assert.match(route,/fee_movement/);assert.match(route,/\/movements\/:id\/cancel/);assert.match(integrity,/payment_status='cancelled'/);
   assert.match(route,/finance_v5_forbidden/);assert.match(route,/location_manager/);assert.match(route,/receptionist/);
 });
 
