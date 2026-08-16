@@ -29,6 +29,16 @@ test('critical business tables are tenant-backfilled before scoped access', () =
   assert.match(source, /SET tenant_id=l\.tenant_id/);
 });
 
+test('child business and CRM tables inherit tenant ownership from parents', () => {
+  const source = read('src/saas/ensureTenantIsolation.ts');
+  for (const table of ['appointment_services', 'work_order_items', 'crm_client_tags', 'crm_client_notes', 'crm_form_responses', 'crm_consent_history', 'work_shifts']) {
+    assert.ok(source.includes(`table: "${table}"`), `${table} missing from child tenant propagation`);
+  }
+  assert.match(source, /SET tenant_id=p\.tenant_id/);
+  assert.match(source, /crm_tags_tenant_name_uq/);
+  assert.match(source, /crm_forms_tenant_title_uq/);
+});
+
 test('location manager scope enforces tenant boundary before legacy location rules', () => {
   const source = read('src/middleware/locationManagerScope.ts');
   assert.match(source, /ensureTenantIsolation\(\)/);
@@ -55,6 +65,14 @@ test('tenant access helper only permits an allowlisted business table set', () =
   assert.match(source, /const allowed = new Set/);
   assert.match(source, /if \(!allowed\.has\(table\)\) return false/);
   assert.match(source, /e\.tenant_id=\$2::bigint OR l\.tenant_id=\$2::bigint/);
+});
+
+test('subscription feature resolver supports plan features, all_modules and tenant overrides', () => {
+  const source = read('src/saas/tenantAccess.ts');
+  assert.match(source, /tenantFeatureEnabled/);
+  assert.match(source, /sp\.features->>'all_modules'/);
+  assert.match(source, /LEFT JOIN tenant_features tf/);
+  assert.match(source, /COALESCE\(tf\.enabled/);
 });
 
 test('dashboard aggregates and counts are scoped inside SQL by tenant', () => {
