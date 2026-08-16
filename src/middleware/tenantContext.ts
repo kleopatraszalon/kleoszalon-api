@@ -17,8 +17,9 @@ export async function requireTenantContext(req: TenantAuthRequest, res: Response
   try {
     await ensureSaasCore();
 
-    const tokenTenantId = req.user?.tenant_id ? String(req.user.tenant_id) : "";
-    const userId = req.user?.id != null ? String(req.user.id) : "";
+    const authUser = req.user as (NonNullable<AuthRequest["user"]> & { tenant_id?: string | number | null }) | undefined;
+    const tokenTenantId = authUser?.tenant_id ? String(authUser.tenant_id) : "";
+    const userId = authUser?.id != null ? String(authUser.id) : "";
 
     const { rows } = await db.query(
       `SELECT t.id::text AS id,t.slug,t.name,t.status,tu.tenant_role
@@ -47,7 +48,7 @@ export async function requireTenantContext(req: TenantAuthRequest, res: Response
            FROM tenants t
           WHERE t.slug='kleopatra' AND t.status IN ('active','trial')
           LIMIT 1`,
-        [userId, Array.isArray(req.user?.role) ? req.user?.role.join(',') : String(req.user?.role ?? '')]
+        [userId, Array.isArray(authUser?.role) ? authUser?.role.join(',') : String(authUser?.role ?? '')]
       );
       tenant = fallback.rows[0];
     }
@@ -68,7 +69,7 @@ export async function requireTenantContext(req: TenantAuthRequest, res: Response
       status: String(tenant.status),
     };
 
-    if (req.user) req.user.tenant_id = req.tenant.id;
+    if (authUser) authUser.tenant_id = req.tenant.id;
     return next();
   } catch (error) {
     console.error("[SAAS] tenant context error:", error);
