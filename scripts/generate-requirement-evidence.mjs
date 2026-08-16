@@ -11,11 +11,14 @@ const actor=process.env.GITHUB_ACTOR||process.env.USER||'ci-runner';
 const runId=process.env.GITHUB_RUN_ID||null;
 const runUrl=runId&&process.env.GITHUB_SERVER_URL&&process.env.GITHUB_REPOSITORY?`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}`:null;
 const generatedAt=new Date().toISOString();
-const evidence=(automation.entries||[]).map(entry=>({
+const inlineEntries=(automation.entries||[]).filter(entry=>(entry.evidence_mode||'inline-ci')==='inline-ci');
+const externalEntries=(automation.entries||[]).filter(entry=>entry.evidence_mode==='external-workflow');
+const evidence=inlineEntries.map(entry=>({
   requirement_id:entry.criterion_id.replace(/-AC-\d{2}$/,''),
   acceptance_criteria_id:entry.criterion_id,
   test_case_id:`TC-${entry.criterion_id}`,
   execution_type:entry.execution_type,
+  evidence_mode:'inline-ci',
   result:'passed',
   build_ref:buildRef,
   environment,
@@ -24,7 +27,7 @@ const evidence=(automation.entries||[]).map(entry=>({
   evidence_ref:runUrl||`ci:${buildRef}`,
   evidence_payload:{test_ref:entry.test_ref,github_run_id:runId,repository:process.env.GITHUB_REPOSITORY||null}
 }));
-const payload={schema_version:'1.0.0',baseline_id:'KLEO-SRS-V2-TESTABLE-BASELINE+KLEO-VIR-OPERATIONAL-SUPPLEMENT-2026-08-16',build_ref:buildRef,environment,generated_at:generatedAt,generated_by:actor,automated_passed:evidence.length,evidence};
+const payload={schema_version:'1.1.0',baseline_id:'KLEO-SRS-V2-TESTABLE-BASELINE+KLEO-VIR-OPERATIONAL-SUPPLEMENT-2026-08-16+KLEO-VIR-INVENTORY-SUPPLEMENT-2026-08-16',build_ref:buildRef,environment,generated_at:generatedAt,generated_by:actor,automated_registered:(automation.entries||[]).length,inline_automated_passed:evidence.length,external_workflow_registered:externalEntries.length,evidence};
 const dir=path.join(root,'artifacts');fs.mkdirSync(dir,{recursive:true});
 const out=path.join(dir,'requirements-evidence.json');fs.writeFileSync(out,JSON.stringify(payload,null,2)+'\n','utf8');
-console.log(`Requirement evidence: ${evidence.length} passed automation records -> ${path.relative(root,out)}`);
+console.log(`Requirement inline evidence: ${evidence.length} passed records; external workflow records: ${externalEntries.length} -> ${path.relative(root,out)}`);

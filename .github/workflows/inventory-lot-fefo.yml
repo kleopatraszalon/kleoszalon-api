@@ -50,3 +50,13 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/workorder_stage10_supply_schema.sql
       - name: Run lot expiry FEFO integration
         run: node tests/inventory_lot_fefo.integration.js
+      - name: Generate FEFO requirement evidence
+        if: success()
+        run: node scripts/generate-fefo-requirement-evidence.mjs
+      - name: Upload FEFO requirement evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-fefo-${{ github.sha }}
+          path: artifacts/requirements-evidence-fefo.json
+          retention-days: 90
