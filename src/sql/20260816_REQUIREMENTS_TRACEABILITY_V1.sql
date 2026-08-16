@@ -21,7 +21,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_uat_test_cases_requirement_id ON uat_test_c
 CREATE INDEX IF NOT EXISTS ix_uat_test_cases_priority ON uat_test_cases(priority) WHERE active=true;
 
 DO $$
-DECLARE settings_id uuid;
+DECLARE settings_id bigint;
 BEGIN
  SELECT id INTO settings_id FROM menus WHERE code='settings' LIMIT 1;
  IF settings_id IS NOT NULL THEN
