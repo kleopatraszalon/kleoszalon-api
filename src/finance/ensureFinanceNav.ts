@@ -55,6 +55,7 @@ export function ensureFinanceNav(){
         '20260814_FINANCE_V5_PREFLIGHT_C_LEDGER.sql',
         '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260816_FINANCIAL_INTEGRITY_V1.sql',
+        '20260816_DAY_CLOSE_GUARD_V1.sql',
         // UAT core tables must exist before requirements traceability/evidence migrations.
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
