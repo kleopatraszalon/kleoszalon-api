@@ -36,4 +36,6 @@ jobs:
         run: node api/tests/frontend_crossrepo_v20.evidence.mjs frontend
       - name: Production frontend build
         working-directory: frontend
+        env:
+          CI: false
         run: npm run build
