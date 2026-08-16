@@ -14,9 +14,9 @@ export async function ensureMenuHealth(){
     SELECT 'settings.gdpr','GDPR-központ','ShieldCheck','/admin/gdpr',210,p.id,'audit',true FROM p
     ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='audit',is_active=true`);
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
-    SELECT r.role_key,m.id,true,true,true,false,(r.role_key='admin'),true,false,(r.role_key='admin'),'all_locations',now()
+    SELECT r.role_key,m.id,true,true,true,(r.role_key='admin'),(r.role_key='admin'),true,false,(r.role_key='admin'),'all_locations',now()
     FROM (VALUES('admin'),('manager')) r(role_key) CROSS JOIN menus m WHERE m.code='settings.gdpr'
-    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=false,can_approve=(lower(role_menu_permissions.role_key)='admin'),can_export=true,scope_type='all_locations',updated_at=now()`);
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_delete=(lower(role_menu_permissions.role_key)='admin'),can_approve=(lower(role_menu_permissions.role_key)='admin'),can_export=true,scope_type='all_locations',updated_at=now()`);
 
   await safe(`WITH p AS (SELECT id FROM menus WHERE code='customers' LIMIT 1)
     INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
