@@ -3,10 +3,12 @@ import db from "../db";
 import { requireAuth } from "../middleware/auth";
 import { requireTenantContext, requireTenantRole, TenantAuthRequest } from "../middleware/tenantContext";
 import franchiseFinanceRouter from "./franchiseFinance";
+import franchiseAccountingRouter from "./franchiseAccounting";
 
 const router = Router();
 router.use(requireAuth, requireTenantContext);
 router.use("/franchise-finance",franchiseFinanceRouter);
+router.use("/franchise-accounting",franchiseAccountingRouter);
 
 router.get("/context", async (req: TenantAuthRequest, res: Response) => {
   try {
