@@ -21,12 +21,14 @@ test('location managers remain strictly scoped to their own employee records', (
   assert.match(src, /req\.body\.records=req\.body\.records\.map/);
 });
 
-test('workorder editor cache is authorization-scope aware', () => {
+test('workorder editor cache is authorization-scope aware and keeps the optimized bounded TTL', () => {
   const src = read('src/routes/workOrderEditorFast.ts');
   assert.match(src, /admin\?'admin':'scoped'/);
   assert.doesNotMatch(src, /const key=`\$\{locationId\}:\$\{requestedEmployee/);
   assert.match(src, /Promise\.all/);
-  assert.match(src, /TTL_MS=10000/);
+  assert.match(src, /const TTL_MS=5\*60\*1000/);
+  assert.match(src, /const LOCATION_TTL_MS=5\*60\*1000/);
+  assert.match(src, /cache\.set\(key,\{expires:Date\.now\(\)\+TTL_MS,value\}\)/);
 });
 
 test('critical transaction routes remain authenticated and management actions stay protected', () => {
