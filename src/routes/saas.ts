@@ -110,7 +110,7 @@ router.post(
     const networkId = String(req.params.networkId || "").trim();
     const locationId = String(req.body?.location_id || "").trim();
     const memberType = req.body?.member_type === "owned" ? "owned" : "franchise";
-    if (!/^\d+$/.test(networkId) || !/^\d+$/.test(locationId)) {
+    if (!/^\d+$/.test(networkId) || !locationId || locationId.length > 128) {
       return res.status(400).json({ ok: false, error: "Érvénytelen hálózat- vagy telephelyazonosító." });
     }
 
@@ -132,7 +132,7 @@ router.post(
       const { rows } = await db.query(
         `INSERT INTO franchise_members
            (tenant_id,franchise_network_id,location_id,member_type,agreement_number,agreement_start,agreement_end,royalty_percent,marketing_fee_percent)
-         VALUES ($1::bigint,$2::bigint,$3::bigint,$4,$5,$6::date,$7::date,$8,$9)
+         VALUES ($1::bigint,$2::bigint,$3,$4,$5,$6::date,$7::date,$8,$9)
          ON CONFLICT (franchise_network_id,location_id)
          DO UPDATE SET
            member_type=EXCLUDED.member_type,
@@ -171,7 +171,7 @@ router.get("/locations", async (req: TenantAuthRequest, res: Response) => {
               fm.franchise_network_id,fm.member_type,fn.name AS franchise_network_name
          FROM locations l
          LEFT JOIN franchise_members fm
-           ON fm.location_id::text=l.id::text
+           ON fm.location_id=l.id::text
           AND fm.tenant_id=$1::bigint
           AND fm.active=true
          LEFT JOIN franchise_networks fn
