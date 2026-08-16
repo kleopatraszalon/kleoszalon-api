@@ -7,9 +7,13 @@ const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 const sql=read('src/sql/20260816_ENTERPRISE_INTEGRITY_V7.sql');
 
-test('enterprise v16 is part of production finance bootstrap',()=>{
+test('enterprise v16 and marketing bridge are ordered in production finance bootstrap',()=>{
  const s=read('src/finance/ensureFinanceNav.ts');
- assert.match(s,/20260816_ENTERPRISE_INTEGRITY_V7\.sql/);
+ const bridge='20260816_ENTERPRISE_MARKETING_BRIDGE_V7A.sql';
+ const integrity='20260816_ENTERPRISE_INTEGRITY_V7.sql';
+ assert.ok(s.includes(bridge));assert.ok(s.includes(integrity));assert.ok(s.indexOf(bridge)<s.indexOf(integrity));
+ const b=read('src/sql/20260816_ENTERPRISE_MARKETING_BRIDGE_V7A.sql');
+ assert.match(b,/CREATE TABLE IF NOT EXISTS daily_action_campaigns/);
 });
 
 test('cross-tenant writes fail closed at database boundary',()=>{
