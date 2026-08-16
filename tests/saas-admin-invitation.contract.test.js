@@ -37,20 +37,20 @@ test('public activation is mounted before SaaS authentication guard',()=>{
 });
 
 test('activation is single-use and creates owner membership atomically with bcrypt password',()=>{
-  assert.match(service,/bcrypt\.hash\(password, 12\)/);
+  assert.match(service,/bcrypt\.hash\(password,\s*12\)/);
   assert.match(service,/SELECT i\.\*,t\.name tenant_name[\s\S]*FOR UPDATE/);
-  assert.match(service,/invite\.status !== "pending"/);
+  assert.match(service,/invite\.status\s*!==\s*"pending"/);
   assert.match(service,/INSERT INTO tenant_users/);
   assert.match(service,/tenant_role,active\) VALUES\(\$1,\$2,'owner',true\)/);
   assert.match(service,/status='accepted'/);
-  assert.match(service,/BEGIN/);
-  assert.match(service,/COMMIT/);
-  assert.match(service,/ROLLBACK/);
+  assert.match(service,/client\.query\("BEGIN"\)/);
+  assert.match(service,/client\.query\("COMMIT"\)/);
+  assert.match(service,/client\.query\("ROLLBACK"\)/);
 });
 
 test('invitation email uses shared mail transport and startup installs schemas',()=>{
   assert.match(service,/sendEmail/);
-  assert.match(service,/tenant-admin-activation\?token=/);
+  assert.match(service,/\/register\?tenant_invite=/);
   assert.match(bootstrap,/20260816_SAAS_ONBOARDING_V7\.sql/);
   assert.match(bootstrap,/20260816_SAAS_ADMIN_INVITATIONS_V8\.sql/);
   assert.match(migration,/CREATE TABLE IF NOT EXISTS tenant_admin_invitations/);
