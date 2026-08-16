@@ -2,6 +2,7 @@ import { NextFunction, Response, Router } from "express";
 import db from "../db";
 import { TenantAuthRequest } from "../middleware/tenantContext";
 import saasOnboardingRouter from "./saasOnboarding";
+import { issueTenantAdminInvitation, latestTenantAdminInvitation } from "../services/tenantAdminInvitations";
 
 const router = Router();
 
@@ -74,6 +75,34 @@ router.post("/tenants",async(req:TenantAuthRequest,res:Response)=>{
     await client.query("COMMIT");
     return res.status(201).json({ok:true,tenant:tenant.rows[0],plan:plan.rows[0]});
   }catch(error:any){await client.query("ROLLBACK").catch(()=>{});if(error?.code==="23505")return res.status(409).json({ok:false,error:"Ez a tenant slug már foglalt."});console.error("[SAAS PLATFORM] tenant create:",error);return res.status(500).json({ok:false,error:"A tenant nem hozható létre."});}finally{client.release();}
+});
+
+router.get("/tenants/:tenantId/admin-invitation",async(req:TenantAuthRequest,res:Response)=>{
+  const tenantId=String(req.params.tenantId||"").trim();
+  if(!/^\d+$/.test(tenantId))return res.status(400).json({ok:false,error:"Érvénytelen tenant azonosító."});
+  try{
+    const tenant=await db.query(`SELECT id FROM tenants WHERE id=$1::bigint LIMIT 1`,[tenantId]);
+    if(!tenant.rowCount)return res.status(404).json({ok:false,error:"A tenant nem található."});
+    return res.json({ok:true,invitation:await latestTenantAdminInvitation(tenantId)});
+  }catch(error){console.error("[SAAS PLATFORM] admin invitation status:",error);return res.status(500).json({ok:false,error:"Az admin meghívó állapota nem tölthető be."});}
+});
+
+router.post("/tenants/:tenantId/admin-invitation",async(req:TenantAuthRequest,res:Response)=>{
+  const tenantId=String(req.params.tenantId||"").trim();
+  const email=String(req.body?.email||"").trim().toLowerCase();
+  if(!/^\d+$/.test(tenantId))return res.status(400).json({ok:false,error:"Érvénytelen tenant azonosító."});
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return res.status(400).json({ok:false,error:"Érvénytelen admin e-mail cím."});
+  try{
+    const tenant=await db.query(`SELECT id::text,name FROM tenants WHERE id=$1::bigint LIMIT 1`,[tenantId]);
+    if(!tenant.rowCount)return res.status(404).json({ok:false,error:"A tenant nem található."});
+    const result=await issueTenantAdminInvitation({tenantId,email,tenantName:tenant.rows[0].name,invitedBy:String(req.user?.id||req.user?.email||"")||null});
+    await db.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'admin',$2,$3,$4::jsonb)`,[tenantId,result.existing_user?'existing_admin_assigned':'invitation_sent',String(req.user?.id||"")||null,JSON.stringify({email,invitation_id:result.invitation?.id||null,delivery:result.delivery||null})]);
+    return res.status(result.existing_user?200:201).json({ok:true,...result,message:result.existing_user?'A meglévő felhasználó tenant owner jogosultságot kapott.':'Az adminisztrátori meghívó elküldve.'});
+  }catch(error:any){
+    if(error?.code==="ADMIN_INVITE_EMAIL_FAILED")return res.status(503).json({ok:false,code:error.code,error:error.message});
+    if(error?.code==="INVALID_ADMIN_EMAIL")return res.status(400).json({ok:false,code:error.code,error:error.message});
+    console.error("[SAAS PLATFORM] admin invitation:",error);return res.status(500).json({ok:false,error:"Az admin meghívó nem hozható létre."});
+  }
 });
 
 router.patch("/tenants/:tenantId/status",async(req:TenantAuthRequest,res:Response)=>{
