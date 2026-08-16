@@ -1,0 +1,74 @@
+name: SaaS cross-tenant integration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/saas/**'
+      - 'src/middleware/tenantContext.ts'
+      - 'src/middleware/locationManagerScope.ts'
+      - 'src/middleware/hrLocationScope.ts'
+      - 'src/sql/20260816_SAAS_CORE_V1.sql'
+      - 'src/sql/20260816_SAAS_TENANT_ISOLATION_V2.sql'
+      - 'scripts/saas-cross-tenant-uat.js'
+      - '.github/workflows/saas-cross-tenant-integration.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/saas/**'
+      - 'src/middleware/tenantContext.ts'
+      - 'src/middleware/locationManagerScope.ts'
+      - 'src/middleware/hrLocationScope.ts'
+      - 'src/sql/20260816_SAAS_CORE_V1.sql'
+      - 'src/sql/20260816_SAAS_TENANT_ISOLATION_V2.sql'
+      - 'scripts/saas-cross-tenant-uat.js'
+      - '.github/workflows/saas-cross-tenant-integration.yml'
+  workflow_dispatch:
+
+jobs:
+  saas-cross-tenant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: saas_uat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d saas_uat"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PGPASSWORD: postgres
+      SAAS_UAT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/saas_uat
+      PGSSLMODE: disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Prepare minimal legacy-compatible SaaS schema
+        run: |
+          psql "$SAAS_UAT_DATABASE_URL" <<'SQL'
+          CREATE TABLE users(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), role text);
+          CREATE TABLE locations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, city text, address text, is_active boolean DEFAULT true);
+          CREATE TABLE clients(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text, location_id uuid REFERENCES locations(id));
+          CREATE TABLE employees(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text, location_id uuid REFERENCES locations(id));
+          CREATE TABLE appointments(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id), client_id uuid, employee_id uuid, start_time timestamptz DEFAULT now(), end_time timestamptz DEFAULT now()+interval '1 hour');
+          CREATE TABLE work_orders(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id), client_id uuid, employee_id uuid, status text DEFAULT 'open');
+          CREATE TABLE product_stock_balances(id bigserial PRIMARY KEY, location_id uuid REFERENCES locations(id));
+          CREATE TABLE purchase_orders(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id));
+          SQL
+      - name: Apply SaaS core and tenant isolation migrations
+        run: |
+          psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_CORE_V1.sql
+          psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_TENANT_ISOLATION_V2.sql
+      - name: Run cross-tenant UAT
+        run: npm run test:saas-isolation
