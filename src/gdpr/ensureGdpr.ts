@@ -74,11 +74,19 @@ export function ensureGdprSchema() {
         necessity_proportionality text,risks text,measures text,residual_risk text,consultation_required boolean NOT NULL DEFAULT false,
         status text NOT NULL DEFAULT 'screening' CHECK(status IN ('screening','assessment','approved','review_due','closed')),
         owner text,review_at date,approved_by text,approved_at timestamptz,created_by text,updated_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_request_actions(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),request_id uuid NOT NULL REFERENCES gdpr_data_subject_requests(id),
+        action_type text NOT NULL CHECK(action_type IN ('discover','export','rectify','restrict','erase','anonymize')),
+        status text NOT NULL DEFAULT 'preview' CHECK(status IN ('preview','awaiting_approval','approved','executed','blocked','cancelled')),
+        target_systems text[] NOT NULL DEFAULT '{}',preview_summary jsonb NOT NULL DEFAULT '{}'::jsonb,legal_hold boolean NOT NULL DEFAULT false,
+        evidence_ref text,approved_by text,approved_at timestamptz,executed_by text,executed_at timestamptz,
+        created_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
       CREATE INDEX IF NOT EXISTS gdpr_processing_review_idx ON gdpr_processing_activities(status,review_at);
       CREATE INDEX IF NOT EXISTS gdpr_dsr_due_idx ON gdpr_data_subject_requests(status,due_at);
       CREATE INDEX IF NOT EXISTS gdpr_incident_deadline_idx ON gdpr_incidents(status,aware_at);
       CREATE INDEX IF NOT EXISTS gdpr_consents_subject_idx ON gdpr_consents(subject_ref,purpose,captured_at DESC);
       CREATE INDEX IF NOT EXISTS gdpr_dpias_review_idx ON gdpr_dpias(status,review_at);
+      CREATE INDEX IF NOT EXISTS gdpr_request_actions_request_idx ON gdpr_request_actions(request_id,created_at DESC);
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_reason text;
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_notice_evidence text;
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS response_evidence text;
@@ -101,7 +109,7 @@ export function ensureGdprSchema() {
         RETURN NEW;
       END $$ LANGUAGE plpgsql;
       DO $$ DECLARE table_name text; trigger_name text; BEGIN
-        FOREACH table_name IN ARRAY ARRAY['gdpr_settings','gdpr_processing_activities','gdpr_retention_policies','gdpr_data_subject_requests','gdpr_incidents','gdpr_processors','gdpr_notice_versions','gdpr_consents','gdpr_dpias'] LOOP
+        FOREACH table_name IN ARRAY ARRAY['gdpr_settings','gdpr_processing_activities','gdpr_retention_policies','gdpr_data_subject_requests','gdpr_request_actions','gdpr_incidents','gdpr_processors','gdpr_notice_versions','gdpr_consents','gdpr_dpias'] LOOP
           trigger_name:='trg_'||table_name||'_durable_audit';
           IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname=trigger_name AND tgrelid=table_name::regclass) THEN
             EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION gdpr_capture_durable_audit()',trigger_name,table_name);
