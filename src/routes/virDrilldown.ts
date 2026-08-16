@@ -3,11 +3,25 @@ import crypto from "crypto";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
+import { getFranchiseFunnelConfig, type FranchiseFunnelConfig } from "../services/franchiseFunnelConfig";
 
 const router = Router();
 
 const clean = (value: unknown, max = 500) => String(value ?? "").trim().slice(0, max);
 const validEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const MAILCHIMP_MERGE_KEYS = new Set([
+  "Q1VEGZ",
+  "Q2SZAK",
+  "Q3JOGVISZ",
+  "Q5ISMERET",
+  "Q6MIERT",
+  "Q7OSSZEG",
+  "Q8VALLALK",
+  "Q9CEGNEV",
+  "Q10VOLTMAR",
+  "Q11VEZETO",
+  "Q12VAROS",
+]);
 
 type FranchiseLeadData = {
   name: string;
@@ -73,16 +87,13 @@ async function readPublicLeadBody(req: Request): Promise<any> {
   });
 }
 
-function mailchimpConfig() {
-  const apiKey = clean(process.env.MAILCHIMP_API_KEY, 500);
-  const audienceId = clean(process.env.MAILCHIMP_AUDIENCE_ID, 200);
-  const serverPrefix = clean(process.env.MAILCHIMP_SERVER_PREFIX || apiKey.split("-").pop(), 80);
-  if (!apiKey || !audienceId || !serverPrefix) throw new Error("MAILCHIMP_NOT_CONFIGURED");
-  return { apiKey, audienceId, serverPrefix };
+function assertMailchimpConfig(cfg: FranchiseFunnelConfig) {
+  if (!cfg.apiKey || !cfg.audienceId || !cfg.serverPrefix) throw new Error("MAILCHIMP_NOT_CONFIGURED");
+  return cfg;
 }
 
-async function mailchimpFetch(pathname: string, init: RequestInit) {
-  const cfg = mailchimpConfig();
+async function mailchimpFetch(cfg: FranchiseFunnelConfig, pathname: string, init: RequestInit) {
+  assertMailchimpConfig(cfg);
   const auth = Buffer.from(`kleoszalon:${cfg.apiKey}`).toString("base64");
   return fetch(`https://${cfg.serverPrefix}.api.mailchimp.com/3.0${pathname}`, {
     ...init,
@@ -94,48 +105,97 @@ async function mailchimpFetch(pathname: string, init: RequestInit) {
   });
 }
 
+function splitName(value: string) {
+  const parts = clean(value, 160).split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return { LNAME: parts[0] || "", FNAME: "" };
+  return { LNAME: parts[0], FNAME: parts.slice(1).join(" ") };
+}
+
+function buildMergeFields(data: FranchiseLeadData) {
+  const names = splitName(data.name);
+  const mergeFields: Record<string, string> = {};
+  if (names.LNAME) mergeFields.LNAME = names.LNAME;
+  if (names.FNAME) mergeFields.FNAME = names.FNAME;
+  if (data.phone) mergeFields.PHONE = clean(data.phone, 80);
+  for (const [key, value] of Object.entries(data.extra || {})) {
+    if (!MAILCHIMP_MERGE_KEYS.has(key)) continue;
+    const normalized = clean(value, 1000);
+    if (normalized) mergeFields[key] = normalized;
+  }
+  return mergeFields;
+}
+
+function isLpVariant(variant: string) {
+  const value = clean(variant, 80).toLowerCase();
+  return value === "lp" || value === "franchise-v1" || value.startsWith("lp-");
+}
+
 function buildMailchimpNote(data: FranchiseLeadData) {
   const extraLines = Object.entries(data.extra || {}).slice(0, 30).map(([key, value]) => `${clean(key, 80)}: ${clean(value, 1200)}`);
   const trackingLines = Object.entries(data.tracking || {}).slice(0, 12).map(([key, value]) => `${clean(key, 80)}: ${clean(value, 800)}`);
   return [
-    `Franchise lead – ${new Date().toISOString()}`,
+    `Franchise funnel lead – ${new Date().toISOString()}`,
     `Név: ${data.name}`,
     `E-mail: ${data.email}`,
     `Telefon: ${data.phone}`,
-    `Variáns: ${data.variant}`,
+    `Típus: ${isLpVariant(data.variant) ? "LP_form" : data.variant === "sp" ? "SP_form" : data.variant}`,
     "Adatkezelési hozzájárulás: igen",
-    extraLines.length ? "\nRészletes kérdőív:\n" + extraLines.join("\n") : "",
+    extraLines.length ? "\nSP_form mezők:\n" + extraLines.join("\n") : "",
     trackingLines.length ? "\nKampányadatok:\n" + trackingLines.join("\n") : "",
   ].filter(Boolean).join("\n").slice(0, 10000);
 }
 
+async function applyMailchimpTags(cfg: FranchiseFunnelConfig, memberPath: string, data: FranchiseLeadData) {
+  const funnelTag = isLpVariant(data.variant) ? cfg.lpTagName : cfg.spTagName;
+  const tags = [
+    "Franchise lead",
+    funnelTag,
+    data.variant,
+    clean(data.tracking?.utm_source, 80),
+    clean(data.tracking?.utm_campaign, 80),
+  ].filter(Boolean).slice(0, 8).map((name) => ({ name, status: "active" }));
+
+  const tagResponse = await mailchimpFetch(cfg, `${memberPath}/tags`, {
+    method: "POST",
+    body: JSON.stringify({ tags }),
+  });
+  if (!tagResponse.ok) console.error("[franchise-mailchimp-tags]", tagResponse.status, await tagResponse.text().catch(() => ""));
+
+  if (isLpVariant(data.variant) && cfg.lpSegmentId) {
+    const segmentResponse = await mailchimpFetch(
+      cfg,
+      `/lists/${encodeURIComponent(cfg.audienceId)}/segments/${encodeURIComponent(cfg.lpSegmentId)}/members`,
+      { method: "POST", body: JSON.stringify({ email_address: data.email }) },
+    );
+    if (!segmentResponse.ok && segmentResponse.status !== 400) {
+      console.error("[franchise-mailchimp-segment]", segmentResponse.status, await segmentResponse.text().catch(() => ""));
+    }
+  }
+}
+
 async function syncFranchiseLeadToMailchimp(leadId: string, data: FranchiseLeadData) {
   try {
-    const cfg = mailchimpConfig();
+    const cfg = assertMailchimpConfig(await getFranchiseFunnelConfig());
     const subscriberHash = crypto.createHash("md5").update(data.email).digest("hex");
     const memberPath = `/lists/${encodeURIComponent(cfg.audienceId)}/members/${subscriberHash}`;
-    const statusIfNew = process.env.MAILCHIMP_DOUBLE_OPT_IN === "1" ? "pending" : "subscribed";
+    const statusIfNew = cfg.doubleOptIn ? "pending" : "subscribed";
 
-    const memberResponse = await mailchimpFetch(memberPath, {
+    const memberResponse = await mailchimpFetch(cfg, memberPath, {
       method: "PUT",
-      body: JSON.stringify({ email_address: data.email, status_if_new: statusIfNew }),
+      body: JSON.stringify({
+        email_address: data.email,
+        status_if_new: statusIfNew,
+        merge_fields: buildMergeFields(data),
+      }),
     });
-    if (!memberResponse.ok) throw new Error(`mailchimp_member_${memberResponse.status}`);
+    if (!memberResponse.ok) {
+      const detail = await memberResponse.text().catch(() => "");
+      throw new Error(`mailchimp_member_${memberResponse.status}:${clean(detail, 500)}`);
+    }
 
-    const tags = [
-      "Franchise lead",
-      data.variant,
-      clean(data.tracking?.utm_source, 80),
-      clean(data.tracking?.utm_campaign, 80),
-    ].filter(Boolean).slice(0, 6).map((name) => ({ name, status: "active" }));
+    await applyMailchimpTags(cfg, memberPath, data);
 
-    const tagResponse = await mailchimpFetch(`${memberPath}/tags`, {
-      method: "POST",
-      body: JSON.stringify({ tags }),
-    });
-    if (!tagResponse.ok) console.error("[franchise-mailchimp-tags]", tagResponse.status);
-
-    const noteResponse = await mailchimpFetch(`${memberPath}/notes`, {
+    const noteResponse = await mailchimpFetch(cfg, `${memberPath}/notes`, {
       method: "POST",
       body: JSON.stringify({ note: buildMailchimpNote(data) }),
     });
@@ -164,7 +224,8 @@ async function syncFranchiseLeadToMailchimp(leadId: string, data: FranchiseLeadD
 async function retryPendingFranchiseLeads() {
   try {
     await ensureFranchiseLeadSchema();
-    if (!process.env.MAILCHIMP_API_KEY || !process.env.MAILCHIMP_AUDIENCE_ID) return;
+    const cfg = await getFranchiseFunnelConfig();
+    if (!cfg.apiKey || !cfg.audienceId || !cfg.serverPrefix) return;
     const pending = await pool.query(`
       SELECT id::text, name, email, phone, consent, variant, extra, tracking
       FROM franchise_leads
@@ -201,7 +262,7 @@ router.post("/franchise-leads", async (req: Request, res: Response) => {
       email: clean(body?.email, 200).toLowerCase(),
       phone: clean(body?.phone, 80),
       consent: body?.consent === true,
-      variant: clean(body?.variant || "franchise", 80).replace(/[^a-zA-Z0-9_-]/g, "-"),
+      variant: clean(body?.variant || "lp", 80).replace(/[^a-zA-Z0-9_-]/g, "-"),
       extra: body?.extra && typeof body.extra === "object" ? body.extra : {},
       tracking: body?.tracking && typeof body.tracking === "object" ? body.tracking : {},
     };
