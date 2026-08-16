@@ -1,0 +1,58 @@
+name: Procurement receipt cost integrity
+
+on:
+  pull_request:
+    paths:
+      - 'src/routes/purchaseOrders.ts'
+      - 'src/procurement/receiptCost.ts'
+      - 'src/procurement/ensureProcurementReceiptCostIntegrity.ts'
+      - 'src/sql/20260816_PROCUREMENT_RECEIPT_COST_INTEGRITY_V1.sql'
+      - 'tests/procurement_receipt_cost.integration.js'
+      - 'docs/requirements/**'
+      - '.github/workflows/procurement-receipt-cost.yml'
+  push:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_receipt_cost_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_receipt_cost_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_receipt_cost_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build API
+        run: npm run build
+      - name: Run procurement receipt cost integration
+        run: node tests/procurement_receipt_cost.integration.js
+      - name: Generate requirement evidence
+        run: |
+          mkdir -p evidence
+          node -e "const fs=require('fs'); fs.writeFileSync('evidence/requirements-evidence-procurement-receipt-cost.json', JSON.stringify({schema_version:'1.0.0', build_ref:process.env.GITHUB_SHA, environment:'github-actions-postgresql16', workflow:'procurement-receipt-cost', result:'passed', criteria:[{criterion_id:'KLEO-FUN-INV-002-AC-02', result:'passed', test_ref:'tests/procurement_receipt_cost.integration.js'}], generated_at:new Date().toISOString()}, null, 2))"
+      - name: Upload requirement evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-procurement-receipt-cost-${{ github.sha }}
+          path: evidence/requirements-evidence-procurement-receipt-cost.json
+          retention-days: 90
