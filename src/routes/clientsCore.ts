@@ -3,6 +3,8 @@ import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import multer from "multer";
 import * as XLSX from "xlsx";
+import { ensureGdprSchema } from "../gdpr/ensureGdpr";
+import { recordClientConsentEvents } from "../gdpr/consentLedger";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -301,14 +303,20 @@ router.post("/", async (req: AuthRequest, res) => {
   const name = String(req.body?.name || req.body?.full_name || "").trim();
   if (!name) return res.status(400).json({ error: "Az ügyfél neve kötelező." });
   if (!String(req.body?.phone || "").trim() && !String(req.body?.email || "").trim()) return res.status(400).json({ error: "Telefonszám vagy e-mail-cím szükséges." });
+  const consentFields=["marketing_consent","email_consent","sms_consent","phone_consent"].filter(key=>Object.prototype.hasOwnProperty.call(req.body||{},key));
+  if(consentFields.some(key=>Boolean(req.body?.[key]))&&!String(req.body?.privacy_notice_version||"").trim())return res.status(400).json({error:"Hozzájárulás csak az adatkezelési tájékoztató verziójával rögzíthető."});
+  const db=await pool.connect();
   try {
+    await ensureGdprSchema();await db.query("BEGIN");
     const locationId = effectiveLocation(req);
-    const { rows } = await pool.query(`INSERT INTO clients
-      (full_name,name,phone,email,location_id,birth_date,gender,address,notes,preferred_contact,marketing_consent,is_active,source,updated_at)
-      VALUES($1,$1,$2,$3,$4::uuid,$5::date,$6,$7,$8,$9,$10,COALESCE($11,true),COALESCE($12,'manual'),now()) RETURNING id`,
-      [name,req.body.phone||null,req.body.email||null,locationId,req.body.birth_date||null,req.body.gender||null,req.body.address||null,req.body.notes||null,req.body.preferred_contact||"phone",Boolean(req.body.marketing_consent),req.body.is_active,req.body.source]);
+    const { rows } = await db.query(`INSERT INTO clients
+      (full_name,name,phone,email,location_id,birth_date,gender,address,notes,preferred_contact,marketing_consent,email_consent,sms_consent,phone_consent,consent_source,privacy_notice_version,consent_recorded_at,is_active,source,updated_at)
+      VALUES($1,$1,$2,$3,$4::uuid,$5::date,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,CASE WHEN $10 OR $11 OR $12 OR $13 THEN now() END,COALESCE($16,true),COALESCE($17,'manual'),now()) RETURNING *`,
+      [name,req.body.phone||null,req.body.email||null,locationId,req.body.birth_date||null,req.body.gender||null,req.body.address||null,req.body.notes||null,req.body.preferred_contact||"phone",Boolean(req.body.marketing_consent),Boolean(req.body.email_consent),Boolean(req.body.sms_consent),Boolean(req.body.phone_consent),String(req.body.consent_source||"admin"),String(req.body.privacy_notice_version||"").trim()||null,req.body.is_active,req.body.source]);
+    if(consentFields.length){await db.query(`INSERT INTO crm_consent_history(client_id,email_consent,sms_consent,phone_consent,privacy_notice_version,source,changed_by) VALUES($1,$2,$3,$4,$5,$6,$7)`,[rows[0].id,rows[0].email_consent,rows[0].sms_consent,rows[0].phone_consent,rows[0].privacy_notice_version,rows[0].consent_source,req.user?.email||String(req.user?.id||"")]);await recordClientConsentEvents(db,{clientId:String(rows[0].id),current:rows[0],changedFields:consentFields,actor:req.user?.email||String(req.user?.id||""),evidence:{capture:"client_create"}})}
+    await db.query("COMMIT");
     res.status(201).json({ id: rows[0].id });
-  } catch (error) { fail(res, error); }
+  } catch (error) { await db.query("ROLLBACK").catch(()=>undefined);fail(res, error); }finally{db.release()}
 });
 
 router.get("/:id", async (req: AuthRequest, res) => {
@@ -336,12 +344,20 @@ router.patch("/:id", async (req: AuthRequest, res) => {
   if (!fields.length) return res.status(400).json({ error: "Nincs módosítandó adat." });
   if (Object.prototype.hasOwnProperty.call(req.body||{},"name")) { values.push(req.body.name); fields.push(`name=$${values.length}`); }
   values.push(req.params.id);
+  const consentFields=["marketing_consent","email_consent","sms_consent","phone_consent"].filter(key=>Object.prototype.hasOwnProperty.call(req.body||{},key));
+  const db=await pool.connect();
   try {
-    const result = await pool.query(`UPDATE clients SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length}::uuid RETURNING id`, values);
+    await ensureGdprSchema();await db.query("BEGIN");
+    const before=(await db.query(`SELECT * FROM clients WHERE id=$1::uuid FOR UPDATE`,[req.params.id])).rows[0];if(!before){await db.query("ROLLBACK");return res.status(404).json({error:"Az ügyfél nem található."})}
+    const result = await db.query(`UPDATE clients SET ${fields.join(",")},updated_at=now() WHERE id=$${values.length}::uuid RETURNING *`, values);
     if (!result.rowCount) return res.status(404).json({ error: "Az ügyfél nem található." });
-    if(["marketing_consent","email_consent","sms_consent","phone_consent"].some(k=>Object.prototype.hasOwnProperty.call(req.body||{},k)))await pool.query(`INSERT INTO crm_consent_history(client_id,email_consent,sms_consent,phone_consent,privacy_notice_version,source,changed_by) SELECT id,email_consent,sms_consent,phone_consent,privacy_notice_version,consent_source,$2 FROM clients WHERE id=$1::uuid`,[req.params.id,req.user?.email||String(req.user?.id||"")]);
+    if(consentFields.some(key=>Boolean(result.rows[0][key]))&&!String(result.rows[0].privacy_notice_version||"").trim()){await db.query("ROLLBACK");return res.status(400).json({error:"Hozzájárulás csak az adatkezelési tájékoztató verziójával rögzíthető."})}
+    const evidenceChanged=String(before.privacy_notice_version||"")!==String(result.rows[0].privacy_notice_version||"")||String(before.consent_source||"")!==String(result.rows[0].consent_source||"");
+    const changed=consentFields.filter(key=>Boolean(before[key])!==Boolean(result.rows[0][key]));if(evidenceChanged)for(const key of consentFields)if(!changed.includes(key))changed.push(key);
+    if(changed.length){await db.query(`INSERT INTO crm_consent_history(client_id,email_consent,sms_consent,phone_consent,privacy_notice_version,source,changed_by) SELECT id,email_consent,sms_consent,phone_consent,privacy_notice_version,consent_source,$2 FROM clients WHERE id=$1::uuid`,[req.params.id,req.user?.email||String(req.user?.id||"")]);await recordClientConsentEvents(db,{clientId:req.params.id,current:result.rows[0],previous:before,changedFields:changed,actor:req.user?.email||String(req.user?.id||""),evidence:{capture:"client_update"}})}
+    await db.query("COMMIT");
     res.json({ ok:true,id:result.rows[0].id });
-  } catch (error) { fail(res, error); }
+  } catch (error) { await db.query("ROLLBACK").catch(()=>undefined);fail(res, error); }finally{db.release()}
 });
 
 router.post("/:id/notes", async (req: AuthRequest, res) => {

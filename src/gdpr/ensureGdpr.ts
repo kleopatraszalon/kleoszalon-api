@@ -74,15 +74,70 @@ export function ensureGdprSchema() {
         necessity_proportionality text,risks text,measures text,residual_risk text,consultation_required boolean NOT NULL DEFAULT false,
         status text NOT NULL DEFAULT 'screening' CHECK(status IN ('screening','assessment','approved','review_due','closed')),
         owner text,review_at date,approved_by text,approved_at timestamptz,created_by text,updated_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_request_actions(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),request_id uuid NOT NULL REFERENCES gdpr_data_subject_requests(id),
+        action_type text NOT NULL CHECK(action_type IN ('discover','export','rectify','restrict','erase','anonymize')),
+        status text NOT NULL DEFAULT 'preview' CHECK(status IN ('preview','awaiting_approval','approved','executed','blocked','cancelled')),
+        target_systems text[] NOT NULL DEFAULT '{}',preview_summary jsonb NOT NULL DEFAULT '{}'::jsonb,legal_hold boolean NOT NULL DEFAULT false,
+        evidence_ref text,approved_by text,approved_at timestamptz,executed_by text,executed_at timestamptz,
+        created_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_legal_holds(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),scope_type text NOT NULL CHECK(scope_type IN ('subject','entity')),scope_ref text NOT NULL,
+        reason text NOT NULL,status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','released')),starts_at timestamptz NOT NULL DEFAULT now(),expires_at timestamptz,
+        created_by text,released_by text,released_at timestamptz,release_reason text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE UNIQUE INDEX IF NOT EXISTS gdpr_legal_holds_active_uq ON gdpr_legal_holds(scope_type,scope_ref) WHERE status='active';
+      CREATE TABLE IF NOT EXISTS gdpr_retention_runs(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),policy_id uuid NOT NULL REFERENCES gdpr_retention_policies(id),
+        status text NOT NULL DEFAULT 'preview' CHECK(status IN ('preview','awaiting_approval','approved','executed','blocked','cancelled')),
+        cutoff_at timestamptz NOT NULL,candidate_count integer NOT NULL DEFAULT 0,legal_hold_count integer NOT NULL DEFAULT 0,
+        sample_ids text[] NOT NULL DEFAULT '{}',preview_hash text NOT NULL,execution_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_by text,approved_by text,approved_at timestamptz,approval_reason text,executed_by text,executed_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_retention_processed(
+        policy_id uuid NOT NULL REFERENCES gdpr_retention_policies(id),entity_id text NOT NULL,run_id uuid NOT NULL REFERENCES gdpr_retention_runs(id),
+        processed_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(policy_id,entity_id));
       CREATE INDEX IF NOT EXISTS gdpr_processing_review_idx ON gdpr_processing_activities(status,review_at);
       CREATE INDEX IF NOT EXISTS gdpr_dsr_due_idx ON gdpr_data_subject_requests(status,due_at);
       CREATE INDEX IF NOT EXISTS gdpr_incident_deadline_idx ON gdpr_incidents(status,aware_at);
       CREATE INDEX IF NOT EXISTS gdpr_consents_subject_idx ON gdpr_consents(subject_ref,purpose,captured_at DESC);
       CREATE INDEX IF NOT EXISTS gdpr_dpias_review_idx ON gdpr_dpias(status,review_at);
+      CREATE INDEX IF NOT EXISTS gdpr_request_actions_request_idx ON gdpr_request_actions(request_id,created_at DESC);
+      CREATE INDEX IF NOT EXISTS gdpr_retention_runs_policy_idx ON gdpr_retention_runs(policy_id,created_at DESC);
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_reason text;
+      ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_notice_evidence text;
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS response_evidence text;
       ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS notification_delay_reason text;
       ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS authority_reference text;
+      ALTER TABLE gdpr_request_actions ADD COLUMN IF NOT EXISTS preview_hash text;
+      ALTER TABLE gdpr_request_actions ADD COLUMN IF NOT EXISTS approval_reason text;
+      ALTER TABLE gdpr_request_actions ADD COLUMN IF NOT EXISTS execution_summary jsonb NOT NULL DEFAULT '{}'::jsonb;
+      ALTER TABLE gdpr_request_actions ADD COLUMN IF NOT EXISTS legal_hold_reason text;
+      ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS gdpr_erased_at timestamptz;
+      ALTER TABLE IF EXISTS clients ADD COLUMN IF NOT EXISTS gdpr_erasure_request_id uuid;
+      CREATE TABLE IF NOT EXISTS gdpr_audit_outbox(
+        id bigserial PRIMARY KEY,event_id uuid NOT NULL DEFAULT gen_random_uuid(),occurred_at timestamptz NOT NULL DEFAULT now(),
+        table_name text NOT NULL,entity_id text NOT NULL,operation text NOT NULL,actor_key text,row_hash text NOT NULL,
+        delivered_at timestamptz,UNIQUE(event_id));
+      CREATE INDEX IF NOT EXISTS gdpr_audit_outbox_pending_idx ON gdpr_audit_outbox(occurred_at) WHERE delivered_at IS NULL;
+      CREATE OR REPLACE FUNCTION gdpr_capture_durable_audit() RETURNS trigger AS $$
+      DECLARE row_data jsonb; entity text; actor text;
+      BEGIN
+        row_data:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+        entity:=COALESCE(row_data->>'id',row_data->>'key','unknown');
+        actor:=COALESCE(row_data->>'updated_by',row_data->>'created_by');
+        INSERT INTO gdpr_audit_outbox(table_name,entity_id,operation,actor_key,row_hash)
+        VALUES(TG_TABLE_NAME,entity,TG_OP,actor,md5(row_data::text));
+        IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql;
+      DO $$ DECLARE table_name text; trigger_name text; BEGIN
+        FOREACH table_name IN ARRAY ARRAY['gdpr_settings','gdpr_processing_activities','gdpr_retention_policies','gdpr_retention_runs','gdpr_retention_processed','gdpr_legal_holds','gdpr_data_subject_requests','gdpr_request_actions','gdpr_incidents','gdpr_processors','gdpr_notice_versions','gdpr_consents','gdpr_dpias'] LOOP
+          trigger_name:='trg_'||table_name||'_durable_audit';
+          IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname=trigger_name AND tgrelid=table_name::regclass) THEN
+            EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION gdpr_capture_durable_audit()',trigger_name,table_name);
+          END IF;
+        END LOOP;
+      END $$;
     `);
     for (const [key,value] of Object.entries(DEFAULT_SETTINGS)) await db.query(
       `INSERT INTO gdpr_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO NOTHING`,[key,JSON.stringify(value)]);

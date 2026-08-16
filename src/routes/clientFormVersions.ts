@@ -1,6 +1,8 @@
 import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
+import { createHash } from "crypto";
+import { ensureGdprSchema } from "../gdpr/ensureGdpr";
 
 const router = Router();
 const EDITOR_ROLES = new Set(["admin", "manager", "location_manager", "salon_manager"]);
@@ -40,6 +42,15 @@ function scopedLocation(req: AuthRequest) {
 
 function actor(req: AuthRequest) {
   return req.user?.email || String(req.user?.id || "unknown");
+}
+
+function consentStatus(value:unknown){
+  if(typeof value==="boolean")return value?"granted":"refused";
+  const normalized=String(value??"").trim().toLowerCase();
+  if(["granted","yes","igen","true","1"].includes(normalized))return "granted";
+  if(["withdrawn","withdraw","visszavont","visszavonva"].includes(normalized))return "withdrawn";
+  if(["refused","no","nem","false","0"].includes(normalized))return "refused";
+  return null;
 }
 
 function normalizeSchema(value: any) {
@@ -252,6 +263,10 @@ router.post("/form-versions/:formId/:versionNo/publish", async (req: AuthRequest
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "Csak tervezet állapotú verzió tehető közzé." });
     }
+    if(target.form_type==="consent"&&!String(target.privacy_notice_version||"").trim()){
+      await client.query("ROLLBACK");
+      return res.status(400).json({error:"Hozzájárulási dokumentum csak adatkezelési tájékoztató-verzióval tehető közzé."});
+    }
     await client.query(`
       UPDATE crm_form_versions SET status='retired',effective_to=now(),updated_at=now()
       WHERE form_id=$1::uuid AND status='published'
@@ -292,20 +307,32 @@ router.post("/form-versions/:formId/responses", async (req: AuthRequest, res: Re
   if (!clientId) return res.status(400).json({ error: "Az ügyfélazonosító kötelező." });
   const locationId = scopedLocation(req);
   if (!hasRole(req, "admin") && !locationId) return res.status(403).json({ error: "A kitöltés rögzítéséhez telephely-hozzárendelés szükséges." });
+  const db=await pool.connect();
   try {
-    const { rows: clients } = await pool.query(`
+    await ensureGdprSchema();await db.query("BEGIN");
+    const { rows: clients } = await db.query(`
       SELECT id::text id,location_id::text location_id FROM clients WHERE id::text=$1 AND COALESCE(is_active,true)
+      FOR UPDATE
     `, [clientId]);
-    if (!clients.length) return res.status(404).json({ error: "Az ügyfél nem található." });
-    if (locationId && clients[0].location_id !== locationId) return res.status(403).json({ error: "Az ügyfél nem tartozik a kezelhető telephelyhez." });
+    if (!clients.length){await db.query("ROLLBACK");return res.status(404).json({ error: "Az ügyfél nem található." })}
+    if (locationId && clients[0].location_id !== locationId){await db.query("ROLLBACK");return res.status(403).json({ error: "Az ügyfél nem tartozik a kezelhető telephelyhez." })}
 
-    const { rows: versions } = await pool.query(`
+    const { rows: versions } = await db.query(`
       SELECT v.*,f.is_active FROM crm_form_versions v JOIN crm_forms f ON f.id=v.form_id
       WHERE v.form_id=$1::uuid AND v.status='published' AND f.is_active=true
       ORDER BY v.version_no DESC LIMIT 1
     `, [req.params.formId]);
-    if (!versions.length) return res.status(409).json({ error: "Ehhez a dokumentumhoz nincs közzétett, kitölthető verzió." });
+    if (!versions.length){await db.query("ROLLBACK");return res.status(409).json({ error: "Ehhez a dokumentumhoz nincs közzétett, kitölthető verzió." })}
     const version = versions[0];
+    const responseData=req.body?.response_data||{},responseStatus=String(req.body?.status||"completed");
+    const recordedConsent=version.form_type==="consent"&&responseStatus==="completed"?consentStatus(req.body?.consent_status??responseData.consent_status??responseData.consent_granted):null;
+    let notice:any=null;
+    if(version.form_type==="consent"&&responseStatus==="completed"){
+      if(!recordedConsent){await db.query("ROLLBACK");return res.status(400).json({error:"Hozzájárulási nyilatkozatnál a consent_status (granted, refused vagy withdrawn) kötelező."})}
+      if(!String(version.privacy_notice_version||"").trim()){await db.query("ROLLBACK");return res.status(409).json({error:"A hozzájárulási dokumentum közzétett verziójához nincs adatkezelési tájékoztató-verzió rendelve."})}
+      notice=(await db.query(`SELECT id FROM gdpr_notice_versions WHERE version=$1 ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END,effective_from DESC LIMIT 1`,[version.privacy_notice_version])).rows[0];
+      if(!notice){await db.query("ROLLBACK");return res.status(409).json({error:"A dokumentumhoz rendelt adatkezelési tájékoztató-verzió nincs regisztrálva a GDPR-központban."})}
+    }
     const snapshot = {
       version_id: version.id,
       version_no: version.version_no,
@@ -316,14 +343,17 @@ router.post("/form-versions/:formId/responses", async (req: AuthRequest, res: Re
       content_schema: version.content_schema,
       effective_from: version.effective_from,
     };
-    const { rows } = await pool.query(`
+    const { rows } = await db.query(`
       INSERT INTO crm_form_responses(form_id,client_id,status,response_data,completed_at,form_version_id,form_version_no,form_snapshot)
       VALUES($1::uuid,$2::uuid,$3,$4::jsonb,now(),$5::uuid,$6,$7::jsonb) RETURNING *
-    `, [req.params.formId, clientId, String(req.body?.status || "completed"), JSON.stringify(req.body?.response_data || {}), version.id, version.version_no, JSON.stringify(snapshot)]);
+    `, [req.params.formId, clientId, responseStatus, JSON.stringify(responseData), version.id, version.version_no, JSON.stringify(snapshot)]);
+    if(recordedConsent){const digest=createHash("sha256").update(JSON.stringify(responseData)).digest("hex");await db.query(`INSERT INTO gdpr_consents(subject_ref,purpose,notice_version_id,status,captured_at,withdrawn_at,source,evidence,created_by) VALUES($1,$2,$3,$4,now(),CASE WHEN $4='withdrawn' THEN now() END,'crm_form_response',$5::jsonb,$6)`,[`client:${clientId}`,String(version.content_schema?.gdpr_purpose||version.title).slice(0,500),notice.id,recordedConsent,JSON.stringify({response_id:rows[0].id,form_id:version.form_id,form_version_id:version.id,form_version_no:version.version_no,response_sha256:digest,privacy_notice_version:version.privacy_notice_version}),actor(req)])}
+    await db.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (error: any) {
+    await db.query("ROLLBACK").catch(()=>undefined);
     res.status(500).json({ error: "A kitöltés rögzítése nem sikerült.", detail: error?.message || String(error) });
-  }
+  }finally{db.release()}
 });
 
 export default router;
