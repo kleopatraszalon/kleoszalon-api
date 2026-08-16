@@ -1,0 +1,41 @@
+name: Financial integrity
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/finance/**'
+      - 'src/routes/finance*.ts'
+      - 'src/routes/cashier*.ts'
+      - 'src/routes/workOrderCashierFast.ts'
+      - 'src/sql/**FINANCIAL_INTEGRITY**'
+      - 'tests/financial-integrity.contract.test.js'
+      - 'docs/FINANCIAL_INTEGRITY.md'
+      - '.github/workflows/financial-integrity.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/finance/**'
+      - 'src/routes/finance*.ts'
+      - 'src/routes/cashier*.ts'
+      - 'src/routes/workOrderCashierFast.ts'
+      - 'src/sql/**FINANCIAL_INTEGRITY**'
+      - 'tests/financial-integrity.contract.test.js'
+      - 'docs/FINANCIAL_INTEGRITY.md'
+      - '.github/workflows/financial-integrity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    name: Financial integrity 10/10 gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm run test:financial-integrity
+      - run: npm test
