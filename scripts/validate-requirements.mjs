@@ -53,8 +53,9 @@ if (!unique(allRequirementIds)) errors.push('A követelmény-ID-k nem egyediek')
 if (!unique(allAcceptanceIds)) errors.push('Az elfogadásikritérium-ID-k nem egyediek');
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const requirementsCheck = String(packageJson.scripts?.['requirements:check'] || '').trim();
-const hasRequirementsCiCommand = requirementsCheck === 'node scripts/validate-requirements.mjs' || requirementsCheck.startsWith('node scripts/validate-requirements.mjs && ');
+const requirementsCheck = String(packageJson.scripts?.['requirements:check'] || '');
+const ciGateConfigured = fs.existsSync(path.join(root, '.github/workflows/requirements-traceability.yml'))
+  && requirementsCheck.includes('node scripts/validate-requirements.mjs');
 
 const checks = [
   { name: 'Egyedi, stabil azonosítók', weight: 1.0, ok: unique(allRequirementIds) && unique(allAcceptanceIds) && catalog.id_policy?.immutable === true && catalog.id_policy?.reuse_forbidden === true },
@@ -64,24 +65,19 @@ const checks = [
   { name: 'Kétirányú nyomonkövetés', weight: 1.5, ok: unique(allAcceptanceIds) && catalog.requirements.every((item) => item.acceptance_criteria.every((criterion) => criterion.id.startsWith(`${item.id}-AC-`) && criterion.verification.test_case_id.endsWith(criterion.id))) },
   { name: 'Prioritás, felelős és életciklus', weight: 1.0, ok: catalog.requirements.every((item) => priorities.has(item.priority) && nonEmpty(item.owner_role) && lifecycleStatuses.has(item.lifecycle_status)) },
   { name: 'Változáskezelés', weight: 1.0, ok: Object.values(catalog.change_control || {}).every((value) => value === true) && fs.existsSync(path.join(root, 'docs/requirements/README.md')) },
-  { name: 'Automatikus CI-kapu', weight: 1.0, ok: fs.existsSync(path.join(root, '.github/workflows/requirements-traceability.yml')) && hasRequirementsCiCommand },
+  { name: 'Automatikus CI-kapu', weight: 1.0, ok: ciGateConfigured },
 ];
 
 const matrix = [
-  '# Követelmény–teszt nyomonkövetési mátrix',
-  '',
-  '> Generált fájl. Forrás: `catalog.cjs`. Frissítés: `npm run requirements:matrix`.',
-  '',
-  `Követelmények: **${catalog.requirements.length}** · Elfogadási kritériumok / tesztesetek: **${allAcceptanceIds.length}**`,
-  '',
-  '| Követelmény | Terület | PDF | Prioritás | Felelős | Kritériumok / tesztesetek | Automatizálás |',
-  '|---|---|---:|---|---|---|---|',
+  '# Követelmény–teszt nyomonkövetési mátrix','',
+  '> Generált fájl. Forrás: `catalog.cjs`. Frissítés: `npm run requirements:matrix`.','',
+  `Követelmények: **${catalog.requirements.length}** · Elfogadási kritériumok / tesztesetek: **${allAcceptanceIds.length}**`,'',
+  '| Követelmény | Terület | PDF | Prioritás | Felelős | Kritériumok / tesztesetek | Automatizálás |','|---|---|---:|---|---|---|---|',
   ...catalog.requirements.map((item) => {
     const criteria = item.acceptance_criteria.map((criterion) => `${criterion.id} → ${criterion.verification.test_case_id}`).join('<br>');
     const automation = [...new Set(item.acceptance_criteria.map((criterion) => criterion.verification.automation_status))].join(', ');
     return `| ${item.id} | ${item.area} | ${item.source.page}. oldal | ${item.priority} | ${item.owner_role} | ${criteria} | ${automation} |`;
-  }),
-  '',
+  }),'',
 ].join('\n');
 
 if (writeMatrix) fs.writeFileSync(matrixPath, matrix, 'utf8');
