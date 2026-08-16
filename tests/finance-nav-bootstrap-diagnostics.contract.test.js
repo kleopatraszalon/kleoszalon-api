@@ -12,6 +12,7 @@ test('Finance NAV bootstrap errors identify the failing stage, optional substage
   assert.match(ensureSrc,/this\.stage=substage\?`\$\{stage\}:\$\{substage\}`:stage/);
   assert.match(ensureSrc,/this\.dbCode=cause\?\.code\?String\(cause\.code\):null/);
   assert.match(ensureSrc,/this\.constraint=cause\?\.constraint/);
+  assert.match(ensureSrc,/if\(this\.constraint\)this\.stage=`\$\{this\.stage\}:\$\{this\.constraint\}`/);
   assert.match(ensureSrc,/step\('work_order_workflow'/);
   assert.match(ensureSrc,/step\('hr_v2'/);
   assert.match(ensureSrc,/step\(`sql:\$\{file\}`/);

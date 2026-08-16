@@ -22,6 +22,7 @@ export class FinanceNavBootstrapError extends Error{
     this.dbCode=cause?.code?String(cause.code):null;
     this.substage=substage;
     this.constraint=cause?.constraint?String(cause.constraint):null;
+    if(this.constraint)this.stage=`${this.stage}:${this.constraint}`;
     (this as any).cause=cause;
   }
 }
