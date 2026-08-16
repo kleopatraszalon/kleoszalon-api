@@ -35,163 +35,93 @@ export async function ensureTenantAdminInvitationSchema() {
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       );
-      CREATE INDEX IF NOT EXISTS tenant_admin_invitations_tenant_idx
-        ON tenant_admin_invitations(tenant_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS tenant_admin_invitations_pending_idx
-        ON tenant_admin_invitations(tenant_id, lower(email), expires_at)
-        WHERE status='pending';
+      CREATE INDEX IF NOT EXISTS tenant_admin_invitations_tenant_idx ON tenant_admin_invitations(tenant_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_admin_invitations_pending_idx ON tenant_admin_invitations(tenant_id, lower(email), expires_at) WHERE status='pending';
     `).then(() => undefined).catch(error => { schemaReady = null; throw error; });
   }
   await schemaReady;
 }
 
-function tokenHash(rawToken: string) {
-  return crypto.createHash("sha256").update(rawToken, "utf8").digest("hex");
-}
-
-function normalizeEmail(value: unknown) {
-  return String(value || "").trim().toLowerCase();
-}
+function tokenHash(rawToken: string) { return crypto.createHash("sha256").update(rawToken, "utf8").digest("hex"); }
+function normalizeEmail(value: unknown) { return String(value || "").trim().toLowerCase(); }
 
 export async function latestTenantAdminInvitation(tenantId: string): Promise<TenantAdminInvitationStatus | null> {
   await ensureTenantAdminInvitationSchema();
   await db.query(`UPDATE tenant_admin_invitations SET status='expired',updated_at=now() WHERE tenant_id=$1::bigint AND status='pending' AND expires_at<=now()`, [tenantId]);
-  const { rows } = await db.query(`
-    SELECT id::text,tenant_id::text,email,status,expires_at,created_at,accepted_at,accepted_user_id
-      FROM tenant_admin_invitations
-     WHERE tenant_id=$1::bigint
-     ORDER BY created_at DESC LIMIT 1`, [tenantId]);
+  const { rows } = await db.query(`SELECT id::text,tenant_id::text,email,status,expires_at,created_at,accepted_at,accepted_user_id FROM tenant_admin_invitations WHERE tenant_id=$1::bigint ORDER BY created_at DESC LIMIT 1`, [tenantId]);
   return rows[0] || null;
 }
 
 export async function issueTenantAdminInvitation(input: { tenantId: string; email: string; invitedBy?: string | null; tenantName?: string | null; }) {
   await ensureTenantAdminInvitationSchema();
   const email = normalizeEmail(input.email);
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    const error: any = new Error("Érvénytelen admin e-mail cím.");
-    error.code = "INVALID_ADMIN_EMAIL";
-    throw error;
-  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { const error:any=new Error("Érvénytelen admin e-mail cím.");error.code="INVALID_ADMIN_EMAIL";throw error; }
 
   const existingUser = await db.query(`SELECT id::text,email FROM users WHERE lower(COALESCE(email,''))=lower($1) LIMIT 1`, [email]);
   if (existingUser.rowCount) {
     await db.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) VALUES($1::bigint,$2,'owner',true) ON CONFLICT(tenant_id,user_id) DO UPDATE SET tenant_role='owner',active=true`, [input.tenantId, existingUser.rows[0].id]);
-    return { existing_user: true, assigned: true, user_id: existingUser.rows[0].id, email, invitation: null, delivery: null };
+    return { existing_user:true, assigned:true, user_id:existingUser.rows[0].id, email, invitation:null, delivery:null };
   }
 
   const rawToken = crypto.randomBytes(32).toString("base64url");
   const hash = tokenHash(rawToken);
   const client = await db.connect();
-  let invitation: any;
+  let invitation:any;
   try {
     await client.query("BEGIN");
-    await client.query(`UPDATE tenant_admin_invitations SET status='revoked',updated_at=now() WHERE tenant_id=$1::bigint AND lower(email)=lower($2) AND status='pending'`, [input.tenantId, email]);
-    const inserted = await client.query(`
-      INSERT INTO tenant_admin_invitations(tenant_id,email,token_hash,status,expires_at,invited_by)
-      VALUES($1::bigint,$2,$3,'pending',now()+($4::text||' hours')::interval,$5)
-      RETURNING id::text,tenant_id::text,email,status,expires_at,created_at,accepted_at,accepted_user_id`,
-      [input.tenantId, email, hash, String(INVITE_TTL_HOURS), input.invitedBy || null]);
-    invitation = inserted.rows[0];
+    await client.query(`UPDATE tenant_admin_invitations SET status='revoked',updated_at=now() WHERE tenant_id=$1::bigint AND lower(email)=lower($2) AND status='pending'`, [input.tenantId,email]);
+    const inserted=await client.query(`INSERT INTO tenant_admin_invitations(tenant_id,email,token_hash,status,expires_at,invited_by) VALUES($1::bigint,$2,$3,'pending',now()+($4::text||' hours')::interval,$5) RETURNING id::text,tenant_id::text,email,status,expires_at,created_at,accepted_at,accepted_user_id`,[input.tenantId,email,hash,String(INVITE_TTL_HOURS),input.invitedBy||null]);
+    invitation=inserted.rows[0];
     await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  } catch(error) { await client.query("ROLLBACK").catch(()=>undefined);throw error; } finally { client.release(); }
 
-  const activationUrl = `${FRONTEND_BASE_URL}/tenant-admin-activation?token=${encodeURIComponent(rawToken)}`;
-  const tenantName = String(input.tenantName || "VIR tenant").trim();
-  let delivery: any;
+  const activationUrl=`${FRONTEND_BASE_URL}/register?tenant_invite=${encodeURIComponent(rawToken)}`;
+  const tenantName=String(input.tenantName||"VIR tenant").trim();
+  let delivery:any;
   try {
-    delivery = await sendEmail({
-      to: email,
-      subject: `${tenantName} – adminisztrátori meghívó`,
-      text: `Meghívást kapott a(z) ${tenantName} VIR rendszerének első adminisztrátori fiókjához.\n\nAktiválás: ${activationUrl}\n\nA link ${INVITE_TTL_HOURS} óráig használható és egyszer használatos. Ha nem Ön kérte a hozzáférést, hagyja figyelmen kívül ezt a levelet.`,
-      html: `<p>Meghívást kapott a(z) <strong>${tenantName.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</strong> VIR rendszerének első adminisztrátori fiókjához.</p><p><a href="${activationUrl}">Adminisztrátori fiók aktiválása</a></p><p>A link ${INVITE_TTL_HOURS} óráig használható és egyszer használatos.</p>`,
+    delivery=await sendEmail({
+      to:email,
+      subject:`${tenantName} – adminisztrátori meghívó`,
+      text:`Meghívást kapott a(z) ${tenantName} VIR rendszerének első adminisztrátori fiókjához.\n\nAktiválás: ${activationUrl}\n\nA link ${INVITE_TTL_HOURS} óráig használható és egyszer használatos. Ha nem Ön kérte a hozzáférést, hagyja figyelmen kívül ezt a levelet.`,
+      html:`<p>Meghívást kapott a(z) <strong>${tenantName.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</strong> VIR rendszerének első adminisztrátori fiókjához.</p><p><a href="${activationUrl}">Adminisztrátori fiók aktiválása</a></p><p>A link ${INVITE_TTL_HOURS} óráig használható és egyszer használatos.</p>`,
     });
-  } catch (error: any) {
-    await db.query(`UPDATE tenant_admin_invitations SET status='revoked',updated_at=now() WHERE id=$1::uuid AND status='pending'`, [invitation.id]).catch(() => undefined);
-    const sendError: any = new Error("A meghívó e-mail nem küldhető el.");
-    sendError.code = "ADMIN_INVITE_EMAIL_FAILED";
-    sendError.cause = error;
-    throw sendError;
+  } catch(error:any) {
+    await db.query(`UPDATE tenant_admin_invitations SET status='revoked',updated_at=now() WHERE id=$1::uuid AND status='pending'`,[invitation.id]).catch(()=>undefined);
+    const sendError:any=new Error("A meghívó e-mail nem küldhető el.");sendError.code="ADMIN_INVITE_EMAIL_FAILED";sendError.cause=error;throw sendError;
   }
-
-  return { existing_user: false, assigned: false, email, invitation, delivery: { sent: Boolean(delivery?.sent), logged: Boolean(delivery?.logged), imapSaved: Boolean(delivery?.imapSaved) } };
+  return { existing_user:false, assigned:false, email, invitation, delivery:{sent:Boolean(delivery?.sent),logged:Boolean(delivery?.logged),imapSaved:Boolean(delivery?.imapSaved)} };
 }
 
-export async function validateTenantAdminInvitation(rawToken: string) {
+export async function validateTenantAdminInvitation(rawToken:string) {
   await ensureTenantAdminInvitationSchema();
-  const hash = tokenHash(String(rawToken || ""));
-  const { rows } = await db.query(`
-    SELECT i.id::text,i.tenant_id::text,i.email,i.status,i.expires_at,t.name tenant_name,t.slug tenant_slug
-      FROM tenant_admin_invitations i JOIN tenants t ON t.id=i.tenant_id
-     WHERE i.token_hash=$1 LIMIT 1`, [hash]);
-  const row = rows[0];
-  if (!row) return { valid: false, code: "INVITE_NOT_FOUND" } as const;
-  if (row.status !== "pending") return { valid: false, code: "INVITE_ALREADY_USED", invitation: row } as const;
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
-    await db.query(`UPDATE tenant_admin_invitations SET status='expired',updated_at=now() WHERE id=$1::uuid AND status='pending'`, [row.id]);
-    return { valid: false, code: "INVITE_EXPIRED", invitation: { ...row, status: "expired" } } as const;
-  }
-  return { valid: true, invitation: row } as const;
+  const hash=tokenHash(String(rawToken||""));
+  const {rows}=await db.query(`SELECT i.id::text,i.tenant_id::text,i.email,i.status,i.expires_at,t.name tenant_name,t.slug tenant_slug FROM tenant_admin_invitations i JOIN tenants t ON t.id=i.tenant_id WHERE i.token_hash=$1 LIMIT 1`,[hash]);
+  const row=rows[0];
+  if(!row)return {valid:false,code:"INVITE_NOT_FOUND"} as const;
+  if(row.status!=="pending")return {valid:false,code:"INVITE_ALREADY_USED",invitation:row} as const;
+  if(new Date(row.expires_at).getTime()<=Date.now()){await db.query(`UPDATE tenant_admin_invitations SET status='expired',updated_at=now() WHERE id=$1::uuid AND status='pending'`,[row.id]);return {valid:false,code:"INVITE_EXPIRED",invitation:{...row,status:"expired"}} as const;}
+  return {valid:true,invitation:row} as const;
 }
 
-async function roleValueForAdmin(client: any) {
-  const typeResult = await client.query(`SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='role' LIMIT 1`);
-  const type = String(typeResult.rows[0]?.udt_name || "");
-  return { type, value: type === "jsonb" || type === "json" ? '["admin"]' : "admin" };
-}
+async function roleValueForAdmin(client:any){const r=await client.query(`SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='role' LIMIT 1`);const type=String(r.rows[0]?.udt_name||"");return {type,value:type==="jsonb"||type==="json"?'["admin"]':"admin"};}
 
-export async function acceptTenantAdminInvitation(input: { token: string; fullName: string; password: string; }) {
-  const fullName = String(input.fullName || "").trim();
-  const password = String(input.password || "");
-  if (fullName.length < 2 || fullName.length > 160) {
-    const error: any = new Error("A név 2–160 karakter lehet."); error.code = "INVALID_ADMIN_NAME"; throw error;
-  }
-  if (password.length < 10 || !/[A-ZÁÉÍÓÖŐÚÜŰ]/i.test(password) || !/\d/.test(password)) {
-    const error: any = new Error("A jelszó legalább 10 karakteres legyen, és tartalmazzon betűt és számot."); error.code = "WEAK_ADMIN_PASSWORD"; throw error;
-  }
+export async function acceptTenantAdminInvitation(input:{token:string;fullName:string;password:string;}){
+  const fullName=String(input.fullName||"").trim();const password=String(input.password||"");
+  if(fullName.length<2||fullName.length>160){const e:any=new Error("A név 2–160 karakter lehet.");e.code="INVALID_ADMIN_NAME";throw e;}
+  if(password.length<10||!/[A-ZÁÉÍÓÖŐÚÜŰ]/i.test(password)||!/\d/.test(password)){const e:any=new Error("A jelszó legalább 10 karakteres legyen, és tartalmazzon betűt és számot.");e.code="WEAK_ADMIN_PASSWORD";throw e;}
   await ensureTenantAdminInvitationSchema();
-  const hash = tokenHash(String(input.token || ""));
-  const passwordHash = await bcrypt.hash(password, 12);
-  const client = await db.connect();
-  try {
+  const hash=tokenHash(String(input.token||""));const passwordHash=await bcrypt.hash(password,12);const client=await db.connect();
+  try{
     await client.query("BEGIN");
-    const inviteResult = await client.query(`
-      SELECT i.*,t.name tenant_name FROM tenant_admin_invitations i JOIN tenants t ON t.id=i.tenant_id
-       WHERE i.token_hash=$1 FOR UPDATE`, [hash]);
-    const invite = inviteResult.rows[0];
-    if (!invite) { await client.query("ROLLBACK"); return { ok:false, code:"INVITE_NOT_FOUND" } as const; }
-    if (invite.status !== "pending") { await client.query("ROLLBACK"); return { ok:false, code:"INVITE_ALREADY_USED" } as const; }
-    if (new Date(invite.expires_at).getTime() <= Date.now()) {
-      await client.query(`UPDATE tenant_admin_invitations SET status='expired',updated_at=now() WHERE id=$1`, [invite.id]);
-      await client.query("COMMIT");
-      return { ok:false, code:"INVITE_EXPIRED" } as const;
-    }
-
-    const userExisting = await client.query(`SELECT id::text FROM users WHERE lower(COALESCE(email,''))=lower($1) LIMIT 1 FOR UPDATE`, [invite.email]);
-    let userId = userExisting.rows[0]?.id;
-    if (!userId) {
-      const role = await roleValueForAdmin(client);
-      let inserted;
-      const loginName = String(invite.email).split("@")[0].slice(0, 80);
-      if (role.type === "jsonb") inserted = await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5::jsonb,NULL) RETURNING id::text`, [fullName,invite.email,loginName,passwordHash,role.value]);
-      else if (role.type === "json") inserted = await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5::json,NULL) RETURNING id::text`, [fullName,invite.email,loginName,passwordHash,role.value]);
-      else inserted = await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5,NULL) RETURNING id::text`, [fullName,invite.email,loginName,passwordHash,role.value]);
-      userId = inserted.rows[0].id;
-    }
-
-    await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) VALUES($1,$2,'owner',true) ON CONFLICT(tenant_id,user_id) DO UPDATE SET tenant_role='owner',active=true`, [invite.tenant_id,userId]);
-    await client.query(`UPDATE tenant_admin_invitations SET status='accepted',accepted_at=now(),accepted_user_id=$2,updated_at=now() WHERE id=$1`, [invite.id,userId]);
-    await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1,'admin','invitation_accepted',$2,$3::jsonb)`, [invite.tenant_id,userId,JSON.stringify({ invitation_id:String(invite.id), email:String(invite.email) })]);
-    await client.query("COMMIT");
-    return { ok:true, tenant_id:String(invite.tenant_id), tenant_name:String(invite.tenant_name), user_id:String(userId), email:String(invite.email) } as const;
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+    const inviteResult=await client.query(`SELECT i.*,t.name tenant_name FROM tenant_admin_invitations i JOIN tenants t ON t.id=i.tenant_id WHERE i.token_hash=$1 FOR UPDATE`,[hash]);const invite=inviteResult.rows[0];
+    if(!invite){await client.query("ROLLBACK");return {ok:false,code:"INVITE_NOT_FOUND"} as const;}
+    if(invite.status!=="pending"){await client.query("ROLLBACK");return {ok:false,code:"INVITE_ALREADY_USED"} as const;}
+    if(new Date(invite.expires_at).getTime()<=Date.now()){await client.query(`UPDATE tenant_admin_invitations SET status='expired',updated_at=now() WHERE id=$1`,[invite.id]);await client.query("COMMIT");return {ok:false,code:"INVITE_EXPIRED"} as const;}
+    const userExisting=await client.query(`SELECT id::text FROM users WHERE lower(COALESCE(email,''))=lower($1) LIMIT 1 FOR UPDATE`,[invite.email]);let userId=userExisting.rows[0]?.id;
+    if(!userId){const role=await roleValueForAdmin(client);let inserted;const loginName=String(invite.email).split("@")[0].slice(0,80);if(role.type==="jsonb")inserted=await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5::jsonb,NULL) RETURNING id::text`,[fullName,invite.email,loginName,passwordHash,role.value]);else if(role.type==="json")inserted=await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5::json,NULL) RETURNING id::text`,[fullName,invite.email,loginName,passwordHash,role.value]);else inserted=await client.query(`INSERT INTO users(full_name,email,login_name,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5,NULL) RETURNING id::text`,[fullName,invite.email,loginName,passwordHash,role.value]);userId=inserted.rows[0].id;}
+    await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) VALUES($1,$2,'owner',true) ON CONFLICT(tenant_id,user_id) DO UPDATE SET tenant_role='owner',active=true`,[invite.tenant_id,userId]);
+    await client.query(`UPDATE tenant_admin_invitations SET status='accepted',accepted_at=now(),accepted_user_id=$2,updated_at=now() WHERE id=$1`,[invite.id,userId]);
+    await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1,'admin','invitation_accepted',$2,$3::jsonb)`,[invite.tenant_id,userId,JSON.stringify({invitation_id:String(invite.id),email:String(invite.email)})]);
+    await client.query("COMMIT");return {ok:true,tenant_id:String(invite.tenant_id),tenant_name:String(invite.tenant_name),user_id:String(userId),email:String(invite.email)} as const;
+  }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}finally{client.release();}
 }
