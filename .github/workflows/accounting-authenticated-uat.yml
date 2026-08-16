@@ -98,11 +98,17 @@ jobs:
 
           success=0
           for attempt in $(seq 1 45); do
+            rm -f /tmp/finance.json
             code="$(curl -sS --max-time 60 -o /tmp/finance.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/finance-dashboard?date=2026-08-14" || true)"
             if [ "$code" = "200" ]; then success=1; break; fi
             if [ "$code" = "401" ]; then
               refresh_vir_token
               echo "Retrying Finance dashboard after session refresh ($attempt/45)"
+              continue
+            fi
+            if [ "$code" = "000" ]; then
+              echo "Waiting after Finance dashboard transport timeout ($attempt/45)"
+              sleep 10
               continue
             fi
             if [ "$code" != "503" ]; then
