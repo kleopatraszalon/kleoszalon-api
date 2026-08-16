@@ -10,7 +10,7 @@ const SYSTEM_ADMIN_ROLES = new Set(["admin","administrator","rendszergazda","sup
 const parseRoles = (raw:any):string[] => {
   if(Array.isArray(raw)) return raw.map(String).map(x=>x.toLowerCase());
   try { const parsed=JSON.parse(String(raw||"")); if(Array.isArray(parsed)) return parsed.map(String).map(x=>x.toLowerCase()); } catch {}
-  return String(raw||"").replace(/[\[\]"]/g,"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);
+  return String(raw||"").replace(/[\[\]\"]/g,"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);
 };
 
 function requirePlatformAdmin(req:TenantAuthRequest,res:Response,next:NextFunction){
@@ -28,24 +28,61 @@ router.use("/tenants/:tenantId/onboarding", saasOnboardingRouter);
 router.get("/tenants",async(_req:TenantAuthRequest,res:Response)=>{
   try{
     const {rows}=await db.query(`
-      SELECT t.id::text,t.slug,t.name,t.legal_name,t.tax_number,t.billing_email,t.status,t.default_locale,t.default_currency,t.timezone,t.created_at,t.updated_at,
-             s.id::text subscription_id,s.status subscription_status,s.current_period_end,s.cancel_at_period_end,
-             sp.code plan_code,sp.name plan_name,sp.monthly_price,sp.currency plan_currency,
-             COALESCE(lc.location_count,0)::int location_count,
-             COALESCE(uc.user_count,0)::int user_count,
-             COALESCE(fc.franchise_location_count,0)::int franchise_location_count
-        FROM tenants t
-        LEFT JOIN LATERAL (
-          SELECT s1.* FROM subscriptions s1
-           WHERE s1.tenant_id=t.id
-           ORDER BY CASE WHEN s1.status IN ('trial','active','past_due','suspended') THEN 0 ELSE 1 END,s1.created_at DESC
-           LIMIT 1
-        ) s ON true
-        LEFT JOIN subscription_plans sp ON sp.id=s.plan_id
-        LEFT JOIN LATERAL (SELECT count(*) location_count FROM locations l WHERE l.tenant_id=t.id) lc ON true
-        LEFT JOIN LATERAL (SELECT count(*) user_count FROM tenant_users tu WHERE tu.tenant_id=t.id AND tu.active=true) uc ON true
-        LEFT JOIN LATERAL (SELECT count(*) franchise_location_count FROM franchise_members fm WHERE fm.tenant_id=t.id AND fm.active=true AND fm.member_type='franchise') fc ON true
-       ORDER BY CASE WHEN t.slug='kleopatra' THEN 0 ELSE 1 END,t.name`);
+      WITH tenant_base AS (
+        SELECT t.id::text,t.slug,t.name,t.legal_name,t.tax_number,t.billing_email,t.status,t.default_locale,t.default_currency,t.timezone,t.created_at,t.updated_at,
+               s.id::text subscription_id,s.status subscription_status,s.current_period_end,s.cancel_at_period_end,
+               sp.code plan_code,sp.name plan_name,sp.monthly_price,sp.currency plan_currency,
+               COALESCE(lc.location_count,0)::int location_count,
+               COALESCE(uc.user_count,0)::int user_count,
+               COALESCE(fc.franchise_location_count,0)::int franchise_location_count,
+               COALESCE(ob.status,'in_progress') onboarding_status,
+               ob.current_step onboarding_saved_step,
+               ob.started_at onboarding_started_at,
+               ob.completed_at onboarding_completed_at,
+               (t.name IS NOT NULL AND btrim(t.name)<>'' AND t.legal_name IS NOT NULL AND btrim(t.legal_name)<>'' AND t.billing_email IS NOT NULL AND btrim(t.billing_email)<>'') company_complete,
+               COALESCE(ac.admin_count,0)>0 admin_complete,
+               COALESCE(lc.location_count,0)>0 location_complete,
+               COALESCE(bc.branding_count,0)>0 branding_complete,
+               (sp.features IS NOT NULL OR COALESCE(mc.module_count,0)>0) modules_complete,
+               COALESCE(s.status IN ('trial','active'),false) subscription_complete,
+               CASE WHEN ai.status='pending' AND ai.expires_at<=now() THEN 'expired' ELSE ai.status END admin_invitation_status,
+               ai.email admin_invitation_email,
+               ai.expires_at admin_invitation_expires_at,
+               ai.created_at admin_invitation_created_at
+          FROM tenants t
+          LEFT JOIN LATERAL (
+            SELECT s1.* FROM subscriptions s1
+             WHERE s1.tenant_id=t.id
+             ORDER BY CASE WHEN s1.status IN ('trial','active','past_due','suspended') THEN 0 ELSE 1 END,s1.created_at DESC
+             LIMIT 1
+          ) s ON true
+          LEFT JOIN subscription_plans sp ON sp.id=s.plan_id
+          LEFT JOIN tenant_onboarding ob ON ob.tenant_id=t.id
+          LEFT JOIN LATERAL (SELECT count(*) location_count FROM locations l WHERE l.tenant_id=t.id) lc ON true
+          LEFT JOIN LATERAL (SELECT count(*) user_count FROM tenant_users tu WHERE tu.tenant_id=t.id AND tu.active=true) uc ON true
+          LEFT JOIN LATERAL (SELECT count(*) admin_count FROM tenant_users tu WHERE tu.tenant_id=t.id AND tu.active=true AND tu.tenant_role IN ('owner','admin')) ac ON true
+          LEFT JOIN LATERAL (SELECT count(*) branding_count FROM tenant_branding tb WHERE tb.tenant_id=t.id AND (NULLIF(btrim(COALESCE(tb.app_name,'')),'') IS NOT NULL OR NULLIF(btrim(COALESCE(tb.logo_url,'')),'') IS NOT NULL OR NULLIF(btrim(COALESCE(tb.primary_color,'')),'') IS NOT NULL)) bc ON true
+          LEFT JOIN LATERAL (SELECT count(*) module_count FROM tenant_features tf WHERE tf.tenant_id=t.id) mc ON true
+          LEFT JOIN LATERAL (SELECT count(*) franchise_location_count FROM franchise_members fm WHERE fm.tenant_id=t.id AND fm.active=true AND fm.member_type='franchise') fc ON true
+          LEFT JOIN LATERAL (
+            SELECT status,email,expires_at,created_at FROM tenant_admin_invitations i
+             WHERE i.tenant_id=t.id ORDER BY i.created_at DESC LIMIT 1
+          ) ai ON true
+      )
+      SELECT tenant_base.*,
+             round(((company_complete::int+admin_complete::int+location_complete::int+branding_complete::int+modules_complete::int+subscription_complete::int)*100.0)/6)::int onboarding_progress,
+             (company_complete AND admin_complete AND location_complete AND branding_complete AND modules_complete AND subscription_complete) onboarding_ready,
+             CASE
+               WHEN NOT company_complete THEN 'company'
+               WHEN NOT admin_complete THEN 'admin'
+               WHEN NOT location_complete THEN 'location'
+               WHEN NOT branding_complete THEN 'branding'
+               WHEN NOT modules_complete THEN 'modules'
+               WHEN NOT subscription_complete THEN 'subscription'
+               ELSE 'ready'
+             END onboarding_next_step
+        FROM tenant_base
+       ORDER BY CASE WHEN slug='kleopatra' THEN 0 ELSE 1 END,name`);
     return res.json({ok:true,rows});
   }catch(error){console.error("[SAAS PLATFORM] tenant list:",error);return res.status(500).json({ok:false,error:"A tenant lista nem tölthető be."});}
 });
@@ -70,10 +107,12 @@ router.post("/tenants",async(req:TenantAuthRequest,res:Response)=>{
     const tenantId=tenant.rows[0].id;
     await client.query(`INSERT INTO tenant_settings(tenant_id,settings) VALUES($1::bigint,'{}'::jsonb) ON CONFLICT(tenant_id) DO NOTHING`,[tenantId]);
     await client.query(`INSERT INTO subscriptions(tenant_id,plan_id,status,trial_ends_at) VALUES($1::bigint,$2,$3,CASE WHEN $3='trial' THEN now()+interval '14 days' ELSE NULL END)`,[tenantId,plan.rows[0].id,status]);
+    await client.query(`INSERT INTO tenant_onboarding(tenant_id,status,current_step,created_by) VALUES($1::bigint,'in_progress','company',$2) ON CONFLICT(tenant_id) DO NOTHING`,[tenantId,String(req.user?.id||req.user?.email||"")||null]);
+    await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'company','onboarding_started',$2,$3::jsonb)`,[tenantId,String(req.user?.id||"")||null,JSON.stringify({source:'platform_tenant_create',plan_code:plan.rows[0].code,status})]);
     await client.query(`INSERT INTO subscription_events(tenant_id,subscription_id,event_type,source,payload)
       SELECT $1::bigint,s.id,'tenant_created','platform_admin',$2::jsonb FROM subscriptions s WHERE s.tenant_id=$1::bigint ORDER BY s.created_at DESC LIMIT 1`,[tenantId,JSON.stringify({plan_code:plan.rows[0].code,created_by:String(req.user?.id||"")})]);
     await client.query("COMMIT");
-    return res.status(201).json({ok:true,tenant:tenant.rows[0],plan:plan.rows[0]});
+    return res.status(201).json({ok:true,tenant:tenant.rows[0],plan:plan.rows[0],onboarding:{status:'in_progress',current_step:'company',started:true}});
   }catch(error:any){await client.query("ROLLBACK").catch(()=>{});if(error?.code==="23505")return res.status(409).json({ok:false,error:"Ez a tenant slug már foglalt."});console.error("[SAAS PLATFORM] tenant create:",error);return res.status(500).json({ok:false,error:"A tenant nem hozható létre."});}finally{client.release();}
 });
 
