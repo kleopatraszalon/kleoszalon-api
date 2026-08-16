@@ -4,6 +4,23 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Immutable, traceable money-movement ledger --------------------------------
 ALTER TABLE financial_movements
+  ADD COLUMN IF NOT EXISTS partner_id bigint,
+  ADD COLUMN IF NOT EXISTS payment_method_id bigint,
+  ADD COLUMN IF NOT EXISTS payment_method_code text,
+  ADD COLUMN IF NOT EXISTS document_type_code text,
+  ADD COLUMN IF NOT EXISTS document_id bigint,
+  ADD COLUMN IF NOT EXISTS client_id text,
+  ADD COLUMN IF NOT EXISTS employee_id text,
+  ADD COLUMN IF NOT EXISTS service_id text,
+  ADD COLUMN IF NOT EXISTS product_id text,
+  ADD COLUMN IF NOT EXISTS visit_id text,
+  ADD COLUMN IF NOT EXISTS work_order_id text,
+  ADD COLUMN IF NOT EXISTS payment_status text NOT NULL DEFAULT 'posted',
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancelled_by text,
+  ADD COLUMN IF NOT EXISTS cancellation_reason text,
+  ADD COLUMN IF NOT EXISTS fee_for_movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now(),
   ADD COLUMN IF NOT EXISTS reversal_of_id uuid,
   ADD COLUMN IF NOT EXISTS posting_group_id uuid,
   ADD COLUMN IF NOT EXISTS idempotency_key text,
