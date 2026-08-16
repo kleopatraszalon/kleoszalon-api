@@ -1,0 +1,37 @@
+name: Requirements traceability
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/requirements/**'
+      - 'scripts/validate-requirements.mjs'
+      - 'tests/requirements-traceability.contract.test.js'
+      - 'package.json'
+      - '.github/workflows/requirements-traceability.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/requirements/**'
+      - 'scripts/validate-requirements.mjs'
+      - 'tests/requirements-traceability.contract.test.js'
+      - 'package.json'
+      - '.github/workflows/requirements-traceability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  traceability:
+    name: Testability 10/10 gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate IDs, acceptance criteria and traceability
+        run: npm run requirements:check
+      - name: Contract test
+        run: node --test tests/requirements-traceability.contract.test.js
