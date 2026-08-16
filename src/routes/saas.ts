@@ -2,9 +2,11 @@ import { Router, Response } from "express";
 import db from "../db";
 import { requireAuth } from "../middleware/auth";
 import { requireTenantContext, requireTenantRole, TenantAuthRequest } from "../middleware/tenantContext";
+import franchiseFinanceRouter from "./franchiseFinance";
 
 const router = Router();
 router.use(requireAuth, requireTenantContext);
+router.use("/franchise-finance",franchiseFinanceRouter);
 
 router.get("/context", async (req: TenantAuthRequest, res: Response) => {
   try {
