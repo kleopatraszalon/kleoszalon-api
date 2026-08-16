@@ -1,0 +1,29 @@
+name: Performance requirement evidence
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * *'
+  pull_request:
+    paths: ['tests/performance_probe.mjs','.github/workflows/performance-evidence.yml','docs/requirements/**']
+jobs:
+  performance-contract:
+    runs-on: ubuntu-latest
+    env:
+      PERF_BASE_URL: https://kleoszalon-api-1.onrender.com
+      DURATION_SECONDS: ${{ github.event_name == 'pull_request' && '60' || '900' }}
+      P95_LIMIT_MS: 1500
+      ERROR_RATE_LIMIT: 0.01
+      REQUEST_INTERVAL_MS: 1000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - name: Run production performance probe
+        run: node tests/performance_probe.mjs
+      - name: Upload performance requirement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-performance-${{ github.sha }}
+          path: artifacts/performance-evidence.json
+          retention-days: 90
