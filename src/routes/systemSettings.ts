@@ -3,6 +3,13 @@ import db from "../db";
 import { requireAuth, type AuthRequest } from "../middleware/auth";
 import { requireAdmin, requireManagement } from "../middleware/requireRoles";
 import { ensureOnlineBooking } from "../booking/ensureOnlineBooking";
+import {
+  deleteFranchiseMailchimpApiKey,
+  ensureFranchiseFunnelConfigSchema,
+  getFranchiseMailchimpSecretStatus,
+  saveFranchiseMailchimpApiKey,
+  testFranchiseMailchimpConnection,
+} from "../services/franchiseFunnelConfig";
 
 type SettingType = "number" | "boolean" | "text" | "time";
 type SettingScope = "global" | "location";
@@ -190,6 +197,105 @@ const DEFINITIONS: SettingDefinition[] = [
     unit: "nap",
     spec_reference: "Spec. 3.13.2. Beszállítók automatikus szavatossági figyelmeztetése",
   },
+  {
+    key: "franchise.mailchimp_audience_id",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "Mailchimp Audience ID",
+    description: "A franchise LP_form és SP_form közös Mailchimp közönségének azonosítója.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "50fc355134",
+  },
+  {
+    key: "franchise.mailchimp_server_prefix",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "Mailchimp szerver prefix",
+    description: "Mailchimp datacenter prefix, jelenlegi beállítás: us18.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "us18",
+  },
+  {
+    key: "franchise.mailchimp_double_opt_in",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "Double opt-in",
+    description: "Kikapcsolva: a jelentkező azonnal feliratkozott státuszt kap. Bekapcsolva: Mailchimp megerősítő e-mail szükséges.",
+    type: "boolean",
+    scope: "global",
+    storage: "system",
+    defaultValue: false,
+  },
+  {
+    key: "franchise.lp_segment_id",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "LP_form Mailchimp segment/tag ID",
+    description: "A landing page alap űrlapjából érkező érdeklődők Mailchimp szegmensének azonosítója.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "3032077",
+  },
+  {
+    key: "franchise.lp_tag_name",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "LP_form tag neve",
+    description: "A Mailchimpben az LP_form érdeklődőkre kerülő tag neve.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "LP_form",
+  },
+  {
+    key: "franchise.sp_tag_name",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "SP_form tag neve",
+    description: "A részletes sales page jelentkezésre kerülő Mailchimp tag neve.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "SP_form",
+  },
+  {
+    key: "franchise.lp_path",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "LP útvonal",
+    description: "A kampány landing page útvonala.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "/lp1",
+  },
+  {
+    key: "franchise.sp_path",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "SP útvonal",
+    description: "A részletes franchise sales page útvonala.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "/ajanlat",
+  },
+  {
+    key: "franchise.thank_you_path",
+    category: "franchise",
+    category_label: "Franchise funnel / Mailchimp",
+    label: "SP_form_TY útvonal",
+    description: "A részletes jelentkezés utáni köszönőoldal útvonala.",
+    type: "text",
+    scope: "global",
+    storage: "system",
+    defaultValue: "/koszonjuk",
+  },
 ];
 
 const byKey = new Map(DEFINITIONS.map((item) => [item.key, item]));
@@ -233,7 +339,11 @@ function normalize(def: SettingDefinition, raw: unknown) {
     return value;
   }
   if (def.type === "time") return timeFromMinute(minuteFromTime(raw));
-  return String(raw ?? "").trim();
+  const value = String(raw ?? "").trim();
+  if (def.category === "franchise" && def.key.endsWith("_path") && !value.startsWith("/")) {
+    throw Object.assign(new Error(`${def.label}: az útvonalnak / jellel kell kezdődnie.`), { status: 400 });
+  }
+  return value;
 }
 
 async function ensureSchema() {
@@ -264,6 +374,7 @@ async function ensureSchema() {
         CREATE INDEX IF NOT EXISTS system_settings_audit_lookup_idx
           ON system_settings_audit(key,created_at DESC);
       `);
+      await ensureFranchiseFunnelConfigSchema();
       for (const def of DEFINITIONS.filter((item) => item.storage === "system")) {
         await db.query(
           `INSERT INTO system_settings(key,scope_type,scope_id,value,category)
@@ -321,6 +432,47 @@ async function auditChange(req: AuthRequest, def: SettingDefinition, scopeType: 
 }
 
 router.use(requireAuth, requireManagement);
+
+router.get("/franchise/mailchimp-secret/status", requireAdmin, async (_req: AuthRequest, res, next) => {
+  try {
+    await ensureSchema();
+    res.json(await getFranchiseMailchimpSecretStatus());
+  } catch (error) { next(error); }
+});
+
+router.put("/franchise/mailchimp-secret", requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    await ensureSchema();
+    const previous = await getFranchiseMailchimpSecretStatus();
+    const result = await saveFranchiseMailchimpApiKey(String(req.body?.api_key || ""), actor(req));
+    await db.query(
+      `INSERT INTO system_settings_audit(key,scope_type,scope_id,old_value,new_value,actor,note)
+       VALUES('franchise.mailchimp_api_key','global','*',$1::jsonb,$2::jsonb,$3,$4)`,
+      [JSON.stringify(previous.configured ? "[configured]" : "[not configured]"), JSON.stringify("[configured]"), actor(req), "Mailchimp API-kulcs biztonságos cseréje"],
+    );
+    res.json({ ok: true, ...result });
+  } catch (error) { next(error); }
+});
+
+router.delete("/franchise/mailchimp-secret", requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    await ensureSchema();
+    await deleteFranchiseMailchimpApiKey();
+    await db.query(
+      `INSERT INTO system_settings_audit(key,scope_type,scope_id,old_value,new_value,actor,note)
+       VALUES('franchise.mailchimp_api_key','global','*',$1::jsonb,$2::jsonb,$3,$4)`,
+      [JSON.stringify("[configured]"), JSON.stringify("[database secret removed; env fallback may remain]"), actor(req), "Mailchimp API-kulcs adatbázisban tárolt példányának törlése"],
+    );
+    res.json({ ok: true, ...(await getFranchiseMailchimpSecretStatus()) });
+  } catch (error) { next(error); }
+});
+
+router.post("/franchise/mailchimp-test", requireAdmin, async (_req: AuthRequest, res, next) => {
+  try {
+    await ensureSchema();
+    res.json(await testFranchiseMailchimpConnection());
+  } catch (error) { next(error); }
+});
 
 router.get("/catalog", async (req: AuthRequest, res, next) => {
   try {
