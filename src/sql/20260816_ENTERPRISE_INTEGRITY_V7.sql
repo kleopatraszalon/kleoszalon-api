@@ -11,7 +11,6 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- 5) daily-action tenant/location ownership
 -- ============================================================
 
--- Resolve the legacy/default Kleopatra tenant once for safe backfill.
 DO $$
 DECLARE default_tenant bigint;
 BEGIN
@@ -21,7 +20,6 @@ BEGIN
   SELECT id INTO default_tenant FROM tenants WHERE slug='kleopatra' LIMIT 1;
   IF default_tenant IS NULL THEN RAISE EXCEPTION 'kleopatra tenant missing'; END IF;
 
-  -- Extend business documents that are financial/marketing tenant boundaries.
   IF to_regclass('public.finance_invoices') IS NOT NULL THEN
     ALTER TABLE finance_invoices ADD COLUMN IF NOT EXISTS tenant_id bigint;
     UPDATE finance_invoices f SET tenant_id=l.tenant_id
@@ -54,7 +52,6 @@ BEGIN
   END IF;
 END $$;
 
--- Generic fail-closed tenant/location consistency guard for writes.
 CREATE OR REPLACE FUNCTION kleo_guard_tenant_location_consistency()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE expected_tenant bigint;
@@ -83,11 +80,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- ============================================================
--- Incoming invoice integrity
--- Supplier invoice numbers must be unique within tenant + supplier identity.
--- Existing historic duplicates remain readable; all new writes are protected.
--- ============================================================
+-- Incoming invoice integrity. Existing historical rows stay readable; new writes fail closed.
 DO $$
 BEGIN
   IF to_regclass('public.finance_invoices') IS NOT NULL THEN
@@ -96,13 +89,10 @@ BEGIN
     ALTER TABLE finance_invoices ADD COLUMN IF NOT EXISTS source_receipt_id text;
     ALTER TABLE finance_invoices ADD COLUMN IF NOT EXISTS source_purchase_order_id text;
 
-    -- Preserve old invoice_no data as supplier number for incoming documents.
     UPDATE finance_invoices
        SET supplier_invoice_number=NULLIF(btrim(invoice_no),'')
      WHERE direction='incoming' AND supplier_invoice_number IS NULL AND NULLIF(btrim(invoice_no),'') IS NOT NULL;
 
-    -- Arithmetic rule is NOT VALID so historic data cannot block deployment,
-    -- while PostgreSQL enforces it for every newly inserted/updated row.
     IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conname='chk_finance_invoices_totals_v7') THEN
       ALTER TABLE finance_invoices ADD CONSTRAINT chk_finance_invoices_totals_v7
         CHECK (abs(round((COALESCE(net_total,0)+COALESCE(vat_total,0)-COALESCE(gross_total,0))::numeric,2)) <= 0.01) NOT VALID;
@@ -118,12 +108,8 @@ BEGIN
   END IF;
 END $$;
 
--- ============================================================
--- Loyalty top-up integrity
--- Existing route stores reference_id; duplicates with the same business key
--- are blocked at INSERT. Because balance update and transaction INSERT occur
--- in one DB transaction, the duplicate INSERT error rolls the balance update back.
--- ============================================================
+-- Loyalty top-up integrity. The unique business reference is checked inside the same transaction
+-- as the account balance mutation, so a duplicate INSERT rolls the entire balance change back.
 DO $$
 BEGIN
   IF to_regclass('public.loyalty_transactions') IS NOT NULL THEN
@@ -138,11 +124,7 @@ BEGIN
   END IF;
 END $$;
 
--- ============================================================
--- Work-order reversal audit core
--- A reversal is a new compensating event; archived source rows are never deleted.
--- The unique work_order_id makes retries idempotent.
--- ============================================================
+-- Work-order reversal audit core. Reversal is compensating, never destructive.
 CREATE TABLE IF NOT EXISTS work_order_reversals(
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   work_order_id uuid NOT NULL REFERENCES work_orders(id) ON DELETE RESTRICT,
@@ -170,9 +152,7 @@ CREATE OR REPLACE FUNCTION kleo_register_work_order_reversal(
   p_idempotency_key text
 ) RETURNS work_order_reversals
 LANGUAGE plpgsql AS $$
-DECLARE
-  w record;
-  r work_order_reversals;
+DECLARE w record; r work_order_reversals;
 BEGIN
   IF length(btrim(COALESCE(p_reason,'')))<5 THEN RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='REVERSAL_REASON_REQUIRED'; END IF;
   IF length(btrim(COALESCE(p_idempotency_key,'')))<8 THEN RAISE EXCEPTION USING ERRCODE='22023',MESSAGE='REVERSAL_IDEMPOTENCY_KEY_REQUIRED'; END IF;
@@ -184,7 +164,9 @@ BEGIN
     RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='WORK_ORDER_NOT_FINALIZED';
   END IF;
 
-  SELECT * INTO r FROM work_order_reversals WHERE work_order_id=p_work_order_id OR idempotency_key=p_idempotency_key ORDER BY created_at LIMIT 1 FOR UPDATE;
+  SELECT * INTO r FROM work_order_reversals
+   WHERE work_order_id=p_work_order_id OR idempotency_key=p_idempotency_key
+   ORDER BY created_at LIMIT 1 FOR UPDATE;
   IF FOUND THEN RETURN r; END IF;
 
   INSERT INTO work_order_reversals(work_order_id,tenant_id,location_id,reason,requested_by,idempotency_key,original_archive_hash,reversal_payload)
@@ -194,22 +176,26 @@ BEGIN
   RETURN r;
 END $$;
 
--- Daily action target table: explicit location targeting without overloading audience JSON.
-CREATE TABLE IF NOT EXISTS daily_action_campaign_locations(
-  campaign_id uuid NOT NULL REFERENCES daily_action_campaigns(id) ON DELETE CASCADE,
-  location_id uuid NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
-  tenant_id bigint NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY(campaign_id,location_id)
-);
-CREATE INDEX IF NOT EXISTS daily_action_campaign_locations_tenant_idx ON daily_action_campaign_locations(tenant_id,location_id);
-DROP TRIGGER IF EXISTS trg_daily_action_campaign_locations_tenant_location_guard ON daily_action_campaign_locations;
-CREATE TRIGGER trg_daily_action_campaign_locations_tenant_location_guard
-  BEFORE INSERT OR UPDATE OF tenant_id,location_id ON daily_action_campaign_locations
-  FOR EACH ROW EXECUTE FUNCTION kleo_guard_tenant_location_consistency();
+-- Daily-action location ownership is only created once the marketing module exists.
+-- This keeps fresh bootstrap independent from request-time marketing schema creation.
+DO $$
+BEGIN
+  IF to_regclass('public.daily_action_campaigns') IS NOT NULL THEN
+    CREATE TABLE IF NOT EXISTS daily_action_campaign_locations(
+      campaign_id uuid NOT NULL REFERENCES daily_action_campaigns(id) ON DELETE CASCADE,
+      location_id uuid NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      tenant_id bigint NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY(campaign_id,location_id)
+    );
+    CREATE INDEX IF NOT EXISTS daily_action_campaign_locations_tenant_idx ON daily_action_campaign_locations(tenant_id,location_id);
+    DROP TRIGGER IF EXISTS trg_daily_action_campaign_locations_tenant_location_guard ON daily_action_campaign_locations;
+    CREATE TRIGGER trg_daily_action_campaign_locations_tenant_location_guard
+      BEFORE INSERT OR UPDATE OF tenant_id,location_id ON daily_action_campaign_locations
+      FOR EACH ROW EXECUTE FUNCTION kleo_guard_tenant_location_consistency();
+  END IF;
+END $$;
 
--- Final integrity assertion: legacy data may exist, but tenant/location mismatches
--- introduced by this migration are never silently accepted.
 DO $$
 DECLARE t text; mismatch_count bigint;
 BEGIN
