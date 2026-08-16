@@ -111,7 +111,11 @@ router.post("/franchise-leads", async (req: Request, res: Response) => {
       method: "POST",
       body: JSON.stringify({ note }),
     });
-    if (!noteResponse.ok) console.error("[franchise-mailchimp-note]", noteResponse.status, (await noteResponse.text()).slice(0, 600));
+    if (!noteResponse.ok) {
+      const detail = (await noteResponse.text()).slice(0, 1200);
+      console.error("[franchise-mailchimp-note]", noteResponse.status, detail);
+      return res.status(502).json({ ok: false, error: "mailchimp_note_failed" });
+    }
 
     return res.status(201).json({ ok: true });
   } catch (error: any) {
