@@ -1,8 +1,11 @@
 BEGIN;
+SET LOCAL statement_timeout = 0;
 
 -- ============================================================
 -- VIR SaaS Core v2 – tenant isolation for critical business data
 -- Idempotent migration; preserves all legacy Kleopátra rows.
+-- This one-shot legacy backfill can touch large tables, therefore it must not
+-- inherit a short request-oriented PostgreSQL statement_timeout.
 -- ============================================================
 
 DO $$
