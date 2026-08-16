@@ -4,6 +4,7 @@ import {requireAuth,AuthRequest} from '../middleware/auth';
 import {ensureLoyaltyProgram,loyaltyDiscountForWorkOrder} from '../loyalty/loyaltyProgramService';
 import {requireIdempotencyKey} from '../finance/financialIntegrity';
 import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
+import {recordFranchiseRevenueIfApplicable} from '../franchise/franchiseRevenueLedger';
 
 const router=Router();
 router.use(requireAuth);
@@ -68,7 +69,7 @@ router.get('/retail/products',async(req:AuthRequest,res)=>{
   const groupJoin=hasGroups&&productCols.has('product_group_id')?`LEFT JOIN product_groups g ON g.id::text=p.product_group_id::text`:'';
   const categoryJoin=hasCategories&&productCols.has('product_category_id')?`LEFT JOIN product_categories c ON c.id::text=p.product_category_id::text`:'';
   const groupSelect=groupJoin?`,p.product_group_id::text group_id,COALESCE(g.name,'Nincs csoport') group_name`:` ,NULL::text group_id,'Nincs csoport'::text group_name`;
-  const categorySelect=categoryJoin?`,p.product_category_id::text category_id,COALESCE(c.name,'Nincs kategória') category_name`:` ,NULL::text category_id,'Nincs kategória'::text category_name`;
+  const categorySelect=categoryJoin?`,p.product_category_id::text category_id,COALESCE(c.name,'Nincs kategória') category_name`:` ,NULL::text category_id,'Nincs kategória'::text group_name`;
   const stockSelect=stockCapable?`COALESCE(b.available_stock,0)::numeric`:`0::numeric`;
   const filters=[`COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true`];
   const params:any[]=[locationId];
@@ -114,6 +115,7 @@ router.post('/retail/sales',async(req:AuthRequest,res,next)=>{
     normalized.push({...p,quantity:qty,price,gross});
   }
   const total=money(normalized.reduce((n,x)=>n+x.gross,0));
+  const netTotal=money(normalized.reduce((n,x)=>n+x.gross/(1+Number(x.vat_rate||0.27)),0));
   const sale=(await c.query(`INSERT INTO retail_sales(location_id,client_id,customer_name,customer_email,customer_phone,payment_method,gross_total,invoice_requested,created_by)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[locationId,String(req.body?.client_id||'')||null,String(req.body?.customer_name||'')||null,String(req.body?.customer_email||'')||null,String(req.body?.customer_phone||'')||null,method,total,Boolean(req.body?.invoice_requested),actor(req)])).rows[0];
   for(const item of normalized){
@@ -137,8 +139,9 @@ router.post('/retail/sales',async(req:AuthRequest,res,next)=>{
     for(const item of normalized){line++;const rate=Number(item.vat_rate||.27),lineNet=money(item.gross/(1+rate)),lineVat=money(item.gross-lineNet);await c.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10)`,[invoice.id,line,item.name,item.quantity,Number((lineNet/item.quantity).toFixed(4)),rate,lineNet,lineVat,item.gross,item.id])}
     await c.query(`UPDATE retail_sales SET finance_invoice_id=$2 WHERE id=$1`,[sale.id,invoice.id]);
   }
+  const franchiseRevenue=await recordFranchiseRevenueIfApplicable(c,{locationId,occurredAt:sale.created_at,currency:'HUF',netRevenue:netTotal,sourceType:'retail_sale',sourceId:String(sale.id),sourcePayload:{gross_total:total,payment_method:method,finance_invoice_id:invoice?.id||null}});
   await c.query('COMMIT');
-  return res.status(201).json({ok:true,sale:{...sale,finance_invoice_id:invoice?.id||null},invoice,items:normalized,total});
+  return res.status(201).json({ok:true,sale:{...sale,finance_invoice_id:invoice?.id||null},invoice,items:normalized,total,net_total:netTotal,franchise_revenue_posted:franchiseRevenue.posted});
  }catch(e:any){await c.query('ROLLBACK').catch(()=>undefined);console.error('[retail-sale] failed',e?.code||'',e?.message||e);return next(e)}finally{c.release()}
 });
 
