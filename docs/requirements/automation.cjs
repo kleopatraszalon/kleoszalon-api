@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  schema_version: '1.2.0',
+  schema_version: '1.3.0',
   generated_evidence_required: true,
   entries: [
     { criterion_id: 'KLEO-FUN-WO-003-AC-02', test_ref: 'tests/requirements-critical-automation.contract.test.js', execution_type: 'contract' },
@@ -30,6 +30,10 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-BOOK-004-AC-02', test_ref: 'tests/requirements-critical-automation-v3.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-PROC-002-AC-01', test_ref: 'tests/requirements-critical-automation-v3.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-PROC-002-AC-02', test_ref: 'tests/requirements-critical-automation-v3.contract.test.js', execution_type: 'integration' },
-    { criterion_id: 'KLEO-NFR-PRV-001-AC-01', test_ref: 'tests/requirements-critical-automation-v3.contract.test.js', execution_type: 'security' }
+    { criterion_id: 'KLEO-NFR-PRV-001-AC-01', test_ref: 'tests/requirements-critical-automation-v3.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-FUN-PROC-001-AC-02', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-NOT-001-AC-01', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-NFR-PRV-002-AC-02', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-FUN-WO-003-AC-01', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'contract' }
   ]
 };
