@@ -69,15 +69,20 @@ const checks = [
 ];
 
 const matrix = [
-  '# Követelmény–teszt nyomonkövetési mátrix','',
-  '> Generált fájl. Forrás: `catalog.cjs`. Frissítés: `npm run requirements:matrix`.','',
-  `Követelmények: **${catalog.requirements.length}** · Elfogadási kritériumok / tesztesetek: **${allAcceptanceIds.length}**`,'',
-  '| Követelmény | Terület | PDF | Prioritás | Felelős | Kritériumok / tesztesetek | Automatizálás |','|---|---|---:|---|---|---|---|',
+  '# Követelmény–teszt nyomonkövetési mátrix',
+  '',
+  '> Generált fájl. Forrás: `catalog.cjs`. Frissítés: `npm run requirements:matrix`.',
+  '',
+  `Követelmények: **${catalog.requirements.length}** · Elfogadási kritériumok / tesztesetek: **${allAcceptanceIds.length}**`,
+  '',
+  '| Követelmény | Terület | PDF | Prioritás | Felelős | Kritériumok / tesztesetek | Automatizálás |',
+  '|---|---|---:|---|---|---|---|',
   ...catalog.requirements.map((item) => {
     const criteria = item.acceptance_criteria.map((criterion) => `${criterion.id} → ${criterion.verification.test_case_id}`).join('<br>');
     const automation = [...new Set(item.acceptance_criteria.map((criterion) => criterion.verification.automation_status))].join(', ');
     return `| ${item.id} | ${item.area} | ${item.source.page}. oldal | ${item.priority} | ${item.owner_role} | ${criteria} | ${automation} |`;
-  }),'',
+  }),
+  '',
 ].join('\n');
 
 if (writeMatrix) fs.writeFileSync(matrixPath, matrix, 'utf8');
