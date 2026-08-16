@@ -12,6 +12,8 @@
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('.nav-build',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.server.json && node scripts/prepare-nav-xsd-assets.mjs && node scripts/copy-nav-build-assets.mjs && node scripts/nav-xsd-smoke.cjs",
     "test": "node --test tests/*.test.js",
+    "requirements:check": "node scripts/validate-requirements.mjs",
+    "requirements:matrix": "node scripts/validate-requirements.mjs --write-matrix",
     "test:workorders": "node --test tests/workorder-stage8.contract.test.js tests/rbac-failclosed.contract.test.js tests/live-runtime-hotfix.contract.test.js",
     "start": "node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
     "seed:demo": "node dist/demo/seedRunner.js",
