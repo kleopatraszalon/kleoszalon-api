@@ -110,9 +110,20 @@ jobs:
               cat /tmp/finance.json || true
               exit 1
             fi
-            echo "Waiting for one-shot Finance bootstrap ($attempt/45)"
-            cat /tmp/finance.json || true
-            sleep 10
+
+            db_code="$(node -e "try{const x=require('/tmp/finance.json');process.stdout.write(String(x.db_code||''))}catch{}")"
+            case "$db_code" in
+              ""|57014|55P03|53300|57P03|40001|40P01|08001|08003|08006)
+                echo "Waiting for transient Finance bootstrap state ($attempt/45), db_code=${db_code:-none}"
+                cat /tmp/finance.json || true
+                sleep 10
+                ;;
+              *)
+                echo "Finance bootstrap deterministic database error; failing fast, db_code=$db_code"
+                cat /tmp/finance.json || true
+                exit 1
+                ;;
+            esac
           done
           if [ "$success" -ne 1 ]; then echo "Finance bootstrap did not become ready"; cat /tmp/finance.json || true; exit 1; fi
           node - <<'NODE'
