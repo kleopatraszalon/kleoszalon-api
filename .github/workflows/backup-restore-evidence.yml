@@ -1,0 +1,105 @@
+name: Backup restore requirement evidence
+
+on:
+  pull_request:
+    paths:
+      - 'tests/backup_restore_rehearsal.mjs'
+      - 'docs/requirements/**'
+      - '.github/workflows/backup-restore-evidence.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '15 1 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  restore-evidence:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_backup_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_backup_fixture"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LOCAL_SOURCE_URL: postgresql://postgres:postgres@localhost:5432/kleo_backup_fixture
+      RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_restore_target
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare isolated restore target and PR fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD=postgres createdb -h localhost -U postgres kleo_restore_target
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PGPASSWORD=postgres psql -h localhost -U postgres -d kleo_backup_fixture <<'SQL'
+            CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL);
+            CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id));
+            INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon');
+            INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');
+            SQL
+          fi
+
+      - name: Resolve source without exposing secret
+        id: source
+        shell: bash
+        env:
+          PRODUCTION_BACKUP_SOURCE: ${{ secrets.BACKUP_SOURCE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "url=${LOCAL_SOURCE_URL}" >> "$GITHUB_OUTPUT"
+            echo "environment=github-actions-postgresql16-rehearsal" >> "$GITHUB_OUTPUT"
+          else
+            if [ -z "${PRODUCTION_BACKUP_SOURCE:-}" ]; then
+              echo "BACKUP_SOURCE_DATABASE_URL is not configured for scheduled/manual production evidence" >&2
+              exit 1
+            fi
+            echo "::add-mask::${PRODUCTION_BACKUP_SOURCE}"
+            echo "url=${PRODUCTION_BACKUP_SOURCE}" >> "$GITHUB_OUTPUT"
+            echo "environment=production-backup-isolated-restore" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run dump, isolated restore and consistency checks
+        env:
+          SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
+          BACKUP_EVIDENCE_ENVIRONMENT: ${{ steps.source.outputs.environment }}
+        run: node tests/backup_restore_rehearsal.mjs
+
+      - name: Upload backup restore evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-backup-restore-${{ github.sha }}
+          path: evidence/requirements-evidence-backup-restore.json
+          retention-days: 90
+
+  alert-on-failure:
+    if: ${{ always() && needs.restore-evidence.result == 'failure' && github.event_name != 'pull_request' }}
+    needs: restore-evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or refresh backup evidence alert issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'P0: backup/restore evidence cycle failed';
+            const { data } = await github.rest.issues.listForRepo({owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'backup-evidence'}).catch(() => ({data: []}));
+            const existing = data.find(i => i.title === title);
+            const body = `A KLEO-NFR-BCK-001 backup/restore evidence cycle failed. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. A failure is release-blocking until a successful restore evidence run exists.`;
+            if (existing) {
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body});
+            } else {
+              await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['backup-evidence']});
+            }
