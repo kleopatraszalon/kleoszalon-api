@@ -1,0 +1,41 @@
+name: Frontend cross-repo requirement evidence v20
+on:
+  pull_request:
+    paths:
+      - 'docs/requirements/**'
+      - 'tests/frontend_crossrepo_v20.evidence.mjs'
+      - '.github/workflows/frontend-crossrepo-v20.yml'
+      - 'scripts/validate-requirement-automation.mjs'
+      - 'scripts/generate-requirement-evidence.mjs'
+  workflow_dispatch:
+
+jobs:
+  frontend-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout API evidence repository
+        uses: actions/checkout@v4
+        with:
+          path: api
+      - name: Checkout proven frontend revision
+        uses: actions/checkout@v4
+        with:
+          repository: kleopatraszalon/kleoszalon-frontend
+          ref: 394cb00934aae0496289b479bb8d14764093bf38
+          path: frontend
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Run KLEO v20 cross-repo acceptance evidence
+        run: node api/tests/frontend_crossrepo_v20.evidence.mjs frontend
+      - name: Production frontend build
+        working-directory: frontend
+        env:
+          CI: false
+        run: npm run build
