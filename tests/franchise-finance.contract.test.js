@@ -1,0 +1,44 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+
+const route=fs.readFileSync('src/routes/franchiseFinance.ts','utf8');
+const saas=fs.readFileSync('src/routes/saas.ts','utf8');
+
+test('franchise finance router is mounted behind SaaS tenant context',()=>{
+  assert.ok(saas.includes('franchiseFinanceRouter'));
+  assert.ok(saas.includes('router.use("/franchise-finance",franchiseFinanceRouter)'));
+  assert.ok(saas.indexOf('router.use(requireAuth, requireTenantContext)')<saas.indexOf('router.use("/franchise-finance",franchiseFinanceRouter)'));
+});
+
+test('revenue ledger is tenant scoped and source idempotent',()=>{
+  assert.ok(route.includes('franchise_revenue_entries'));
+  assert.ok(route.includes('UNIQUE(tenant_id,source_type,source_id)'));
+  assert.ok(route.includes('FRANCHISE_REVENUE_DUPLICATE'));
+  assert.ok(route.includes("fm.tenant_id=$1::bigint"));
+  assert.ok(route.includes("fm.member_type='franchise'"));
+});
+
+test('settlements preserve approved and paid financial records',()=>{
+  assert.ok(route.includes('FRANCHISE_SETTLEMENT_LOCKED'));
+  assert.ok(route.includes("locked.rows.some((x:any)=>x.status!==\"draft\")"));
+  assert.ok(route.includes("WHERE franchise_settlements.status='draft'"));
+  assert.ok(route.includes("status='approved'"));
+  assert.ok(route.includes("status='paid'"));
+});
+
+test('royalty calculation uses revenue base and effective member/network rates',()=>{
+  assert.ok(route.includes('COALESCE(fm.royalty_percent,fn.royalty_percent,0)'));
+  assert.ok(route.includes('COALESCE(fm.marketing_fee_percent,fn.marketing_fee_percent,0)'));
+  assert.ok(route.includes('revenueBase*royaltyPercent'));
+  assert.ok(route.includes('revenueBase*marketingPercent'));
+  assert.ok(route.includes('royalty_amount'));
+  assert.ok(route.includes('marketing_fee_amount'));
+});
+
+test('payment transition requires approval and a payment reference',()=>{
+  assert.ok(route.includes('/settlements/:id/mark-paid'));
+  assert.ok(route.includes('payment_reference'));
+  assert.ok(route.includes("AND status='approved'"));
+  assert.ok(route.includes("event_type,actor_user_id,payload"));
+});
