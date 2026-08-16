@@ -6,8 +6,9 @@ const require=createRequire(import.meta.url);
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const base=require(path.join(root,'docs/requirements/catalog.cjs'));
 const operational=require(path.join(root,'docs/requirements/catalog.operational.cjs'));
+const inventoryOperational=require(path.join(root,'docs/requirements/catalog.operational.inventory.cjs'));
 const automation=require(path.join(root,'docs/requirements/automation.cjs'));
-const all=[...base.requirements,...operational.requirements];
+const all=[...base.requirements,...operational.requirements,...inventoryOperational.requirements];
 const criteria=new Map(all.flatMap(r=>r.acceptance_criteria.map(a=>[a.id,{requirement:r,criterion:a}])));
 const errors=[];
 const seen=new Set();
@@ -17,14 +18,23 @@ for(const entry of automation.entries||[]){
   const target=criteria.get(entry.criterion_id);
   if(!target){errors.push(`Ismeretlen elfogadási kritérium: ${entry.criterion_id}`);continue;}
   if(!['contract','security','unit','integration','e2e','performance','resilience'].includes(entry.execution_type))errors.push(`${entry.criterion_id}: hibás execution_type`);
+  const mode=entry.evidence_mode||'inline-ci';
+  if(!['inline-ci','external-workflow'].includes(mode))errors.push(`${entry.criterion_id}: hibás evidence_mode`);
   const testPath=path.join(root,entry.test_ref||'');
   if(!entry.test_ref||!fs.existsSync(testPath)){errors.push(`${entry.criterion_id}: hiányzó tesztfájl ${entry.test_ref||''}`);continue;}
   const src=fs.readFileSync(testPath,'utf8');
   if(!src.includes(entry.criterion_id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a kritérium-ID-ra`);
   if(!src.includes(target.requirement.id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a követelmény-ID-ra`);
+  if(mode==='external-workflow'){
+    const workflowPath=path.join(root,entry.workflow_ref||'');
+    if(!entry.workflow_ref||!fs.existsSync(workflowPath))errors.push(`${entry.criterion_id}: hiányzó külső workflow ${entry.workflow_ref||''}`);
+  }
 }
 const automated=seen.size,total=criteria.size;
+const external=(automation.entries||[]).filter(x=>(x.evidence_mode||'inline-ci')==='external-workflow').length;
+const inline=automated-external;
 const percent=total?Math.round(automated*1000/total)/10:0;
 console.log(`Automatizált elfogadási kritériumok: ${automated}/${total} (${percent}%)`);
+console.log(`Inline CI evidence: ${inline}; external workflow evidence: ${external}`);
 console.log(`Manuális/integrációs evidence-re vár: ${total-automated}/${total}`);
 if(errors.length){for(const e of errors)console.error('ERROR',e);process.exitCode=1}else console.log('PASS Requirement automation registry konzisztens.');
