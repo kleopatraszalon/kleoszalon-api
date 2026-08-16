@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  schema_version: '1.3.0',
+  schema_version: '1.4.0',
   generated_evidence_required: true,
   entries: [
     { criterion_id: 'KLEO-FUN-WO-003-AC-02', test_ref: 'tests/requirements-critical-automation.contract.test.js', execution_type: 'contract' },
@@ -34,6 +34,13 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-PROC-001-AC-02', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-NOT-001-AC-01', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'security' },
     { criterion_id: 'KLEO-NFR-PRV-002-AC-02', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'security' },
-    { criterion_id: 'KLEO-FUN-WO-003-AC-01', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'contract' }
+    { criterion_id: 'KLEO-FUN-WO-003-AC-01', test_ref: 'tests/requirements-critical-automation-v4.contract.test.js', execution_type: 'contract' },
+    { criterion_id: 'KLEO-FUN-BOOK-001-AC-01', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-BOOK-001-AC-02', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-AUTH-001-AC-01', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-GEN-DATA-001-AC-01', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-GEN-DATA-001-AC-02', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-GEN-AUD-001-AC-01', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-GEN-AUD-001-AC-02', test_ref: 'tests/requirements-critical-automation-v5.contract.test.js', execution_type: 'integration' }
   ]
 };
