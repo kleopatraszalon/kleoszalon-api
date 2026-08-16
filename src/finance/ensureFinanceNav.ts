@@ -57,6 +57,8 @@ export function ensureFinanceNav(){
         '20260816_DAY_CLOSE_GUARD_V1.sql',
         '20260816_SAAS_CORE_V1.sql',
         '20260816_SAAS_TENANT_ISOLATION_V2.sql',
+        '20260816_SAAS_ONBOARDING_V7.sql',
+        '20260816_SAAS_ADMIN_INVITATIONS_V8.sql',
         '20260816_SAAS_BILLING_V4.sql',
         '20260816_FRANCHISE_FINANCE_V5.sql',
         '20260816_FRANCHISE_ACCOUNTING_V6.sql',
