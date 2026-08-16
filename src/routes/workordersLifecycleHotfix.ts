@@ -4,9 +4,11 @@ import {requireAuth,AuthRequest} from '../middleware/auth';
 import {hasAnyRole} from '../security/roles';
 import {recordWorkOrderArrival} from '../services/clientLateness';
 import {settleWorkOrderWithoutShift} from '../services/workOrderSettlementRecovery';
+import workOrderReversalApi from './workOrderReversalApi';
 
 const router=Router();
 router.use(requireAuth);
+router.use(workOrderReversalApi);
 
 const STATUSES=new Set(['waiting','arrived','in_progress','completed','cancelled','no_show']);
 const NEXT:Record<string,Set<string>>={
