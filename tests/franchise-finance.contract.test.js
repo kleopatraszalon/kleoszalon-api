@@ -28,13 +28,19 @@ test('settlements preserve approved and paid financial records',()=>{
   assert.ok(route.includes("status='paid'"));
 });
 
-test('royalty calculation uses revenue base and effective member/network rates',()=>{
+test('royalty calculation uses effective rates and PostgreSQL numeric rounding',()=>{
   assert.ok(route.includes('COALESCE(fm.royalty_percent,fn.royalty_percent,0)'));
   assert.ok(route.includes('COALESCE(fm.marketing_fee_percent,fn.marketing_fee_percent,0)'));
-  assert.ok(route.includes('revenueBase*royaltyPercent'));
-  assert.ok(route.includes('revenueBase*marketingPercent'));
+  assert.ok(route.includes('round($8::numeric*$9::numeric/100,2)'));
+  assert.ok(route.includes('round($8::numeric*$10::numeric/100,2)'));
+  assert.ok(route.includes('round($8::numeric*($9::numeric+$10::numeric)/100,2)'));
   assert.ok(route.includes('royalty_amount'));
   assert.ok(route.includes('marketing_fee_amount'));
+});
+
+test('summary never adds different currencies together',()=>{
+  assert.ok(route.includes('GROUP BY currency ORDER BY currency'));
+  assert.ok(route.includes('summary_by_currency:totals.rows'));
 });
 
 test('payment transition requires approval and a payment reference',()=>{
