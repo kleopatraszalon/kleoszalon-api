@@ -64,6 +64,69 @@ CREATE INDEX IF NOT EXISTS finance_integrity_events_subject_idx
 
 -- Cross-ledger links and retry keys. Existing rows remain legacy-compatible;
 -- every new protected write explicitly sets integrity_required=true.
+ALTER TABLE financial_accounts
+  ADD COLUMN IF NOT EXISTS allow_negative_balance boolean NOT NULL DEFAULT true;
+
+-- Keep this integrity migration safe on partially upgraded installations and
+-- isolated integration schemas. In the normal bootstrap these tables already
+-- exist, so the declarations are no-ops.
+CREATE TABLE IF NOT EXISTS financial_transfers(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  location_id uuid REFERENCES locations(id) ON DELETE SET NULL,
+  source_account_id uuid NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+  destination_account_id uuid NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+  amount numeric(14,2) NOT NULL CHECK(amount>0),
+  transferred_at timestamptz NOT NULL DEFAULT now(),
+  note text,
+  created_by text,
+  source_movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
+  destination_movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT financial_transfers_accounts_ck CHECK(source_account_id<>destination_account_id)
+);
+
+CREATE TABLE IF NOT EXISTS financial_refunds(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  location_id uuid REFERENCES locations(id) ON DELETE SET NULL,
+  work_order_id text,
+  account_id uuid NOT NULL REFERENCES financial_accounts(id) ON DELETE RESTRICT,
+  amount numeric(14,2) NOT NULL CHECK(amount>0),
+  reason text NOT NULL,
+  status text NOT NULL DEFAULT 'completed' CHECK(status IN('pending','completed','cancelled')),
+  refunded_at timestamptz NOT NULL DEFAULT now(),
+  created_by text,
+  movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS accounting_journal_entries(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  location_id uuid REFERENCES locations(id) ON DELETE SET NULL,
+  entry_date date NOT NULL,
+  document_no text,
+  source_type text NOT NULL,
+  source_id text,
+  description text,
+  status text NOT NULL DEFAULT 'draft',
+  created_by text,
+  approved_by text,
+  approved_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS accounting_journal_lines(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  journal_entry_id uuid NOT NULL REFERENCES accounting_journal_entries(id) ON DELETE CASCADE,
+  account_code text NOT NULL,
+  account_name text,
+  debit numeric(14,2) NOT NULL DEFAULT 0 CHECK(debit>=0),
+  credit numeric(14,2) NOT NULL DEFAULT 0 CHECK(credit>=0),
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK(NOT(debit>0 AND credit>0))
+);
+
 ALTER TABLE financial_transfers ADD COLUMN IF NOT EXISTS idempotency_key text;
 CREATE UNIQUE INDEX IF NOT EXISTS financial_transfers_idempotency_uq
   ON financial_transfers(idempotency_key) WHERE idempotency_key IS NOT NULL;
