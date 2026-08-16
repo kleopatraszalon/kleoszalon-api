@@ -13,13 +13,22 @@ function roleText(value: unknown): string {
   return String(value ?? "").toLowerCase();
 }
 
+function featureForRequest(req: AuthRequest): string | null {
+  const url = String(req.originalUrl || req.baseUrl || req.url || "").toLowerCase();
+  if (url.startsWith("/api/clients")) return "crm";
+  if (url.startsWith("/api/appointments") || url.startsWith("/api/bookings") || url.startsWith("/api/workorders")) return "booking";
+  if (url.startsWith("/api/employees") || url.startsWith("/api/hr") || url.startsWith("/api/payroll") || url.startsWith("/api/timetable") || url.startsWith("/api/checklists")) return "hr";
+  if (url.startsWith("/api/transactions/inventory") || url.startsWith("/api/transactions/procurement")) return "inventory";
+  return null;
+}
+
 /** Resolve the authenticated user's active tenant. Existing Kleopátra users
  * are backfilled by ensureSaasCore(), therefore the fallback remains safe for
  * the migration period while old JWTs do not yet contain tenant_id.
  */
 export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIdentity | null> {
   await ensureSaasCore();
-  const authUser = req.user as (NonNullable<AuthRequest["user"]> & { tenant_id?: string | number | null }) | undefined;
+  const authUser = req.user as (NonNullable<AuthRequest["user"]> & { tenant_id?: string | number | null; tenant_feature_denied?: string | null }) | undefined;
   if (!authUser?.id) return null;
 
   const userId = String(authUser.id);
@@ -48,8 +57,17 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
     row = fallback.rows[0];
   }
   if (!row) return null;
-  authUser.tenant_id = String(row.id);
-  return { id: String(row.id), slug: String(row.slug), role: String(row.tenant_role || "member") };
+
+  const tenantId = String(row.id);
+  authUser.tenant_id = tenantId;
+  authUser.tenant_feature_denied = null;
+  const feature = featureForRequest(req);
+  if (feature && !(await tenantFeatureEnabled(tenantId, feature))) {
+    authUser.tenant_feature_denied = feature;
+    return null;
+  }
+
+  return { id: tenantId, slug: String(row.slug), role: String(row.tenant_role || "member") };
 }
 
 export async function tenantLocationIds(tenantId: string): Promise<string[]> {
