@@ -46,19 +46,46 @@ async function ensureRetailSchema(){
   `);
 }
 
-router.get('/retail/products',async(req:AuthRequest,res,next)=>{
+router.get('/retail/products',async(req:AuthRequest,res)=>{
  try{
   const locationId=String(req.query.location_id||'').trim();
+  const q=String(req.query.q||'').trim().slice(0,120);
+  const groupId=String(req.query.group_id||'').trim();
+  const [productCols,hasBalances,hasGroups,hasCategories]=await Promise.all([
+    columnTypes('products'),tableExists('product_stock_balances'),tableExists('product_groups'),tableExists('product_categories')
+  ]);
+  const balanceCols=hasBalances?await columnTypes('product_stock_balances'):new Map<string,string>();
+  const stockCapable=hasBalances&&balanceCols.has('product_id')&&balanceCols.has('quantity');
+  const locationCapable=stockCapable&&balanceCols.has('location_id');
+  const stockJoin=stockCapable?`LEFT JOIN (
+    SELECT product_id::text product_id,SUM(COALESCE(quantity,0))::numeric available_stock
+    FROM product_stock_balances
+    WHERE ($1::text='' OR ${locationCapable?'location_id::text=$1':'TRUE'})
+    GROUP BY product_id::text
+  ) b ON b.product_id=p.id::text`:'';
+  const groupJoin=hasGroups&&productCols.has('product_group_id')?`LEFT JOIN product_groups g ON g.id::text=p.product_group_id::text`:'';
+  const categoryJoin=hasCategories&&productCols.has('product_category_id')?`LEFT JOIN product_categories c ON c.id::text=p.product_category_id::text`:'';
+  const groupSelect=groupJoin?`,p.product_group_id::text group_id,COALESCE(g.name,'Nincs csoport') group_name`:` ,NULL::text group_id,'Nincs csoport'::text group_name`;
+  const categorySelect=categoryJoin?`,p.product_category_id::text category_id,COALESCE(c.name,'Nincs kategória') category_name`:` ,NULL::text category_id,'Nincs kategória'::text category_name`;
+  const stockSelect=stockCapable?`COALESCE(b.available_stock,0)::numeric`:`0::numeric`;
+  const filters=[`COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true`];
+  const params:any[]=[locationId];
+  if(q){params.push(`%${q}%`);const p=`$${params.length}`;filters.push(`(COALESCE(p.name,'') ILIKE ${p} OR COALESCE(to_jsonb(p)->>'barcode','') ILIKE ${p} OR COALESCE(to_jsonb(p)->>'internal_code','') ILIKE ${p}${groupJoin?` OR COALESCE(g.name,'') ILIKE ${p}`:''}${categoryJoin?` OR COALESCE(c.name,'') ILIKE ${p}`:''})`)}
+  if(groupId&&productCols.has('product_group_id')){params.push(groupId);filters.push(`p.product_group_id::text=$${params.length}`)}
   const products=(await db.query(`SELECT p.id::text id,p.name,
     COALESCE(NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price,
-    COALESCE(NULLIF(to_jsonb(b)->>'quantity','')::numeric,0)::numeric available_stock,
+    ${stockSelect} available_stock,
     COALESCE(NULLIF(to_jsonb(p)->>'vat_rate','')::numeric,0.27)::numeric vat_rate
+    ${groupSelect}${categorySelect}
     FROM products p
-    LEFT JOIN product_stock_balances b ON b.product_id::text=p.id::text AND ($1::text='' OR b.location_id::text=$1)
-    WHERE COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true
-    ORDER BY p.name`,[locationId])).rows;
+    ${groupJoin}
+    ${categoryJoin}
+    ${stockJoin}
+    WHERE ${filters.join(' AND ')}
+    ORDER BY group_name,category_name,p.name
+    LIMIT 500`,params)).rows;
   return res.json(products)
- }catch(e){next(e)}
+ }catch(e:any){console.error('[retail-products] failed',e?.code||'',e?.message||e);return res.status(500).json({message:'A terméklista nem tölthető be.',code:e?.code||'RETAIL_PRODUCTS_FAILED'})}
 });
 
 router.post('/retail/sales',async(req:AuthRequest,res,next)=>{
