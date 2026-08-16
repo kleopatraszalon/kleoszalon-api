@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  schema_version: '1.6.0',
+  schema_version: '1.7.0',
   generated_evidence_required: true,
   entries: [
     { criterion_id: 'KLEO-FUN-WO-003-AC-02', test_ref: 'tests/requirements-critical-automation.contract.test.js', execution_type: 'contract' },
@@ -45,6 +45,8 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-INV-001-AC-01', test_ref: 'tests/requirements-critical-automation-v6.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-INV-001-AC-02', test_ref: 'tests/requirements-critical-automation-v6.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-INV-004-AC-01', test_ref: 'tests/inventory_lot_fefo.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/inventory-lot-fefo.yml' },
-    { criterion_id: 'KLEO-FUN-INV-004-AC-02', test_ref: 'tests/inventory_lot_fefo.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/inventory-lot-fefo.yml' }
+    { criterion_id: 'KLEO-FUN-INV-004-AC-02', test_ref: 'tests/inventory_lot_fefo.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/inventory-lot-fefo.yml' },
+    { criterion_id: 'KLEO-FUN-INV-003-AC-01', test_ref: 'tests/requirements-critical-automation-v8.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-INV-003-AC-02', test_ref: 'tests/requirements-critical-automation-v8.contract.test.js', execution_type: 'contract' }
   ]
 };

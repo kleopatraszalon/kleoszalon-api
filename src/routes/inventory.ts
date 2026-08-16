@@ -161,6 +161,7 @@ router.post("/movements", async (req: any, res, next) => {
     if (!["opening", "receipt", "adjustment"].includes(movementType)) return res.status(400).json({ message: "Érvénytelen készletmozgás típus." });
     if (requestedQuantity === null) return res.status(400).json({ message: "A quantity csak szám lehet." });
     if ((movementType === "opening" || movementType === "receipt") && requestedQuantity < 0) return res.status(400).json({ message: "Nyitókészlet és bevételezés nem lehet negatív." });
+    if (movementType === "adjustment" && !note) return res.status(400).json({ message: "Készletkorrekcióhoz az indoklás kötelező.", code: "INVENTORY_ADJUSTMENT_REASON_REQUIRED" });
     if (incomingUnitCost !== null && (incomingUnitCost < 0 || !Number.isFinite(incomingUnitCost))) return res.status(400).json({ message: "Érvénytelen beszerzési ár." });
     if (incomingMinQuantity !== null && (incomingMinQuantity < 0 || !Number.isFinite(incomingMinQuantity))) return res.status(400).json({ message: "Érvénytelen minimum készlet." });
 
