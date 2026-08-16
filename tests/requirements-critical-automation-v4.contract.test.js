@@ -14,7 +14,7 @@ test('KLEO-FUN-PROC-001-AC-02 approved procurement order is auditable and cannot
   assert.match(workflow,/approved_by/);
   assert.match(orders,/status === "ordered"/);
   assert.match(orders,/\["approved","auto_approved"\]/);
-  assert.match(orders,/Rendelés csak jóváhagyás után/);
+  assert.match(orders,/A rendelés csak jóváhagyás után küldhető rendelésre/);
 });
 
 test('KLEO-FUN-NOT-001-AC-01 notification data is scoped to the authenticated user and location',()=>{
