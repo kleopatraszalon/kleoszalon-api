@@ -80,9 +80,34 @@ export function ensureGdprSchema() {
       CREATE INDEX IF NOT EXISTS gdpr_consents_subject_idx ON gdpr_consents(subject_ref,purpose,captured_at DESC);
       CREATE INDEX IF NOT EXISTS gdpr_dpias_review_idx ON gdpr_dpias(status,review_at);
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_reason text;
+      ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_notice_evidence text;
       ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS response_evidence text;
       ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS notification_delay_reason text;
       ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS authority_reference text;
+      CREATE TABLE IF NOT EXISTS gdpr_audit_outbox(
+        id bigserial PRIMARY KEY,event_id uuid NOT NULL DEFAULT gen_random_uuid(),occurred_at timestamptz NOT NULL DEFAULT now(),
+        table_name text NOT NULL,entity_id text NOT NULL,operation text NOT NULL,actor_key text,row_hash text NOT NULL,
+        delivered_at timestamptz,UNIQUE(event_id));
+      CREATE INDEX IF NOT EXISTS gdpr_audit_outbox_pending_idx ON gdpr_audit_outbox(occurred_at) WHERE delivered_at IS NULL;
+      CREATE OR REPLACE FUNCTION gdpr_capture_durable_audit() RETURNS trigger AS $$
+      DECLARE row_data jsonb; entity text; actor text;
+      BEGIN
+        row_data:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+        entity:=COALESCE(row_data->>'id',row_data->>'key','unknown');
+        actor:=COALESCE(row_data->>'updated_by',row_data->>'created_by');
+        INSERT INTO gdpr_audit_outbox(table_name,entity_id,operation,actor_key,row_hash)
+        VALUES(TG_TABLE_NAME,entity,TG_OP,actor,md5(row_data::text));
+        IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql;
+      DO $$ DECLARE table_name text; trigger_name text; BEGIN
+        FOREACH table_name IN ARRAY ARRAY['gdpr_settings','gdpr_processing_activities','gdpr_retention_policies','gdpr_data_subject_requests','gdpr_incidents','gdpr_processors','gdpr_notice_versions','gdpr_consents','gdpr_dpias'] LOOP
+          trigger_name:='trg_'||table_name||'_durable_audit';
+          IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname=trigger_name AND tgrelid=table_name::regclass) THEN
+            EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION gdpr_capture_durable_audit()',trigger_name,table_name);
+          END IF;
+        END LOOP;
+      END $$;
     `);
     for (const [key,value] of Object.entries(DEFAULT_SETTINGS)) await db.query(
       `INSERT INTO gdpr_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO NOTHING`,[key,JSON.stringify(value)]);
