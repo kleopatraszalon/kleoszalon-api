@@ -45,9 +45,11 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Enterprise contract tests
         run: node --test tests/enterprise-integrity-v16.contract.test.js
-      - name: Bootstrap daily-action marketing core
-        run: psql -h 127.0.0.1 -U postgres -d kleo_integrity -v ON_ERROR_STOP=1 -f src/sql/20260816_ENTERPRISE_MARKETING_BRIDGE_V7A.sql
-      - name: Execute database integrity proof
+      - name: Fresh marketing bootstrap proof
+        run: |
+          createdb -h 127.0.0.1 -U postgres kleo_bridge
+          psql -h 127.0.0.1 -U postgres -d kleo_bridge -v ON_ERROR_STOP=1 -f src/sql/20260816_ENTERPRISE_MARKETING_BRIDGE_V7A.sql
+      - name: Execute legacy-compatible database integrity proof
         run: psql -h 127.0.0.1 -U postgres -d kleo_integrity -v ON_ERROR_STOP=1 -f tests/enterprise_integrity_v16.integration.sql
       - name: Production TypeScript build
         run: npm run build
