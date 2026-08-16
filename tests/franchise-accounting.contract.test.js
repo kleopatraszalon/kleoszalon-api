@@ -31,6 +31,14 @@ test('approved settlement posts exactly one tenant-scoped receivable',()=>{
   assert.ok(route.includes("event_type,actor_user_id,payload"));
 });
 
+test('partner billing settings synchronize into open receivable snapshots',()=>{
+  assert.ok(route.includes("router.put('/members/:memberId/billing'"));
+  assert.ok(route.includes("UPDATE franchise_receivables SET billing_legal_name"));
+  assert.ok(route.includes("finance_invoice_id IS NULL AND status IN ('posted','paid')"));
+  assert.ok(route.includes('vat_amount=CASE WHEN $10::numeric IS NULL THEN NULL ELSE round(net_amount*$10::numeric,2) END'));
+  assert.ok(route.includes('gross_amount=CASE WHEN $10::numeric IS NULL THEN NULL ELSE round(net_amount*(1+$10::numeric),2) END'));
+});
+
 test('invoice draft requires explicit VAT configuration and complete billing snapshot',()=>{
   assert.ok(route.includes('FRANCHISE_VAT_RATE_REQUIRED'));
   assert.ok(route.includes('FRANCHISE_BILLING_INCOMPLETE'));
