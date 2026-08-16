@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  schema_version: '1.8.0',
+  schema_version: '1.9.0',
   generated_evidence_required: true,
   entries: [
     { criterion_id: 'KLEO-FUN-WO-003-AC-02', test_ref: 'tests/requirements-critical-automation.contract.test.js', execution_type: 'contract' },
@@ -49,6 +49,8 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-INV-003-AC-01', test_ref: 'tests/requirements-critical-automation-v8.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-INV-003-AC-02', test_ref: 'tests/requirements-critical-automation-v8.contract.test.js', execution_type: 'contract' },
     { criterion_id: 'KLEO-GEN-OPS-001-AC-01', test_ref: 'tests/day_close_guard.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/day-close-guard.yml' },
-    { criterion_id: 'KLEO-GEN-OPS-001-AC-02', test_ref: 'tests/day_close_guard.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/day-close-guard.yml' }
+    { criterion_id: 'KLEO-GEN-OPS-001-AC-02', test_ref: 'tests/day_close_guard.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/day-close-guard.yml' },
+    { criterion_id: 'KLEO-FUN-INV-002-AC-01', test_ref: 'tests/requirements-critical-automation-v10.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-INV-002-AC-02', test_ref: 'tests/procurement_receipt_cost.integration.js', execution_type: 'integration', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/procurement-receipt-cost.yml' }
   ]
 };
