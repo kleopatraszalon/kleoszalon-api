@@ -6,6 +6,7 @@ let ready: Promise<void> | null = null;
 const DEFAULT_SETTINGS: Record<string, unknown> = {
   controller_name: "Kleoszalon Kft.",
   controller_contact_email: "",
+  controller_address: "",
   dpo_name: "",
   dpo_email: "",
   authority_name: "Nemzeti Adatvédelmi és Információszabadság Hatóság (NAIH)",
@@ -58,9 +59,30 @@ export function ensureGdprSchema() {
         processing_locations text[] NOT NULL DEFAULT '{}',subprocessor_url text,dpa_signed_at date,transfer_mechanism text,security_review_at date,
         deletion_verified_at date,owner text,status text NOT NULL DEFAULT 'active' CHECK(status IN ('planned','active','suspended','terminated')),
         notes text,created_by text,updated_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_notice_versions(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),notice_type text NOT NULL CHECK(notice_type IN ('privacy','cookie','employee','applicant','marketing','other')),
+        version text NOT NULL,title text NOT NULL,url text,content_hash text NOT NULL,effective_from timestamptz NOT NULL,status text NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','active','retired')),
+        approved_by text,approved_at timestamptz,created_by text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(notice_type,version));
+      CREATE TABLE IF NOT EXISTS gdpr_consents(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),subject_ref text NOT NULL,purpose text NOT NULL,notice_version_id uuid REFERENCES gdpr_notice_versions(id),
+        status text NOT NULL CHECK(status IN ('granted','withdrawn','refused')),captured_at timestamptz NOT NULL DEFAULT now(),withdrawn_at timestamptz,
+        source text NOT NULL,evidence jsonb NOT NULL DEFAULT '{}'::jsonb,created_by text,created_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS gdpr_dpias(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),title text NOT NULL,processing_activity_id uuid REFERENCES gdpr_processing_activities(id),
+        screening_reason text NOT NULL,systematic_monitoring boolean NOT NULL DEFAULT false,special_category_scale boolean NOT NULL DEFAULT false,
+        vulnerable_subjects boolean NOT NULL DEFAULT false,new_technology boolean NOT NULL DEFAULT false,dpia_required boolean NOT NULL,
+        necessity_proportionality text,risks text,measures text,residual_risk text,consultation_required boolean NOT NULL DEFAULT false,
+        status text NOT NULL DEFAULT 'screening' CHECK(status IN ('screening','assessment','approved','review_due','closed')),
+        owner text,review_at date,approved_by text,approved_at timestamptz,created_by text,updated_by text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
       CREATE INDEX IF NOT EXISTS gdpr_processing_review_idx ON gdpr_processing_activities(status,review_at);
       CREATE INDEX IF NOT EXISTS gdpr_dsr_due_idx ON gdpr_data_subject_requests(status,due_at);
       CREATE INDEX IF NOT EXISTS gdpr_incident_deadline_idx ON gdpr_incidents(status,aware_at);
+      CREATE INDEX IF NOT EXISTS gdpr_consents_subject_idx ON gdpr_consents(subject_ref,purpose,captured_at DESC);
+      CREATE INDEX IF NOT EXISTS gdpr_dpias_review_idx ON gdpr_dpias(status,review_at);
+      ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS extension_reason text;
+      ALTER TABLE gdpr_data_subject_requests ADD COLUMN IF NOT EXISTS response_evidence text;
+      ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS notification_delay_reason text;
+      ALTER TABLE gdpr_incidents ADD COLUMN IF NOT EXISTS authority_reference text;
     `);
     for (const [key,value] of Object.entries(DEFAULT_SETTINGS)) await db.query(
       `INSERT INTO gdpr_settings(key,value) VALUES($1,$2::jsonb) ON CONFLICT(key) DO NOTHING`,[key,JSON.stringify(value)]);
