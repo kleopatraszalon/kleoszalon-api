@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout API evidence repository
         uses: actions/checkout@v4
+        with:
+          path: api
       - name: Checkout proven frontend revision
         uses: actions/checkout@v4
         with:
@@ -31,7 +33,7 @@ jobs:
         working-directory: frontend
         run: npm ci --no-audit --no-fund
       - name: Run KLEO v20 cross-repo acceptance evidence
-        run: node tests/frontend_crossrepo_v20.evidence.mjs frontend
+        run: node api/tests/frontend_crossrepo_v20.evidence.mjs frontend
       - name: Production frontend build
         working-directory: frontend
         run: npm run build
