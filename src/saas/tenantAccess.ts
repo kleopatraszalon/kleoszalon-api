@@ -81,3 +81,30 @@ export async function entityBelongsToTenant(table: string, id: string, tenantId:
   );
   return Boolean(rows[0]);
 }
+
+/**
+ * Subscription feature resolver.
+ * Tenant-level override wins over the plan definition; `all_modules` grants
+ * every feature. Missing feature keys are denied for non-internal plans.
+ */
+export async function tenantFeatureEnabled(tenantId: string, featureKey: string): Promise<boolean> {
+  const { rows } = await db.query(
+    `SELECT
+       COALESCE(tf.enabled,
+         CASE
+           WHEN COALESCE((sp.features->>'all_modules')::boolean,false) THEN true
+           WHEN sp.features ? $2 THEN COALESCE((sp.features->>$2)::boolean,false)
+           ELSE false
+         END
+       ) AS enabled
+       FROM tenants t
+       LEFT JOIN subscriptions s
+         ON s.tenant_id=t.id AND s.status IN ('trial','active','past_due','suspended')
+       LEFT JOIN subscription_plans sp ON sp.id=s.plan_id
+       LEFT JOIN tenant_features tf ON tf.tenant_id=t.id AND tf.feature_key=$2
+      WHERE t.id=$1::bigint
+      LIMIT 1`,
+    [tenantId, featureKey]
+  );
+  return rows[0]?.enabled === true;
+}
