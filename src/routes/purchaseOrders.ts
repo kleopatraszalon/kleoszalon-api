@@ -4,12 +4,14 @@ import { requireFeature } from "../middleware/featureAccess";
 import { ensureInventoryOperationsSchema } from "../inventory/ensureInventoryOperationsSchema";
 import { ensureInventoryLotSchema } from "../inventory/ensureInventoryLotSchema";
 import { postWarehouseReceipt, resolveInventoryWarehouse } from "../inventory/inventoryLedgerService";
+import { ensureProcurementReceiptCostIntegrity } from "../procurement/ensureProcurementReceiptCostIntegrity";
 
 const router = Router();
 router.use(requireFeature("inventory"));
 
 const num = (v: unknown) => Number(v || 0);
 const money = (v: unknown) => Math.round(num(v) * 100) / 100;
+const price4 = (v: unknown) => Math.round(num(v) * 10000) / 10000;
 
 async function createOrder(req: any, res: any, next: any) {
   const client = await db.connect();
@@ -109,6 +111,7 @@ router.get("/orders", async (req, res, next) => {
 router.get("/orders/:id", async (req, res, next) => {
   try {
     await ensureInventoryLotSchema();
+    await ensureProcurementReceiptCostIntegrity();
     const order = await db.query(`SELECT po.*,COALESCE(s.name,po.supplier_name) supplier_display_name FROM purchase_orders po LEFT JOIN suppliers s ON s.id=po.supplier_id WHERE po.id=$1`, [req.params.id]);
     if (!order.rows[0]) return res.status(404).json({ message: "A beszerzési rendelés nem található." });
     const items = await db.query(`SELECT poi.*,p.name AS product_name,p.internal_code,p.brand,
@@ -116,7 +119,8 @@ router.get("/orders/:id", async (req, res, next) => {
       COALESCE(p.expiry_tracking_enabled,false) expiry_tracking_enabled,
       COALESCE(p.fefo_enabled,false) fefo_enabled
       FROM purchase_order_items poi JOIN products p ON p.id=poi.product_id WHERE poi.purchase_order_id=$1 ORDER BY poi.id`, [req.params.id]);
-    res.json({ ...order.rows[0], items: items.rows });
+    const receiptCosts = await db.query(`SELECT * FROM procurement_receipt_costs WHERE purchase_order_id=$1 ORDER BY received_at,id`, [req.params.id]);
+    res.json({ ...order.rows[0], items: items.rows, receipt_costs: receiptCosts.rows });
   } catch (err) { next(err); }
 });
 
@@ -159,6 +163,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     if (!incoming.length) return res.status(400).json({ message: "Nincs bevételezendő tétel." });
     await ensureInventoryOperationsSchema();
     await ensureInventoryLotSchema();
+    await ensureProcurementReceiptCostIntegrity();
     await client.query("BEGIN");
     const orderRes = await client.query(`SELECT * FROM purchase_orders WHERE id=$1 FOR UPDATE`, [req.params.id]);
     const order = orderRes.rows[0];
@@ -170,15 +175,29 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     for (const x of incoming) {
       const itemId = String(x?.item_id || "");
       const receiveQty = num(x?.received_quantity);
-      const actualUnitCost = x?.unit_cost == null || x.unit_cost === "" ? null : money(x.unit_cost);
       if (!itemId || !(receiveQty > 0)) throw new Error("Érvénytelen bevételezési tétel.");
-      if (actualUnitCost != null && actualUnitCost < 0) throw new Error("Érvénytelen bevételezési egységár.");
       const itemRes = await client.query(`SELECT poi.*,COALESCE(p.lot_tracking_enabled,false) lot_tracking_enabled,COALESCE(p.expiry_tracking_enabled,false) expiry_tracking_enabled FROM purchase_order_items poi JOIN products p ON p.id=poi.product_id WHERE poi.id=$1 AND poi.purchase_order_id=$2 FOR UPDATE OF poi`, [itemId,req.params.id]);
       const item = itemRes.rows[0];
       if (!item) throw new Error("A rendelési tétel nem található.");
       const remaining = num(item.ordered_quantity)-num(item.received_quantity);
       if (receiveQty>remaining+0.0001) throw new Error("A bevételezett mennyiség nagyobb a hátralévő rendelésnél.");
-      const cost = actualUnitCost == null ? num(item.unit_cost) : actualUnitCost;
+
+      const legacyUnitCost = x?.unit_cost == null || x.unit_cost === "" ? num(item.unit_cost) : num(x.unit_cost);
+      const netUnitPrice = price4(x?.net_unit_price == null || x.net_unit_price === "" ? legacyUnitCost : x.net_unit_price);
+      const taxRatePct = price4(x?.tax_rate_pct == null || x.tax_rate_pct === "" ? 0 : x.tax_rate_pct);
+      const ancillaryCostTotal = money(x?.ancillary_cost_total == null || x.ancillary_cost_total === "" ? 0 : x.ancillary_cost_total);
+      if (netUnitPrice < 0) throw new Error("Érvénytelen nettó bevételezési egységár.");
+      if (taxRatePct < 0 || taxRatePct > 100) throw new Error("Érvénytelen bevételezési adókulcs.");
+      if (ancillaryCostTotal < 0) throw new Error("Érvénytelen járulékos bevételezési költség.");
+
+      const netTotal = money(netUnitPrice * receiveQty);
+      const taxTotal = money(netTotal * taxRatePct / 100);
+      const grossTotal = money(netTotal + taxTotal);
+      const landedTotal = money(grossTotal + ancillaryCostTotal);
+      const landedUnitCost = price4(landedTotal / receiveQty);
+      const documentNumber = String(x?.document_number || req.body?.document_number || `PO-${order.id}`).trim();
+      if (!documentNumber) throw new Error("A bevételezési bizonylatszám megadása kötelező.");
+
       const locationId = order.location_id == null ? null : String(order.location_id);
       const warehouse = await resolveInventoryWarehouse(client, {
         locationId,
@@ -189,7 +208,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
         warehouse,
         productId:String(item.product_id),
         quantity:receiveQty,
-        incomingUnitCost:cost,
+        incomingUnitCost:landedUnitCost,
         movementType:"receipt",
         lot:{
           lotCode:x?.lot_code || null,
@@ -198,21 +217,44 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
           supplierId:order.supplier_id || null,
           sourceRecordType:"purchase_order",
           sourceRecordId:String(order.id),
-          note:`Beszerzési rendelés #${order.id}`,
+          note:`Beszerzési rendelés #${order.id}; bizonylat ${documentNumber}`,
           createdBy:who,
           allowExpired:Boolean(x?.allow_expired),
         },
         meta:{
           supplierId:order.supplier_id || null,
-          documentNumber:`PO-${order.id}`,
+          documentNumber,
           counterpartyName:order.supplier_name || null,
-          note:`Beszerzési rendelés #${order.id}`,
+          note:`Beszerzési rendelés #${order.id}; nettó ${netTotal}; adó ${taxTotal}; járulékos ${ancillaryCostTotal}`,
           createdBy:who,
         },
       });
-      receipts.push({item_id:itemId,product_id:String(item.product_id),...receipt});
-      await client.query(`UPDATE purchase_order_items SET received_quantity=received_quantity+$2,actual_unit_cost=$3,last_lot_code=$4,last_expires_at=$5::date,updated_at=now() WHERE id=$1`, [itemId,receiveQty,cost,x?.lot_code||null,x?.expires_at||null]);
-      if (order.supplier_id) await client.query(`UPDATE product_supplier_terms SET unit_price=$3,updated_at=now() WHERE product_id=$1 AND supplier_id=$2`, [item.product_id,order.supplier_id,cost]);
+
+      const costRecord = await client.query(`
+        INSERT INTO procurement_receipt_costs(
+          purchase_order_id,purchase_order_item_id,product_id,received_quantity,
+          net_unit_price,tax_rate_pct,ancillary_cost_total,net_total,tax_total,gross_total,
+          landed_total,landed_unit_cost,document_number,received_by,cost_components
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+        RETURNING *`, [
+          order.id,itemId,item.product_id,receiveQty,netUnitPrice,taxRatePct,ancillaryCostTotal,
+          netTotal,taxTotal,grossTotal,landedTotal,landedUnitCost,documentNumber,who,
+          JSON.stringify({net_unit_price:netUnitPrice,tax_rate_pct:taxRatePct,ancillary_cost_total:ancillaryCostTotal})
+        ]);
+
+      receipts.push({item_id:itemId,product_id:String(item.product_id),cost:costRecord.rows[0],...receipt});
+      await client.query(`UPDATE purchase_order_items SET
+        received_quantity=received_quantity+$2,
+        actual_unit_cost=$3,
+        last_net_unit_price=$4,
+        last_tax_rate_pct=$5,
+        last_ancillary_cost_total=$6,
+        last_receipt_document_number=$7,
+        last_lot_code=$8,
+        last_expires_at=$9::date,
+        updated_at=now()
+        WHERE id=$1`, [itemId,receiveQty,money(landedUnitCost),netUnitPrice,taxRatePct,ancillaryCostTotal,documentNumber,x?.lot_code||null,x?.expires_at||null]);
+      if (order.supplier_id) await client.query(`UPDATE product_supplier_terms SET unit_price=$3,updated_at=now() WHERE product_id=$1 AND supplier_id=$2`, [item.product_id,order.supplier_id,money(landedUnitCost)]);
     }
 
     const totals = await client.query(`SELECT BOOL_AND(received_quantity>=ordered_quantity) all_received,BOOL_OR(received_quantity>0) any_received FROM purchase_order_items WHERE purchase_order_id=$1`, [req.params.id]);
@@ -224,7 +266,7 @@ router.post("/orders/:id/receive", async (req: any, res, next) => {
     await client.query("ROLLBACK").catch(()=>undefined);
     const msg=String(err?.message||"");
     if (err?.status) return res.status(Number(err.status)).json({message:msg,code:err.code||err.publicCode});
-    if (msg.startsWith("Érvénytelen") || msg.startsWith("A rendelési") || msg.startsWith("A bevételezett")) return res.status(400).json({message:msg});
+    if (msg.startsWith("Érvénytelen") || msg.startsWith("A rendelési") || msg.startsWith("A bevételezett") || msg.startsWith("A bevételezési")) return res.status(400).json({message:msg});
     next(err);
   } finally { client.release(); }
 });
