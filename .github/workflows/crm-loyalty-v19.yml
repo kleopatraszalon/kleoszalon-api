@@ -1,0 +1,50 @@
+name: CRM and loyalty requirement evidence v19
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/sql/20260816_CRM_LOYALTY_INTEGRITY_V9.sql'
+      - 'src/finance/ensureFinanceNav.ts'
+      - 'tests/crm_loyalty_v19.integration.sql'
+      - 'tests/requirements-critical-automation-v19.contract.test.js'
+      - 'docs/requirements/automation.v19.cjs'
+      - '.github/workflows/crm-loyalty-v19.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crm-loyalty-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_v19
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kleo_v19"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: CRM and loyalty PostgreSQL integration proof
+        run: psql -h 127.0.0.1 -U postgres -d kleo_v19 -v ON_ERROR_STOP=1 -f tests/crm_loyalty_v19.integration.sql
+      - name: v19 acceptance contract
+        run: node --test tests/requirements-critical-automation-v19.contract.test.js
+      - name: Production TypeScript build
+        run: npm run build
