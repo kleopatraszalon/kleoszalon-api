@@ -8,7 +8,12 @@ router.use(requireAuth);
 
 type CacheEntry={expires:number;value:any};
 const cache=new Map<string,CacheEntry>();
-const TTL_MS=10000;
+// A munkalap szerkesztő törzsadatai ritkán változnak, ezért ne kérdezzük le őket
+// minden megnyitásnál újra. A korábbi 10 mp-es TTL gyakorlatilag nem adott érezhető gyorsulást.
+const TTL_MS=5*60*1000;
+const LOCATION_TTL_MS=5*60*1000;
+let adminLocationsCache:CacheEntry|null=null;
+const scopedLocationCache=new Map<string,CacheEntry>();
 
 const canEdit=(role:unknown)=>hasAnyRole(role,['admin','receptionist','location_manager']);
 const isAdmin=(role:unknown)=>hasAnyRole(role,['admin']);
@@ -19,10 +24,27 @@ async function optionalRows(label:string,query:Promise<any>){
 }
 
 async function locationsFor(req:AuthRequest){
-  if(isAdmin(req.user?.role))return (await db.query(`SELECT id::text,name,city,address FROM locations WHERE COALESCE(is_active,true)=true ORDER BY city,name`)).rows;
+  const now=Date.now();
+  if(isAdmin(req.user?.role)){
+    if(adminLocationsCache&&adminLocationsCache.expires>now)return adminLocationsCache.value;
+    const rows=(await db.query(`SELECT id::text,name,city,address FROM locations WHERE COALESCE(is_active,true)=true ORDER BY city,name`)).rows;
+    adminLocationsCache={expires:now+LOCATION_TTL_MS,value:rows};
+    return rows;
+  }
   const locationId=String(req.user?.location_id||'');
   if(!locationId)return [];
-  return (await db.query(`SELECT id::text,name,city,address FROM locations WHERE id::text=$1 AND COALESCE(is_active,true)=true LIMIT 1`,[locationId])).rows;
+  const hit=scopedLocationCache.get(locationId);
+  if(hit&&hit.expires>now)return hit.value;
+  const rows=(await db.query(`SELECT id::text,name,city,address FROM locations WHERE id::text=$1 AND COALESCE(is_active,true)=true LIMIT 1`,[locationId])).rows;
+  scopedLocationCache.set(locationId,{expires:now+LOCATION_TTL_MS,value:rows});
+  return rows;
+}
+
+function cleanupCache(){
+  if(cache.size<200&&scopedLocationCache.size<100)return;
+  const now=Date.now();
+  for(const [key,value] of cache)if(value.expires<=now)cache.delete(key);
+  for(const [key,value] of scopedLocationCache)if(value.expires<=now)scopedLocationCache.delete(key);
 }
 
 router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
@@ -31,6 +53,7 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     if(String(req.query.appointment_id||'').trim())return next();
     if(!canEdit(req.user?.role))return next();
 
+    cleanupCache();
     const admin=isAdmin(req.user?.role);
     const requestedLocation=String(req.query.location_id||'').trim();
     const locationId=admin?requestedLocation:String(req.user?.location_id||'');
@@ -49,6 +72,7 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     const cached=cache.get(key);
     if(cached&&cached.expires>Date.now()){
       const locations=await locationsPromise;
+      res.setHeader('X-Kleo-Workorder-Editor-Cache','HIT');
       return res.json({...cached.value,locations,fast:true,cached:true});
     }
 
@@ -70,6 +94,7 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     if(!location)return res.status(400).json({message:'A kiválasztott szalon nem található vagy nem aktív.'});
     const value={scope:{is_admin:admin,location_id:locationId},location,employees,clients,services,products,appointment:null};
     cache.set(key,{expires:Date.now()+TTL_MS,value});
+    res.setHeader('X-Kleo-Workorder-Editor-Cache','MISS');
     return res.json({...value,locations,fast:true,cached:false});
   }catch(e){next(e)}
 });
