@@ -135,8 +135,8 @@ router.use("/daily-actions/auto-selector",requireManagement,dailyActionAutoSelec
 router.use("/daily-actions",requireManagement,dailyActionsRouter);
 router.use("/masterdata",requireManagement,centralMasterDataRouter);
 
-router.use("/workorder-editor",workOrderEditorFastRouter);
-router.use("/workorder-editor",workOrderEditorRouter);
+router.use("/workorder-editor",ensureFinanceReady,workOrderEditorFastRouter);
+router.use("/workorder-editor",ensureFinanceReady,workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);

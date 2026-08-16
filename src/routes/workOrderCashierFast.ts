@@ -2,6 +2,8 @@ import {Router} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {ensureLoyaltyProgram,loyaltyDiscountForWorkOrder} from '../loyalty/loyaltyProgramService';
+import {requireIdempotencyKey} from '../finance/financialIntegrity';
+import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
 
 const router=Router();
 router.use(requireAuth);
@@ -144,7 +146,7 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
   if(String(req.baseUrl||'').includes('loyalty-cashier')&&hasActualLoyalty(req.body))return next();
   const c=await db.connect();
   try{
-    const [hasOrders,hasItems,hasPayments]=await Promise.all([tableExists('work_orders'),tableExists('work_order_items'),tableExists('work_order_payments')]);
+    const [hasOrders,hasItems,hasPayments,hasRefunds]=await Promise.all([tableExists('work_orders'),tableExists('work_order_items'),tableExists('work_order_payments'),tableExists('work_order_payment_refunds')]);
     if(!hasOrders||!hasItems||!hasPayments)return next();
     await ensureLoyaltyProgram(c);
     const [woTypes,paymentTypes]=await Promise.all([columnTypes('work_orders'),columnTypes('work_order_payments')]);
@@ -152,30 +154,38 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
     if(['payment_status','financial_closed_at'].some(x=>!woCols.has(x)))return next();
     if(!paymentCols.has('work_order_id')||!paymentCols.has('payment_method')||!paymentCols.has('amount'))return next();
 
+    const settlementKey=requireIdempotencyKey(req,'workorder-settlement');
     const requestedDiscount=Math.max(0,money(req.body?.discount_amount)),tip=Math.max(0,money(req.body?.tip_amount)),invoiceStatus=String(req.body?.invoice_status||'not_requested'),closeFinancially=Boolean(req.body?.close_financially),incoming=Array.isArray(req.body?.payments)?req.body.payments:[];
+    const requestPayload=JSON.stringify(req.body||{});
     await c.query('BEGIN');
     const wo=(await c.query(`SELECT w.*,to_jsonb(w) _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];
     if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
     const j=wo._json||{};
     if(j.locked_at||j.archived_at){await c.query('ROLLBACK');return res.status(409).json({message:'A lezárt és archivált munkalaphoz újabb fizetés nem rögzíthető.'})}
     if(['cancelled','no_show','completed'].includes(String(wo.status||''))){await c.query('ROLLBACK');return res.status(409).json({message:'Megszakított vagy lezárt munkalap pénzügyileg nem módosítható.'})}
-    if(j.financial_closed_at){await c.query('COMMIT');return res.json({...wo,idempotent:true,fast:true})}
+    const previous=(await c.query(`SELECT *,request_payload=$2::jsonb AS same_payload FROM work_order_settlements WHERE settlement_key=$1 FOR UPDATE`,[settlementKey,requestPayload])).rows[0];
+    if(previous){
+      if(String(previous.work_order_id)!==String(req.params.id)||!previous.same_payload){await c.query('ROLLBACK');return res.status(409).json({message:'Az Idempotency-Key már más munkalaphoz vagy eltérő tartalmú pénzügyi záráshoz lett felhasználva.'})}
+      await c.query('COMMIT');return res.json({...wo,idempotent:true,fast:true});
+    }
+    if(j.financial_closed_at){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap már pénzügyileg le van zárva; új műveleti kulccsal nem módosítható.'})}
+    await c.query(`INSERT INTO work_order_settlements(work_order_id,settlement_key,request_payload,created_by) VALUES($1,$2,$3::jsonb,$4)`,[req.params.id,settlementKey,requestPayload,actor(req)]);
 
-    for(const p of incoming){
+    for(const [paymentSequence,p] of incoming.entries()){
       const method=String(p?.payment_method||'').toLowerCase(),amount=money(p?.amount);
       if(!PAYMENT_METHODS.has(method)){await c.query('ROLLBACK');return res.status(400).json({message:`Érvénytelen fizetési mód: ${method}`})}
       if(!(amount>0)){await c.query('ROLLBACK');return res.status(400).json({message:'A fizetési összegnek pozitívnak kell lennie.'})}
-      const names=['work_order_id','payment_method','amount'],values=['$1::uuid','$2','$3'],params:any[]=[req.params.id,method,amount];
-      if(paymentCols.has('paid_at')){names.push('paid_at');values.push('now()')}
-      const optional:[string,any][]=[['note',p?.note||null],['payment_method_code',p?.payment_method_code||method],['finance_account_id',p?.finance_account_id||null],['cashier_shift_id',p?.cashier_shift_id||null],['card_brand',p?.card_brand||null],['fee_amount',money(p?.fee_amount)]];
-      for(const [name,value] of optional){if(!paymentCols.has(name))continue;names.push(name);params.push(value);values.push(`$${params.length}${name==='finance_account_id'?'::uuid':''}`)}
-      await c.query(`INSERT INTO work_order_payments(${names.join(',')}) VALUES(${values.join(',')})`,params);
+      await recordProtectedWorkOrderPayment(c,{workOrder:wo,method,amount,note:p?.note||null,actor:actor(req),settlementKey,sequence:paymentSequence,financeAccountId:p?.finance_account_id||null,paymentMethodCode:p?.payment_method_code||method,cashierShiftId:p?.cashier_shift_id||null,feeAmount:money(p?.fee_amount)});
     }
 
-    const paidExpr=paymentCols.has('refunded_amount')?'amount-COALESCE(refunded_amount,0)':'amount';
+    const paidExpr=paymentCols.has('refunded_amount')
+      ? hasRefunds
+        ? `wp.amount-GREATEST(COALESCE(wp.refunded_amount,0),COALESCE((SELECT SUM(r.amount) FROM work_order_payment_refunds r WHERE r.payment_id=wp.id),0))`
+        : 'wp.amount-COALESCE(wp.refunded_amount,0)'
+      : 'wp.amount';
     const [grossQ,paidQ]=await Promise.all([
       c.query(`SELECT COALESCE(SUM(line_total),0)::numeric gross FROM work_order_items WHERE work_order_id::text=$1`,[req.params.id]),
-      c.query(`SELECT COALESCE(SUM(${paidExpr}),0)::numeric paid FROM work_order_payments WHERE work_order_id::text=$1`,[req.params.id]),
+      c.query(`SELECT COALESCE(SUM(${paidExpr}),0)::numeric paid FROM work_order_payments wp WHERE wp.work_order_id::text=$1`,[req.params.id]),
     ]);
     const gross=money(grossQ.rows[0]?.gross),paid=money(paidQ.rows[0]?.paid),loyalty=await loyaltyDiscountForWorkOrder(c,req.params.id,gross),discount=Math.max(requestedDiscount,money(loyalty.amount)),due=Math.max(0,money(gross-discount+tip)),paymentStatus=paid<=0?'unpaid':paid+.009<due?'partial':'paid';
     if(closeFinancially&&paymentStatus!=='paid'){await c.query('ROLLBACK');return res.status(400).json({message:`A munkalap nem zárható pénzügyileg: még ${money(due-paid).toLocaleString('hu-HU')} Ft fizetendő.`})}
@@ -186,11 +196,13 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
     if(woCols.has('updated_at'))sets.push('updated_at=now()');
     if(!sets.length){await c.query('ROLLBACK');return next()}
     const updated=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id::text=$1 RETURNING *`,params)).rows[0];
+    await c.query(`UPDATE work_order_settlements SET completed_at=now(),result_snapshot=$2::jsonb WHERE settlement_key=$1`,[settlementKey,JSON.stringify({work_order_id:req.params.id,payment_status:updated.payment_status,amount_paid:updated.amount_paid,financial_closed_at:updated.financial_closed_at||null})]);
     await c.query('COMMIT');return res.json({...updated,fast:true,loyalty_passthrough:false,lifecycle_required:false});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);console.error('[workorder-cashier-fast] failed',e?.code||'',e?.message||e);
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code:e.code});
     if(e?.code==='57014'||e?.code==='55P03')return res.status(503).json({message:'A pénzügyi zárást adatbázis-zárolás vagy timeout akadályozta.',code:e.code});
+    if(e?.status)return res.status(e.status).json({message:e.message,code:e.publicCode||'FINANCIAL_SETTLEMENT_FAILED'});
     return next(e);
   }finally{c.release()}
 });
