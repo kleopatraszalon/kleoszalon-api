@@ -48,7 +48,27 @@ test('tenant creation starts provisioning atomically with an audited onboarding 
   assert.match(platform, /'in_progress','company'/);
   assert.match(platform, /onboarding_started/);
   assert.match(platform, /source:'platform_tenant_create'/);
-  assert.match(platform, /onboarding:\{status:'in_progress',current_step:'company',started:true\}/);
+  assert.match(platform, /one_click:true/);
+});
+
+test('one-click provisioning applies plan modules and creates the default location in the tenant transaction', () => {
+  assert.match(platform, /apply_plan_modules/);
+  assert.match(platform, /PLAN_FEATURE_KEYS/);
+  assert.match(platform, /INSERT INTO tenant_features/);
+  assert.match(platform, /plan_modules_provisioned/);
+  assert.match(platform, /provision_location/);
+  assert.match(platform, /INSERT INTO locations\(name,city,address,email,is_active,tenant_id\)/);
+  assert.match(platform, /default_location_provisioned/);
+  assert.match(platform, /await client\.query\("COMMIT"\)/);
+});
+
+test('admin invitation is post-commit, retryable and audited without rolling back a provisioned tenant', () => {
+  const commitAt = platform.indexOf('await client.query("COMMIT")');
+  const inviteAt = platform.indexOf('issueTenantAdminInvitation({tenantId:String(tenantRow.id)');
+  assert.ok(commitAt >= 0 && inviteAt > commitAt);
+  assert.match(platform, /auto_invite_admin/);
+  assert.match(platform, /invitation_delivery_failed/);
+  assert.match(platform, /warning:invitationWarning/);
 });
 
 test('platform tenant list exposes derived provisioning progress and next action', () => {
