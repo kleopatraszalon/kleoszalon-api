@@ -13,10 +13,18 @@ test('cross-tenant UAT is explicit, rollback-safe and seeds two tenants', () => 
   assert.match(script, /ROLLBACK/);
   assert.match(script, /uat-a-/);
   assert.match(script, /uat-b-/);
-  assert.match(script, /tenant A can see tenant B client/);
-  assert.match(script, /tenant B can see tenant A client/);
+  assert.match(script, /assertOwnOnly/);
+  assert.match(script, /tenant A can see tenant B \$\{table\} row/);
+  assert.match(script, /tenant B can see tenant A \$\{table\} row/);
   assert.match(script, /foreign tenant location rejected/);
-  assert.match(script, /foreign tenant entity rejected/);
+  assert.match(script, /foreign client\/employee\/appointment\/work-order entities rejected/);
+});
+
+test('cross-tenant UAT covers every release-critical SaaS business entity', () => {
+  for (const table of ['clients','employees','appointments','work_orders']) {
+    assert.match(script, new RegExp(`assertOwnOnly\\('${table}'`));
+  }
+  assert.match(script, /\['clients',clientB\],\['employees',employeeB\],\['appointments',appointmentB\],\['work_orders',workOrderB\]/);
 });
 
 test('package exposes SaaS isolation UAT command', () => {
