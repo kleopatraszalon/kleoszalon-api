@@ -69,7 +69,7 @@ router.get('/retail/products',async(req:AuthRequest,res)=>{
   const groupJoin=hasGroups&&productCols.has('product_group_id')?`LEFT JOIN product_groups g ON g.id::text=p.product_group_id::text`:'';
   const categoryJoin=hasCategories&&productCols.has('product_category_id')?`LEFT JOIN product_categories c ON c.id::text=p.product_category_id::text`:'';
   const groupSelect=groupJoin?`,p.product_group_id::text group_id,COALESCE(g.name,'Nincs csoport') group_name`:` ,NULL::text group_id,'Nincs csoport'::text group_name`;
-  const categorySelect=categoryJoin?`,p.product_category_id::text category_id,COALESCE(c.name,'Nincs kategória') category_name`:` ,NULL::text category_id,'Nincs kategória'::text group_name`;
+  const categorySelect=categoryJoin?`,p.product_category_id::text category_id,COALESCE(c.name,'Nincs kategória') category_name`:` ,NULL::text category_id,'Nincs kategória'::text category_name`;
   const stockSelect=stockCapable?`COALESCE(b.available_stock,0)::numeric`:`0::numeric`;
   const filters=[`COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true`];
   const params:any[]=[locationId];
