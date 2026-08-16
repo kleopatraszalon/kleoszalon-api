@@ -13,6 +13,13 @@ SET LOCAL statement_timeout = 0;
 -- temporarily remove it inside this transaction, then restore it as NOT VALID:
 -- existing legacy violations remain untouched, while every new/updated row is
 -- still protected by the CHECK condition.
+--
+-- The appointment table can also have user triggers. Re-adding a constraint
+-- after UPDATE while trigger events are still pending can fail with PostgreSQL
+-- 55000 (object_not_in_prerequisite_state). User triggers are therefore disabled
+-- only for the tenant-only legacy backfill, deferred constraint triggers are
+-- forced to completion, and the original trigger state is restored before
+-- commit. Any failure rolls the whole transaction back.
 -- ============================================================
 
 DO $$
@@ -38,6 +45,7 @@ BEGIN
    LIMIT 1;
 
   IF appointment_time_order_def IS NOT NULL THEN
+    ALTER TABLE appointments DISABLE TRIGGER USER;
     ALTER TABLE appointments DROP CONSTRAINT chk_appointments_time_order_phase3;
   END IF;
 
@@ -74,20 +82,26 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF appointment_time_order_def IS NOT NULL AND NOT EXISTS (
-    SELECT 1
-      FROM pg_constraint c
-      JOIN pg_class rel ON rel.oid=c.conrelid
-      JOIN pg_namespace n ON n.oid=rel.relnamespace
-     WHERE n.nspname='public'
-       AND rel.relname='appointments'
-       AND c.conname='chk_appointments_time_order_phase3'
-  ) THEN
-    EXECUTE format(
-      'ALTER TABLE appointments ADD CONSTRAINT %I %s NOT VALID',
-      'chk_appointments_time_order_phase3',
-      appointment_time_order_def
-    );
+  IF appointment_time_order_def IS NOT NULL THEN
+    SET CONSTRAINTS ALL IMMEDIATE;
+
+    IF NOT EXISTS (
+      SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class rel ON rel.oid=c.conrelid
+        JOIN pg_namespace n ON n.oid=rel.relnamespace
+       WHERE n.nspname='public'
+         AND rel.relname='appointments'
+         AND c.conname='chk_appointments_time_order_phase3'
+    ) THEN
+      EXECUTE format(
+        'ALTER TABLE appointments ADD CONSTRAINT %I %s NOT VALID',
+        'chk_appointments_time_order_phase3',
+        appointment_time_order_def
+      );
+    END IF;
+
+    ALTER TABLE appointments ENABLE TRIGGER USER;
   END IF;
 END $$;
 
