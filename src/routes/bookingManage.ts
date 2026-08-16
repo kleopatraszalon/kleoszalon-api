@@ -88,16 +88,22 @@ router.post("/:token/cancel",async(req,res)=>{
     await ensureOnlineBooking();await ensureBookingWorkOrderSchema(cx);await cx.query("BEGIN");
     const token=String(req.params.token||"").trim();if(!UUID_RE.test(token)){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalási hivatkozás érvénytelen."});}
     const appointment=(await cx.query(`SELECT a.*,kleo_booking_utc(a.start_time) booking_start_time FROM appointments a WHERE cancellation_token=$1::uuid FOR UPDATE`,[token])).rows[0];
-    if(!appointment||inactiveStatuses.has(String(appointment.status||"").toLowerCase())){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalás nem található vagy már nem mondható le."});}
+    if(!appointment){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalás nem található."});}
+    const currentStatus=String(appointment.status||"").toLowerCase();
+    if(currentStatus==="cancelled"||currentStatus==="canceled"){
+      await cx.query("COMMIT");
+      return res.json({ok:true,id:String(appointment.id),status:"cancelled",idempotent:true});
+    }
+    if(inactiveStatuses.has(currentStatus)){await cx.query("ROLLBACK");return res.status(409).json({error:"A foglalás állapota miatt már nem mondható le."});}
     const wo=await assertMutableWorkOrder(cx,appointment);
     const reason=String(req.body?.reason||"Vendég által online lemondva").trim().slice(0,500)||"Vendég által online lemondva";
     const before={status:appointment.status,start_time:appointment.booking_start_time,employee_id:appointment.employee_id};
-    const updated=(await cx.query(`UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=now(),updated_at=now() WHERE id=$1::uuid RETURNING *`,[appointment.id,reason])).rows[0];
+    const updated=(await cx.query(`UPDATE appointments SET status='cancelled',cancellation_reason=$2,cancelled_at=COALESCE(cancelled_at,now()),updated_at=now() WHERE id=$1::uuid RETURNING *`,[appointment.id,reason])).rows[0];
     if(wo)await cx.query(`UPDATE work_orders SET status='cancelled',status_updated_at=now(),updated_at=now() WHERE id=$1::uuid`,[wo.id]);
     await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,before_data,after_data,note) VALUES($1::uuid,'public_cancelled','public-token',$2::jsonb,$3::jsonb,$4)`,[appointment.id,JSON.stringify(before),JSON.stringify({status:updated.status,cancelled_at:updated.cancelled_at}),reason]);
     await cx.query("COMMIT");
     queueAppointmentCommunications(String(updated.id),"cancelled").catch(error=>console.warn("public cancel communication:",error?.message||String(error)));
-    res.json({ok:true,id:String(updated.id),status:updated.status});
+    res.json({ok:true,id:String(updated.id),status:updated.status,idempotent:false});
   }catch(error:any){await cx.query("ROLLBACK").catch(()=>undefined);if(error?.status)return res.status(error.status).json({error:error.message});console.error("POST booking manage cancel:",error);res.status(500).json({error:"A lemondás sikertelen.",detail:error?.message||String(error)});}finally{cx.release()}
 });
 

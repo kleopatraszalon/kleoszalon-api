@@ -17,14 +17,24 @@ const ACCOUNTING_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/
 const NAV_TEST_UAT_AUDIENCE="kleoszalon-nav-test-uat";
 const NAV_TEST_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/nav-real-test-uat.yml@refs/heads/main";
 
-function setAuthCookie(res: Response, token: string) {
-  res.cookie("token", token, {
+function authCookieOptions() {
+  return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production",
     path: "/",
+  };
+}
+
+function setAuthCookie(res: Response, token: string) {
+  res.cookie("token", token, {
+    ...authCookieOptions(),
     maxAge: 8 * 60 * 60 * 1000,
   });
+}
+
+function clearAuthCookie(res: Response) {
+  res.clearCookie("token", authCookieOptions());
 }
 
 function bearerToken(req: Request): string {
@@ -53,6 +63,11 @@ function isAdminRole(raw: unknown) {
 
 function isStaffRole(raw: unknown) {
   return roleKeys(raw).some(r => ["employee", "receptionist", "manager", "vezető", "vezeto"].includes(r));
+}
+
+function requestedLocation(req: Request): string | null {
+  const value = String(req.body?.location_id ?? req.body?.selected_location_id ?? "").trim();
+  return value || null;
 }
 
 async function findUser(identifier: string) {
@@ -106,7 +121,7 @@ async function locationName(locationId: any) {
   }
 }
 
-async function respondAsEmployee(res: Response, employee: any, password: string, roleOverride?: any) {
+async function respondAsEmployee(res: Response, employee: any, password: string, roleOverride?: any, requestedLocationId?: string | null) {
   if (!employee.password_hash) {
     return res.status(401).json({ error: "Ehhez a munkatárshoz még nincs jelszó beállítva." });
   }
@@ -114,6 +129,9 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
   if (!employee.location_id) {
     return res.status(409).json({ error: "A munkatárshoz nincs telephely rendelve. Kérlek jelezd az adminisztrátornak." });
+  }
+  if (requestedLocationId && String(employee.location_id) !== requestedLocationId) {
+    return res.status(403).json({ error: "Ehhez a telephelyhez nincs jogosultságod." });
   }
 
   const role = roleOverride ?? employee.role ?? ["employee"];
@@ -228,6 +246,7 @@ router.post("/login", async (req: Request, res: Response) => {
   };
 
   const loginIdentifier = String(identifier || email || username || login || phone || "").trim();
+  const requestedLocationId = requestedLocation(req);
   if (!loginIdentifier || !password) {
     return res.status(400).json({ error: "Hiányzó azonosító vagy jelszó." });
   }
@@ -243,7 +262,7 @@ router.post("/login", async (req: Request, res: Response) => {
     const employee = adminAccount ? null : await findEmployee(loginIdentifier, user);
 
     if (employee && (!user || isStaffRole(user.role) || !isAdminRole(user.role))) {
-      return respondAsEmployee(res, employee, password, user?.role ?? employee.role);
+      return respondAsEmployee(res, employee, password, user?.role ?? employee.role, requestedLocationId);
     }
 
     if (!user) {
@@ -258,7 +277,11 @@ router.post("/login", async (req: Request, res: Response) => {
     const ok = await bcrypt.compare(password, hash);
     if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
 
-    const effectiveLocationId = user.location_id ?? null;
+    const admin = isAdminRole(user.role);
+    if (requestedLocationId && !admin && String(user.location_id ?? "") !== requestedLocationId) {
+      return res.status(403).json({ error: "Ehhez a telephelyhez nincs jogosultságod." });
+    }
+    const effectiveLocationId = admin && requestedLocationId ? requestedLocationId : (user.location_id ?? null);
     const effectiveLocationName = await locationName(effectiveLocationId);
     const token = jwt.sign(
       {
@@ -275,7 +298,7 @@ router.post("/login", async (req: Request, res: Response) => {
     setAuthCookie(res, token);
     return res.json({
       success: true,
-      account_type: isAdminRole(user.role) ? "admin" : "customer",
+      account_type: admin ? "admin" : "customer",
       user: {
         id: user.id,
         email: user.email,
@@ -299,6 +322,7 @@ router.post("/login", async (req: Request, res: Response) => {
 router.post("/employee-login", async (req: Request, res: Response) => {
   const loginName = String(req.body?.login_name || req.body?.username || "").trim();
   const password = String(req.body?.password || "");
+  const requestedLocationId = requestedLocation(req);
   if (!loginName || !password) {
     return res.status(400).json({ error: "Hiányzó felhasználónév vagy jelszó." });
   }
@@ -306,11 +330,17 @@ router.post("/employee-login", async (req: Request, res: Response) => {
   try {
     const employee = await findEmployee(loginName);
     if (!employee) return res.status(401).json({ error: "Hibás felhasználónév vagy jelszó." });
-    return respondAsEmployee(res, employee, password);
+    return respondAsEmployee(res, employee, password, undefined, requestedLocationId);
   } catch (err) {
     console.error("[AUTH] /api/employee-login hiba:", err);
     return res.status(500).json({ error: "Szerver hiba a munkatársi bejelentkezés közben." });
   }
+});
+
+router.post("/logout", (_req: Request, res: Response) => {
+  clearAuthCookie(res);
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(200).json({ success: true });
 });
 
 export default router;
