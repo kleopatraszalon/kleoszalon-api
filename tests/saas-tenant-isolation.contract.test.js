@@ -85,6 +85,15 @@ test('scoped business routes are mapped to subscription features and denied when
   assert.match(source, /tenant_feature_denied = feature/);
 });
 
+test('HR scope enforces tenant membership and exposes feature-disabled response', () => {
+  const source = read('src/middleware/hrLocationScope.ts');
+  assert.match(source, /ensureTenantIsolation\(\)/);
+  assert.match(source, /resolveTenantIdentity\(req\)/);
+  assert.match(source, /TENANT_FEATURE_DISABLED/);
+  assert.match(source, /locationBelongsToTenant\(requested,tenant\.id\)/);
+  assert.match(source, /e\.tenant_id=\$5::bigint/);
+});
+
 test('dashboard aggregates and counts are scoped inside SQL by tenant', () => {
   const source = read('src/routes/dashboard.ts');
   assert.match(source, /tl\.tenant_id=\$4::bigint/);
