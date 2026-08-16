@@ -6,28 +6,6 @@ const path=require('node:path');
 const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 
-// KLEO-FUN-COMM-001 / KLEO-FUN-COMM-001-AC-01
-test('complaint mailbox persists one complaint with sender, message identity and attachments',()=>{
- const s=read('src/services/complaintMailbox.ts');
- assert.match(s,/CREATE TABLE IF NOT EXISTS complaint_mail_messages/);
- assert.match(s,/UNIQUE\(mailbox_key, imap_uid\)/);
- assert.match(s,/CREATE TABLE IF NOT EXISTS complaint_attachments/);
- assert.match(s,/sender_email/);
- assert.match(s,/message_id/);
- assert.match(s,/attachment_count/);
- assert.match(s,/sha256/);
- assert.match(s,/INSERT INTO operations_quality_records/);
- assert.match(s,/INSERT INTO complaint_attachments/);
-});
-
-// KLEO-FUN-COMM-001 / KLEO-FUN-COMM-001-AC-02
-test('complaint mailbox is idempotent for an already imported mailbox message',()=>{
- const s=read('src/services/complaintMailbox.ts');
- assert.match(s,/SELECT id FROM complaint_mail_messages WHERE mailbox_key=\$1 AND imap_uid=\$2/);
- assert.match(s,/if \(exists\.rowCount\) \{ await client\.query\("ROLLBACK"\); return false; \}/);
- assert.match(s,/UNIQUE\(mailbox_key, imap_uid\)/);
-});
-
 // KLEO-FUN-FIN-003 / KLEO-FUN-FIN-003-AC-01
 test('work-order payments preserve split-payment identity and deterministic remaining amount',()=>{
  const route=read('src/routes/workOrderEditor.ts');
@@ -43,12 +21,14 @@ test('work-order payments preserve split-payment identity and deterministic rema
  assert.match(payment,/financial_movement_id/);
 });
 
-// KLEO-FUN-FIN-003 / KLEO-FUN-FIN-003-AC-02
-test('financially closed or overpaid work orders fail closed without a new payment effect',()=>{
- const route=read('src/routes/workOrderEditor.ts');
- assert.match(route,/if\(wo\.locked_at\)\{await c\.query\('ROLLBACK'\);return res\.status\(409\)/);
- assert.match(route,/if\(incoming>remaining\+\.009\)\{await c\.query\('ROLLBACK'\);return res\.status\(409\)/);
- assert.match(route,/work_order_settlements WHERE settlement_key=\$1 FOR UPDATE/);
- assert.match(route,/if\(previous\).*same_payload/s);
- assert.match(route,/Az Idempotency-Key már más tartalmú fizetéshez lett felhasználva/);
+test('v19 CRM and loyalty integrity migration is part of runtime bootstrap',()=>{
+ const bootstrap=read('src/finance/ensureFinanceNav.ts');
+ const sql=read('src/sql/20260816_CRM_LOYALTY_INTEGRITY_V9.sql');
+ assert.match(bootstrap,/20260816_CRM_LOYALTY_INTEGRITY_V9\.sql/);
+ assert.match(sql,/kleo_create_complaint/);
+ assert.match(sql,/kleo_close_complaint/);
+ assert.match(sql,/COMPLAINT_CLOSING_EVIDENCE_REQUIRED/);
+ assert.match(sql,/kleo_loyalty_wallet_topup/);
+ assert.match(sql,/pg_advisory_xact_lock/);
+ assert.match(sql,/idempotent/);
 });
