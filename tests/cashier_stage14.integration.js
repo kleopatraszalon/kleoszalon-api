@@ -6,7 +6,8 @@ const parity=require('../dist/routes/cashierAltegioParity').default;
 
 async function q(sql,params=[]){return pool.query(sql,params)}
 async function req(base,path,opts={}){const r=await fetch(base+path,opts);let body;try{body=await r.json()}catch{body=await r.text()}return{status:r.status,body}}
-const json=(body)=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+let requestNumber=0;
+const json=(body)=>({method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':`stage14-${++requestNumber}`},body:JSON.stringify(body)});
 
 async function main(){
  const seeded=await q(`
@@ -58,13 +59,13 @@ async function main(){
 
   r=await req(base,`/cashier/payments/${cashPayment.id}/refund`,json({location_id:loc,amount:500,reason:'Stage14 részleges készpénz refund',finance_account_id:cash}));
   assert.equal(r.status,201,`refund: ${JSON.stringify(r.body)}`);assert.equal(Number(r.body.amount_paid),3000);assert.equal(r.body.payment_status,'partial');
-  const refunded=(await q(`SELECT refunded_amount FROM work_order_payments WHERE id=$1`,[cashPayment.id])).rows[0];assert.equal(Number(refunded.refunded_amount),500);
+  const refunded=(await q(`SELECT COALESCE(SUM(amount),0) refunded_amount FROM work_order_payment_refunds WHERE payment_id=$1`,[cashPayment.id])).rows[0];assert.equal(Number(refunded.refunded_amount),500);
   assert.equal(Number((await q(`SELECT COALESCE(SUM(amount),0) n FROM cash_register_movements WHERE cashier_shift_id=$1 AND reason_code='refund' AND direction='out' AND voided_at IS NULL`,[shiftId])).rows[0].n),500);
 
   r=await req(base,`/cashier/shift/${shiftId}/count`,json({location_id:loc,count_type:'check',denominations:{10000:1,1000:1,500:1},note:'Refund utáni ellenőrzés'}));
   assert.equal(r.status,201,`post-refund count: ${JSON.stringify(r.body)}`);assert.equal(Number(r.body.expected_cash),11500,'cash refund must reduce drawer exactly once');assert.equal(Number(r.body.counted_cash),11500);assert.equal(Number(r.body.difference),0);
 
-  r=await req(base,`/cashier/workorders/${wid}/payments`);assert.equal(r.status,200);assert.equal(r.body.length,2);const cashHistory=r.body.find(x=>x.payment_method==='cash');assert.equal(Number(cashHistory.refunded_amount),500);assert.equal(cashHistory.refunds.length,1);
+  r=await req(base,`/cashier/workorders/${wid}/payments`);assert.equal(r.status,200);assert.equal(r.body.length,2);const cashHistory=r.body.find(x=>x.payment_method==='cash');assert.equal(Number(cashHistory.effective_refunded_amount),500);assert.equal(cashHistory.refunds.length,1);
 
   r=await req(base,`/cashier/shift/${shiftId}/close`,json({location_id:loc,counted_cash:11500,note:'Stage14 integrációs zárás'}));
   assert.equal(r.status,201,`close: ${JSON.stringify(r.body)}`);assert.equal(Number(r.body.report.expected_cash),11500);assert.equal(Number(r.body.report.difference),0);assert.ok(r.body.report.report_no);
