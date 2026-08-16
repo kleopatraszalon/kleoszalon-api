@@ -55,6 +55,7 @@ export function ensureFinanceNav(){
         '20260814_FINANCE_V5_PREFLIGHT_C_LEDGER.sql',
         '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260816_FINANCIAL_INTEGRITY_V1.sql',
+        '20260816_DAY_CLOSE_GUARD_V1.sql',
         // UAT core tables must exist before requirements traceability/evidence migrations.
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
@@ -66,6 +67,9 @@ export function ensureFinanceNav(){
         '20260816_REQUIREMENTS_EVIDENCE_V2.sql',
         '20260816_UAT_KLEO_MAPPING_V3.sql',
         '20260816_UAT_AUTOMATION_STATUS_V4.sql',
+        '20260816_UAT_KLEO_MAPPING_V4_FEFO.sql',
+        '20260816_UAT_AUTOMATION_STATUS_V5_FEFO.sql',
+        '20260816_UAT_DAY_CLOSE_MAPPING_V6.sql',
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
