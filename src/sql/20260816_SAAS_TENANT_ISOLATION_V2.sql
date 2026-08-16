@@ -6,16 +6,39 @@ SET LOCAL statement_timeout = 0;
 -- Idempotent migration; preserves all legacy Kleopátra rows.
 -- This one-shot legacy backfill can touch large tables, therefore it must not
 -- inherit a short request-oriented PostgreSQL statement_timeout.
+--
+-- Legacy appointments may contain rows that predate the current time-order
+-- CHECK constraint. Updating only tenant_id would make PostgreSQL re-check the
+-- entire row and reject the backfill. Preserve the exact constraint definition,
+-- temporarily remove it inside this transaction, then restore it as NOT VALID:
+-- existing legacy violations remain untouched, while every new/updated row is
+-- still protected by the CHECK condition.
 -- ============================================================
 
 DO $$
 DECLARE
   t bigint;
   r record;
+  appointment_time_order_def text;
 BEGIN
   SELECT id INTO t FROM tenants WHERE slug='kleopatra' LIMIT 1;
   IF t IS NULL THEN
     RAISE EXCEPTION 'Kleopatra tenant missing. Run SaaS Core v1 first.';
+  END IF;
+
+  SELECT regexp_replace(pg_get_constraintdef(c.oid, true), '\s+NOT VALID$', '', 'i')
+    INTO appointment_time_order_def
+    FROM pg_constraint c
+    JOIN pg_class rel ON rel.oid=c.conrelid
+    JOIN pg_namespace n ON n.oid=rel.relnamespace
+   WHERE n.nspname='public'
+     AND rel.relname='appointments'
+     AND c.conname='chk_appointments_time_order_phase3'
+     AND c.contype='c'
+   LIMIT 1;
+
+  IF appointment_time_order_def IS NOT NULL THEN
+    ALTER TABLE appointments DROP CONSTRAINT chk_appointments_time_order_phase3;
   END IF;
 
   FOR r IN
@@ -50,6 +73,22 @@ BEGIN
       EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(tenant_id)', r.table_name || '_tenant_idx', r.table_name);
     END IF;
   END LOOP;
+
+  IF appointment_time_order_def IS NOT NULL AND NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint c
+      JOIN pg_class rel ON rel.oid=c.conrelid
+      JOIN pg_namespace n ON n.oid=rel.relnamespace
+     WHERE n.nspname='public'
+       AND rel.relname='appointments'
+       AND c.conname='chk_appointments_time_order_phase3'
+  ) THEN
+    EXECUTE format(
+      'ALTER TABLE appointments ADD CONSTRAINT %I %s NOT VALID',
+      'chk_appointments_time_order_phase3',
+      appointment_time_order_def
+    );
+  END IF;
 END $$;
 
 -- Integrity checks: any location-bound row must agree with its location tenant.
