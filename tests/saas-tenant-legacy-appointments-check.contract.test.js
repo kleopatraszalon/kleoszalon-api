@@ -9,7 +9,8 @@ test('tenant backfill preserves legacy appointment rows without weakening future
   assert.match(sql,/pg_get_constraintdef\(c\.oid,\s*true\)/i);
   assert.match(sql,/chk_appointments_time_order_phase3/i);
   assert.match(sql,/ALTER TABLE appointments DROP CONSTRAINT chk_appointments_time_order_phase3/i);
-  assert.match(sql,/ALTER TABLE appointments ADD CONSTRAINT[\s\S]*appointment_time_order_def[\s\S]*NOT VALID/i);
+  assert.match(sql,/ALTER TABLE appointments ADD CONSTRAINT %I %s NOT VALID/i);
+  assert.match(sql,/'chk_appointments_time_order_phase3',\s*appointment_time_order_def/i);
 });
 
 test('legacy CHECK compatibility remains transactional and tenant integrity validation remains mandatory',()=>{
