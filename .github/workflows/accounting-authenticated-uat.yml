@@ -78,10 +78,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          refresh_vir_token() {
+            local oidc_response oidc_token auth_code
+            oidc_response="$(curl -fsS --max-time 20 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-accounting-uat")"
+            oidc_token="$(OIDC="$oidc_response" node -e "const x=JSON.parse(process.env.OIDC||'{}');process.stdout.write(String(x.value||''))")"
+            if [ -z "$oidc_token" ]; then echo "GitHub OIDC token missing during refresh"; return 1; fi
+            auth_code="$(curl -sS --max-time 30 -o /tmp/accounting-auth-refresh.json -w '%{http_code}' -X POST -H "Authorization: Bearer $oidc_token" "$API_BASE_URL/api/uat/accounting-token" || true)"
+            if [ "$auth_code" != "200" ]; then
+              echo "Accounting UAT token refresh failed, HTTP=$auth_code"
+              cat /tmp/accounting-auth-refresh.json || true
+              return 1
+            fi
+            VIR_TOKEN="$(node -e "const x=require('/tmp/accounting-auth-refresh.json');if(!x.success||!x.token)process.exit(1);process.stdout.write(x.token)")"
+            echo "::add-mask::$VIR_TOKEN"
+            echo "VIR_TOKEN=$VIR_TOKEN" >> "$GITHUB_ENV"
+            echo "Accounting UAT session refreshed"
+          }
+
           success=0
           for attempt in $(seq 1 45); do
             code="$(curl -sS --max-time 60 -o /tmp/finance.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/finance-dashboard?date=2026-08-14" || true)"
             if [ "$code" = "200" ]; then success=1; break; fi
+            if [ "$code" = "401" ]; then
+              refresh_vir_token
+              echo "Retrying Finance dashboard after session refresh ($attempt/45)"
+              continue
+            fi
             if [ "$code" != "503" ]; then
               echo "Finance dashboard unexpected HTTP=$code"
               cat /tmp/finance.json || true
