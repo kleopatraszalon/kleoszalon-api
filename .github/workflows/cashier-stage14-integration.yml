@@ -7,11 +7,15 @@ on:
       - 'src/routes/cashierShift.ts'
       - 'src/routes/workOrderCashierFast.ts'
       - 'src/routes/transactions.ts'
+      - 'src/routes/franchiseAccounting.ts'
       - 'src/finance/ensureFinanceNav.ts'
       - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql'
       - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql'
       - 'src/sql/20260816_FINANCIAL_INTEGRITY_V1.sql'
+      - 'src/sql/20260816_FRANCHISE_ACCOUNTING_V6.sql'
       - 'tests/cashier_stage14.integration.js'
+      - 'tests/franchise_accounting.integration.js'
+      - 'tests/franchise_accounting_integration_schema.sql'
       - '.github/workflows/cashier-stage14-integration.yml'
   push:
     branches: [main]
@@ -20,11 +24,15 @@ on:
       - 'src/routes/cashierShift.ts'
       - 'src/routes/workOrderCashierFast.ts'
       - 'src/routes/transactions.ts'
+      - 'src/routes/franchiseAccounting.ts'
       - 'src/finance/ensureFinanceNav.ts'
       - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql'
       - 'src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql'
       - 'src/sql/20260816_FINANCIAL_INTEGRITY_V1.sql'
+      - 'src/sql/20260816_FRANCHISE_ACCOUNTING_V6.sql'
       - 'tests/cashier_stage14.integration.js'
+      - 'tests/franchise_accounting.integration.js'
+      - 'tests/franchise_accounting_integration_schema.sql'
       - '.github/workflows/cashier-stage14-integration.yml'
   workflow_dispatch:
 
@@ -85,7 +93,14 @@ jobs:
           SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql
-          # The integrity migration is intentionally verified against this isolated schema.
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_FINANCIAL_INTEGRITY_V1.sql
       - name: Run cashier stage14 integration
         run: node tests/cashier_stage14.integration.js
+      - name: Reset database for franchise accounting trigger test
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+      - name: Create franchise accounting integration schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/franchise_accounting_integration_schema.sql
+      - name: Apply franchise accounting V6 migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_FRANCHISE_ACCOUNTING_V6.sql
+      - name: Run franchise accounting integration
+        run: node tests/franchise_accounting.integration.js
