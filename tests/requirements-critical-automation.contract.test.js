@@ -95,13 +95,22 @@ test('system health reports critical schema, RBAC, finance and ledger invariants
 });
 
 // KLEO-NFR-REL-001-AC-01
-test('critical finance migrations are deterministic bootstrap stages and SQL is transactional',()=>{
+test('critical finance and requirement migrations are deterministic bootstrap stages and SQL is transactional',()=>{
   const bootstrap=read('src/finance/ensureFinanceNav.ts');
   const integrity=read('src/sql/20260816_FINANCIAL_INTEGRITY_V1.sql');
+  const traceability=read('src/sql/20260816_REQUIREMENTS_TRACEABILITY_V1.sql');
   const evidence=read('src/sql/20260816_REQUIREMENTS_EVIDENCE_V2.sql');
-  assert.match(bootstrap,/20260816_FINANCIAL_INTEGRITY_V1\.sql/);
-  assert.match(integrity,/^BEGIN;/);
-  assert.match(integrity,/COMMIT;/);
-  assert.match(evidence,/^BEGIN;/);
-  assert.match(evidence,/COMMIT;/);
+  const mapping=read('src/sql/20260816_UAT_KLEO_MAPPING_V3.sql');
+  const automation=read('src/sql/20260816_UAT_AUTOMATION_STATUS_V4.sql');
+  for(const file of [
+    '20260816_FINANCIAL_INTEGRITY_V1.sql',
+    '20260816_REQUIREMENTS_TRACEABILITY_V1.sql',
+    '20260816_REQUIREMENTS_EVIDENCE_V2.sql',
+    '20260816_UAT_KLEO_MAPPING_V3.sql',
+    '20260816_UAT_AUTOMATION_STATUS_V4.sql'
+  ]) assert.match(bootstrap,new RegExp(file.replace(/\./g,'\\.')));
+  for(const sql of [integrity,traceability,evidence,mapping,automation]){
+    assert.match(sql,/^BEGIN;/);
+    assert.match(sql,/COMMIT;/);
+  }
 });
