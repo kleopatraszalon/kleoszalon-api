@@ -23,11 +23,14 @@ for(const entry of automation.entries||[]){
   const testPath=path.join(root,entry.test_ref||'');
   if(!entry.test_ref||!fs.existsSync(testPath)){errors.push(`${entry.criterion_id}: hiányzó tesztfájl ${entry.test_ref||''}`);continue;}
   const src=fs.readFileSync(testPath,'utf8');
-  if(!src.includes(entry.criterion_id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a kritérium-ID-ra`);
-  if(!src.includes(target.requirement.id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a követelmény-ID-ra`);
-  if(mode==='external-workflow'){
+  if(mode==='inline-ci'){
+    if(!src.includes(entry.criterion_id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a kritérium-ID-ra`);
+    if(!src.includes(target.requirement.id))errors.push(`${entry.criterion_id}: a tesztfájl nem hivatkozik a követelmény-ID-ra`);
+  } else {
     const workflowPath=path.join(root,entry.workflow_ref||'');
-    if(!entry.workflow_ref||!fs.existsSync(workflowPath))errors.push(`${entry.criterion_id}: hiányzó külső workflow ${entry.workflow_ref||''}`);
+    if(!entry.workflow_ref||!fs.existsSync(workflowPath)){errors.push(`${entry.criterion_id}: hiányzó külső workflow ${entry.workflow_ref||''}`);continue;}
+    const workflow=fs.readFileSync(workflowPath,'utf8');
+    if(!workflow.includes(entry.test_ref))errors.push(`${entry.criterion_id}: a külső workflow nem futtatja a megadott tesztet: ${entry.test_ref}`);
   }
 }
 const automated=seen.size,total=criteria.size;
