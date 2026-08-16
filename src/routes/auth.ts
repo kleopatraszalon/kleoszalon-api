@@ -8,8 +8,10 @@ import axios from "axios";
 import crypto from "crypto";
 import JWT_SECRET from "../security/jwtSecret";
 import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
+import saasRouter from "./saas";
 
 const router = express.Router();
+router.use("/saas", saasRouter);
 const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
 const GITHUB_UAT_REPOSITORY="kleopatraszalon/kleoszalon-api";
 const ACCOUNTING_UAT_AUDIENCE="kleoszalon-accounting-uat";
@@ -237,7 +239,6 @@ router.post("/login", async (req: Request, res: Response) => {
     if (normalizedIdentifier === "könyvelés" || normalizedIdentifier === "konyveles@kleoszalon.hu") {
       await ensureAccountingUser();
     }
-
     const user = await findUser(loginIdentifier);
     const adminAccount = user && isAdminRole(user.role);
     const employee = adminAccount ? null : await findEmployee(loginIdentifier, user);
