@@ -1,0 +1,51 @@
+name: Work-order reversal v17
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/routes/workOrderReversalApi.ts'
+      - 'src/routes/workordersLifecycleHotfix.ts'
+      - 'src/sql/20260816_WORKORDER_REVERSAL_API_V8.sql'
+      - 'src/finance/ensureFinanceNav.ts'
+      - 'tests/workorder-reversal-api-v17.contract.test.js'
+      - 'tests/workorder_reversal_v17.integration.sql'
+      - '.github/workflows/workorder-reversal-v17.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reversal-api-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reversal_v17
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d reversal_v17"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Reversal API contract tests
+        run: node --test tests/workorder-reversal-api-v17.contract.test.js
+      - name: Reversal database idempotency proof
+        run: psql -h 127.0.0.1 -U postgres -d reversal_v17 -v ON_ERROR_STOP=1 -f tests/workorder_reversal_v17.integration.sql
+      - name: Production TypeScript build
+        run: npm run build
