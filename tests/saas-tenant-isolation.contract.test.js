@@ -75,6 +75,16 @@ test('subscription feature resolver supports plan features, all_modules and tena
   assert.match(source, /COALESCE\(tf\.enabled/);
 });
 
+test('scoped business routes are mapped to subscription features and denied when disabled', () => {
+  const source = read('src/saas/tenantAccess.ts');
+  assert.match(source, /featureForRequest/);
+  for (const feature of ['crm', 'booking', 'hr', 'inventory']) {
+    assert.ok(source.includes(`return "${feature}"`), `${feature} route mapping missing`);
+  }
+  assert.match(source, /tenantFeatureEnabled\(tenantId, feature\)/);
+  assert.match(source, /tenant_feature_denied = feature/);
+});
+
 test('dashboard aggregates and counts are scoped inside SQL by tenant', () => {
   const source = read('src/routes/dashboard.ts');
   assert.match(source, /tl\.tenant_id=\$4::bigint/);
