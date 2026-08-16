@@ -1,0 +1,6 @@
+const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');
+const route=fs.readFileSync('src/routes/gdpr.ts','utf8'),schema=fs.readFileSync('src/gdpr/ensureGdpr.ts','utf8'),transactions=fs.readFileSync('src/routes/transactions.ts','utf8'),menu=fs.readFileSync('src/menu/ensureMenuHealth.ts','utf8');
+test('GDPR center is protected and mounted',()=>{assert.match(route,/router\.use\(requireAuth,requireManagement\)/);assert.match(transactions,/router\.use\("\/gdpr",gdprRouter\)/)});
+test('mandatory operational registers exist',()=>{for(const n of['gdpr_processing_activities','gdpr_retention_policies','gdpr_data_subject_requests','gdpr_incidents','gdpr_processors'])assert.ok(schema.includes(n),n);for(const e of['/processing-activities','/retention-policies','/requests','/incidents','/processors','/settings','/guide'])assert.ok(route.includes(e),e)});
+test('retention is safe by default',()=>{assert.match(schema,/retention_automation_enabled: false/);assert.match(schema,/retention_preview_only: true/);assert.match(schema,/legal_hold_supported boolean NOT NULL DEFAULT true/)});
+test('actions are audited and menu self-heals',()=>{assert.match(route,/writeSystemAudit/);assert.match(menu,/settings\.gdpr/);assert.match(menu,/GDPR-központ/)});
