@@ -324,7 +324,7 @@ BEGIN
     END IF;
     SELECT * INTO v_movement FROM financial_movements WHERE id=NEW.financial_movement_id;
     IF v_movement.id IS NULL OR v_movement.amount<>NEW.amount
-       OR v_movement.direction<>CASE WHEN NEW.direction='in' THEN 'income' ELSE 'expense' END
+       OR v_movement.direction<>(CASE WHEN NEW.direction='in' THEN 'income' ELSE 'expense' END)
        OR v_movement.account_id IS DISTINCT FROM NEW.finance_account_id
        OR COALESCE(v_movement.location_id::text,'')<>COALESCE(NEW.location_id,'') THEN
       RAISE EXCEPTION 'A kasszatétel és a főkönyvi tétel nem egyezik.' USING ERRCODE='P0001';
