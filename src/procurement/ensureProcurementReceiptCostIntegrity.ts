@@ -18,14 +18,14 @@ export function ensureProcurementReceiptCostIntegrity(): Promise<void> {
       tax_total numeric(14,2) NOT NULL,
       gross_total numeric(14,2) NOT NULL,
       landed_total numeric(14,2) NOT NULL,
-      landed_unit_cost numeric(14,2) NOT NULL,
+      landed_unit_cost numeric(14,4) NOT NULL,
       document_number text NOT NULL,
       received_by text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(),
       cost_components jsonb NOT NULL DEFAULT '{}'::jsonb,
       CHECK (abs(gross_total - (net_total + tax_total)) <= 0.01),
       CHECK (abs(landed_total - (gross_total + ancillary_cost_total)) <= 0.01),
-      CHECK (abs(landed_total - (landed_unit_cost * received_quantity)) <= GREATEST(0.01, received_quantity * 0.01))
+      CHECK (abs(landed_total - (landed_unit_cost * received_quantity)) <= 0.01)
     );
     CREATE INDEX IF NOT EXISTS procurement_receipt_costs_order_idx ON procurement_receipt_costs(purchase_order_id, received_at DESC);
     CREATE INDEX IF NOT EXISTS procurement_receipt_costs_item_idx ON procurement_receipt_costs(purchase_order_item_id, received_at DESC);
