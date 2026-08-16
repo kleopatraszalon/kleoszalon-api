@@ -1,32 +1,18 @@
 BEGIN;
 SET LOCAL statement_timeout = 0;
 
--- ============================================================
--- VIR SaaS Core v2 – tenant isolation for critical business data
--- Idempotent migration; preserves all legacy Kleopátra rows.
--- This one-shot legacy backfill can touch large tables, therefore it must not
--- inherit a short request-oriented PostgreSQL statement_timeout.
---
--- Legacy appointments may contain rows that predate the current time-order
--- CHECK constraint. Updating only tenant_id would make PostgreSQL re-check the
--- entire row and reject the backfill. Preserve the exact constraint definition,
--- temporarily remove it inside this transaction, then restore it as NOT VALID:
--- existing legacy violations remain untouched, while every new/updated row is
--- still protected by the CHECK condition.
---
--- The appointment table can also have user triggers. Re-adding a constraint
--- after UPDATE while trigger events are still pending can fail with PostgreSQL
--- 55000 (object_not_in_prerequisite_state). User triggers are therefore disabled
--- only for the tenant-only legacy backfill, deferred constraint triggers are
--- forced to completion, and the original trigger state is restored before
--- commit. Any failure rolls the whole transaction back.
--- ============================================================
+-- VIR SaaS Core v2 – tenant isolation for critical business data.
+-- Legacy rows may predate current CHECK constraints. Tenant-only UPDATEs must
+-- not rewrite business data or fail because PostgreSQL rechecks those old rows.
+-- Exact CHECK definitions are preserved and restored as NOT VALID, which keeps
+-- them enforced for every new/updated row while tolerating historical violations.
 
 DO $$
 DECLARE
   t bigint;
   r record;
   appointment_time_order_def text;
+  work_order_operational_status_def text;
 BEGIN
   SELECT id INTO t FROM tenants WHERE slug='kleopatra' LIMIT 1;
   IF t IS NULL THEN
@@ -38,10 +24,17 @@ BEGIN
     FROM pg_constraint c
     JOIN pg_class rel ON rel.oid=c.conrelid
     JOIN pg_namespace n ON n.oid=rel.relnamespace
-   WHERE n.nspname='public'
-     AND rel.relname='appointments'
-     AND c.conname='chk_appointments_time_order_phase3'
-     AND c.contype='c'
+   WHERE n.nspname='public' AND rel.relname='appointments'
+     AND c.conname='chk_appointments_time_order_phase3' AND c.contype='c'
+   LIMIT 1;
+
+  SELECT regexp_replace(pg_get_constraintdef(c.oid, true), '\s+NOT VALID$', '', 'i')
+    INTO work_order_operational_status_def
+    FROM pg_constraint c
+    JOIN pg_class rel ON rel.oid=c.conrelid
+    JOIN pg_namespace n ON n.oid=rel.relnamespace
+   WHERE n.nspname='public' AND rel.relname='work_orders'
+     AND c.conname='chk_work_orders_operational_status' AND c.contype='c'
    LIMIT 1;
 
   IF appointment_time_order_def IS NOT NULL THEN
@@ -49,14 +42,15 @@ BEGIN
     ALTER TABLE appointments DROP CONSTRAINT chk_appointments_time_order_phase3;
   END IF;
 
+  IF work_order_operational_status_def IS NOT NULL THEN
+    ALTER TABLE work_orders DISABLE TRIGGER USER;
+    ALTER TABLE work_orders DROP CONSTRAINT chk_work_orders_operational_status;
+  END IF;
+
   FOR r IN
     SELECT unnest(ARRAY[
-      'employees',
-      'clients',
-      'appointments',
-      'work_orders',
-      'product_stock_balances',
-      'purchase_orders'
+      'employees','clients','appointments','work_orders',
+      'product_stock_balances','purchase_orders'
     ]) AS table_name
   LOOP
     IF EXISTS (
@@ -82,26 +76,34 @@ BEGIN
     END IF;
   END LOOP;
 
-  IF appointment_time_order_def IS NOT NULL THEN
+  IF appointment_time_order_def IS NOT NULL OR work_order_operational_status_def IS NOT NULL THEN
     SET CONSTRAINTS ALL IMMEDIATE;
+  END IF;
 
+  IF appointment_time_order_def IS NOT NULL THEN
     IF NOT EXISTS (
-      SELECT 1
-        FROM pg_constraint c
-        JOIN pg_class rel ON rel.oid=c.conrelid
-        JOIN pg_namespace n ON n.oid=rel.relnamespace
-       WHERE n.nspname='public'
-         AND rel.relname='appointments'
-         AND c.conname='chk_appointments_time_order_phase3'
+      SELECT 1 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid
+       WHERE rel.relname='appointments' AND c.conname='chk_appointments_time_order_phase3'
     ) THEN
       EXECUTE format(
         'ALTER TABLE appointments ADD CONSTRAINT %I %s NOT VALID',
-        'chk_appointments_time_order_phase3',
-        appointment_time_order_def
+        'chk_appointments_time_order_phase3', appointment_time_order_def
       );
     END IF;
-
     ALTER TABLE appointments ENABLE TRIGGER USER;
+  END IF;
+
+  IF work_order_operational_status_def IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid
+       WHERE rel.relname='work_orders' AND c.conname='chk_work_orders_operational_status'
+    ) THEN
+      EXECUTE format(
+        'ALTER TABLE work_orders ADD CONSTRAINT %I %s NOT VALID',
+        'chk_work_orders_operational_status', work_order_operational_status_def
+      );
+    END IF;
+    ALTER TABLE work_orders ENABLE TRIGGER USER;
   END IF;
 END $$;
 
@@ -123,8 +125,7 @@ BEGIN
     ) THEN
       EXECUTE format(
         'SELECT count(*) FROM %I e JOIN locations l ON l.id::text=e.location_id::text '
-        'WHERE e.tenant_id IS DISTINCT FROM l.tenant_id',
-        r.table_name
+        'WHERE e.tenant_id IS DISTINCT FROM l.tenant_id', r.table_name
       ) INTO mismatch_count;
       IF mismatch_count > 0 THEN
         RAISE EXCEPTION 'Tenant/location mismatch in %: % rows', r.table_name, mismatch_count;
@@ -134,8 +135,3 @@ BEGIN
 END $$;
 
 COMMIT;
-
--- Verification examples:
--- SELECT tenant_id,count(*) FROM appointments GROUP BY tenant_id ORDER BY tenant_id;
--- SELECT tenant_id,count(*) FROM clients GROUP BY tenant_id ORDER BY tenant_id;
--- SELECT tenant_id,count(*) FROM employees GROUP BY tenant_id ORDER BY tenant_id;

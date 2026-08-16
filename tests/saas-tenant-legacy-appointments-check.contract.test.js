@@ -16,6 +16,16 @@ test('tenant backfill preserves legacy appointment rows without weakening future
   assert.match(sql,/ALTER TABLE appointments ENABLE TRIGGER USER/i);
 });
 
+test('tenant backfill preserves legacy work order rows without weakening operational status validation',()=>{
+  assert.match(sql,/work_order_operational_status_def/);
+  assert.match(sql,/chk_work_orders_operational_status/);
+  assert.match(sql,/ALTER TABLE work_orders DISABLE TRIGGER USER/i);
+  assert.match(sql,/ALTER TABLE work_orders DROP CONSTRAINT chk_work_orders_operational_status/i);
+  assert.match(sql,/ALTER TABLE work_orders ADD CONSTRAINT %I %s NOT VALID/i);
+  assert.match(sql,/'chk_work_orders_operational_status',\s*work_order_operational_status_def/i);
+  assert.match(sql,/ALTER TABLE work_orders ENABLE TRIGGER USER/i);
+});
+
 test('legacy CHECK compatibility remains transactional and tenant integrity validation remains mandatory',()=>{
   assert.match(sql,/^BEGIN;/m);
   assert.match(sql,/COMMIT;/);
