@@ -71,12 +71,12 @@ async function computeState(tenantId: string) {
   ]);
 
   const companyOk = Boolean(tenant.name && tenant.legal_name && tenant.billing_email);
-  const adminOk = admin.rowCount > 0;
-  const locationOk = location.rowCount > 0;
+  const adminOk = (admin.rowCount || 0) > 0;
+  const locationOk = (location.rowCount || 0) > 0;
   const brandingRow = branding.rows[0] || null;
   const brandingOk = Boolean(brandingRow && (brandingRow.app_name || brandingRow.logo_url || brandingRow.primary_color));
   const sub = subscription.rows[0] || null;
-  const modulesOk = Boolean(sub?.plan_features) || features.rowCount > 0;
+  const modulesOk = Boolean(sub?.plan_features) || (features.rowCount || 0) > 0;
   const subscriptionOk = Boolean(sub && ["trial","active"].includes(sub.status));
   const baseChecklist = [
     { key: "company", label: "Cégadatok", complete: companyOk },
