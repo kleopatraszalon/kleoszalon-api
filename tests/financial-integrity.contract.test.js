@@ -18,6 +18,8 @@ const workOrderEditor=read('src/routes/workOrderEditor.ts');
 const bootstrap=read('src/finance/ensureFinanceNav.ts');
 
 test('10/10 financial integrity: ledger is append-only and exact reversal is unique',()=>{
+  assert.match(sql,/ADD COLUMN IF NOT EXISTS payment_status text NOT NULL DEFAULT 'posted'/);
+  assert.match(sql,/ADD COLUMN IF NOT EXISTS cancellation_reason text/);
   assert.match(sql,/A pénzügyi főkönyvből fizikai törlés nem engedélyezett/);
   assert.match(sql,/A könyvelt pénzügyi tétel tartalma nem módosítható/);
   assert.match(sql,/financial_movements_one_reversal_uq/);
