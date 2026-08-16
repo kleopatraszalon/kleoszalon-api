@@ -44,7 +44,10 @@ test('10/10 financial integrity: posting, transfer and refund are atomic',()=>{
 });
 
 test('10/10 financial integrity: period locks, negative-balance and idempotency fail closed',()=>{
-  assert.match(sql,/CREATE TABLE IF NOT EXISTS finance_period_locks/);
+ assert.match(sql,/ALTER TABLE financial_accounts[\s\S]*allow_negative_balance/);
+ assert.match(sql,/CREATE TABLE IF NOT EXISTS financial_transfers/);
+ assert.match(sql,/CREATE TABLE IF NOT EXISTS accounting_journal_entries/);
+ assert.match(sql,/CREATE TABLE IF NOT EXISTS finance_period_locks/);
   assert.match(sql,/A pénzügyi időszak lezárt/);
   assert.match(sql,/allow_negative_balance/);
   assert.match(sql,/egyenlege negatívvá válna/);
