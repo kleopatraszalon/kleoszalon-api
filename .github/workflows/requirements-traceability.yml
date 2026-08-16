@@ -6,7 +6,12 @@ on:
     paths:
       - 'docs/requirements/**'
       - 'scripts/validate-requirements.mjs'
-      - 'tests/requirements-traceability.contract.test.js'
+      - 'scripts/validate-operational-requirements.mjs'
+      - 'scripts/validate-requirement-automation.mjs'
+      - 'scripts/generate-requirement-evidence.mjs'
+      - 'tests/requirements-*.test.js'
+      - 'tests/financial-integrity.contract.test.js'
+      - 'src/**'
       - 'package.json'
       - '.github/workflows/requirements-traceability.yml'
   push:
@@ -14,7 +19,12 @@ on:
     paths:
       - 'docs/requirements/**'
       - 'scripts/validate-requirements.mjs'
-      - 'tests/requirements-traceability.contract.test.js'
+      - 'scripts/validate-operational-requirements.mjs'
+      - 'scripts/validate-requirement-automation.mjs'
+      - 'scripts/generate-requirement-evidence.mjs'
+      - 'tests/requirements-*.test.js'
+      - 'tests/financial-integrity.contract.test.js'
+      - 'src/**'
       - 'package.json'
       - '.github/workflows/requirements-traceability.yml'
   workflow_dispatch:
@@ -24,14 +34,29 @@ permissions:
 
 jobs:
   traceability:
-    name: Testability 10/10 gate
+    name: Testability + evidence gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Validate IDs, acceptance criteria and traceability
+      - name: Validate KLEO baseline, mappings and automation registry
         run: npm run requirements:check
-      - name: Contract test
-        run: node --test tests/requirements-traceability.contract.test.js
+      - name: Validate baseline and operational contracts
+        run: node --test tests/requirements-traceability.contract.test.js tests/requirements-operational-gap.contract.test.js tests/requirements-evidence.contract.test.js
+      - name: Run critical automated acceptance criteria
+        run: npm run test:requirements-critical
+      - name: Run financial integrity regression
+        run: npm run test:financial-integrity
+      - name: Generate build-specific requirement evidence
+        run: npm run requirements:evidence
+        env:
+          REQUIREMENT_EVIDENCE_ENV: ci
+      - name: Upload requirement evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-${{ github.sha }}
+          path: artifacts/requirements-evidence.json
+          retention-days: 90
+          if-no-files-found: error

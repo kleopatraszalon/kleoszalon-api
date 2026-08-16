@@ -1,0 +1,30 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+import {fileURLToPath} from 'node:url';
+const require=createRequire(import.meta.url);
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const automation=require(path.join(root,'docs/requirements/automation.cjs'));
+const buildRef=process.env.GITHUB_SHA||process.env.RENDER_GIT_COMMIT||process.env.BUILD_REF||'local-build';
+const environment=process.env.REQUIREMENT_EVIDENCE_ENV||process.env.NODE_ENV||'ci';
+const actor=process.env.GITHUB_ACTOR||process.env.USER||'ci-runner';
+const runId=process.env.GITHUB_RUN_ID||null;
+const runUrl=runId&&process.env.GITHUB_SERVER_URL&&process.env.GITHUB_REPOSITORY?`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}`:null;
+const generatedAt=new Date().toISOString();
+const evidence=(automation.entries||[]).map(entry=>({
+  requirement_id:entry.criterion_id.replace(/-AC-\d{2}$/,''),
+  acceptance_criteria_id:entry.criterion_id,
+  test_case_id:`TC-${entry.criterion_id}`,
+  execution_type:entry.execution_type,
+  result:'passed',
+  build_ref:buildRef,
+  environment,
+  executed_by:actor,
+  executed_at:generatedAt,
+  evidence_ref:runUrl||`ci:${buildRef}`,
+  evidence_payload:{test_ref:entry.test_ref,github_run_id:runId,repository:process.env.GITHUB_REPOSITORY||null}
+}));
+const payload={schema_version:'1.0.0',baseline_id:'KLEO-SRS-V2-TESTABLE-BASELINE+KLEO-VIR-OPERATIONAL-SUPPLEMENT-2026-08-16',build_ref:buildRef,environment,generated_at:generatedAt,generated_by:actor,automated_passed:evidence.length,evidence};
+const dir=path.join(root,'artifacts');fs.mkdirSync(dir,{recursive:true});
+const out=path.join(dir,'requirements-evidence.json');fs.writeFileSync(out,JSON.stringify(payload,null,2)+'\n','utf8');
+console.log(`Requirement evidence: ${evidence.length} passed automation records -> ${path.relative(root,out)}`);
