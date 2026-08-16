@@ -16,6 +16,7 @@
     "test:requirements-critical": "node --test tests/requirements-critical-automation.contract.test.js tests/requirements-critical-automation-v2.contract.test.js tests/requirements-critical-automation-v3.contract.test.js tests/requirements-critical-automation-v4.contract.test.js tests/requirements-critical-automation-v5.contract.test.js",
     "test:financial-integrity": "node --test tests/financial-integrity.contract.test.js",
     "test:workorders": "node --test tests/workorder-stage8.contract.test.js tests/rbac-failclosed.contract.test.js tests/live-runtime-hotfix.contract.test.js",
+    "test:saas-isolation": "node scripts/saas-cross-tenant-uat.js",
     "start": "node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
     "seed:demo": "node dist/demo/seedRunner.js",
     "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json src/server.ts\""
