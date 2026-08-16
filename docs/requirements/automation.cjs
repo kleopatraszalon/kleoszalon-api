@@ -63,6 +63,6 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-WO-001-AC-02', test_ref: 'tests/requirements-critical-automation-v13.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-BOOK-004-AC-01', test_ref: 'tests/requirements-critical-automation-v13.contract.test.js', execution_type: 'e2e' },
     { criterion_id: 'KLEO-NFR-BCK-001-AC-01', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'resilience', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' },
-    { criterion_id: 'KLEO-NFR-BCK-001-AC-02', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'inspection', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' }
+    { criterion_id: 'KLEO-NFR-BCK-001-AC-02', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'resilience', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' }
   ]
 };
