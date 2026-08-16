@@ -1,0 +1,50 @@
+name: Enterprise integrity v16
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/sql/20260816_ENTERPRISE_INTEGRITY_V7.sql'
+      - 'src/finance/ensureFinanceNav.ts'
+      - 'tests/enterprise-integrity-v16.contract.test.js'
+      - 'tests/enterprise_integrity_v16.integration.sql'
+      - '.github/workflows/enterprise-integrity-v16.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_integrity
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d kleo_integrity"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Enterprise contract tests
+        run: node --test tests/enterprise-integrity-v16.contract.test.js
+      - name: Execute database integrity proof
+        run: psql -h 127.0.0.1 -U postgres -d kleo_integrity -v ON_ERROR_STOP=1 -f tests/enterprise_integrity_v16.integration.sql
+      - name: Production TypeScript build
+        run: npm run build
