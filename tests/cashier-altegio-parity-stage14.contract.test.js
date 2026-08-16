@@ -75,8 +75,10 @@ test('partial and full refunds are auditable and reduce net paid total',()=>{
  assert.match(sql,/CREATE TABLE IF NOT EXISTS work_order_payment_refunds/);
  assert.match(sql,/refunded_amount/);
  assert.match(route,/\/payments\/:id\/refund/);
- assert.match(route,/SUM\(amount-refunded_amount\)/);
- assert.match(fast,/amount-COALESCE\(refunded_amount,0\)/);
+ assert.match(route,/effective_refunded_amount/);
+ assert.match(route,/SELECT SUM\(r\.amount\) FROM work_order_payment_refunds/);
+ assert.match(fast,/SELECT SUM\(r\.amount\) FROM work_order_payment_refunds/);
+ assert.doesNotMatch(route,/UPDATE work_order_payments SET refunded_amount=refunded_amount/);
 });
 
 test('cash drawer expected total does not double subtract cash refunds',()=>{
