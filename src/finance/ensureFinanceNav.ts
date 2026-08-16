@@ -16,14 +16,12 @@ export class FinanceNavBootstrapError extends Error{
   constructor(stage:string,cause:any){
     const causeMessage=String(cause?.message||cause||'ismeretlen hiba');
     const substage=cause?.workOrderBootstrapSubstage?String(cause.workOrderBootstrapSubstage):null;
-    const constraint=cause?.constraint?String(cause.constraint):null;
-    const stageParts=[stage,substage,constraint].filter(Boolean);
-    super(`Finance/NAV bootstrap hiba [${stageParts.join(':')}]: ${causeMessage}`);
+    super(`Finance/NAV bootstrap hiba [${substage?`${stage}:${substage}`:stage}]: ${causeMessage}`);
     this.name='FinanceNavBootstrapError';
-    this.stage=stageParts.join(':');
+    this.stage=substage?`${stage}:${substage}`:stage;
     this.dbCode=cause?.code?String(cause.code):null;
     this.substage=substage;
-    this.constraint=constraint;
+    this.constraint=cause?.constraint?String(cause.constraint):null;
     (this as any).cause=cause;
   }
 }
