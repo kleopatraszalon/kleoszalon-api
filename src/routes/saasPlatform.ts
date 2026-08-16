@@ -1,6 +1,7 @@
 import { NextFunction, Response, Router } from "express";
 import db from "../db";
 import { TenantAuthRequest } from "../middleware/tenantContext";
+import saasOnboardingRouter from "./saasOnboarding";
 
 const router = Router();
 
@@ -21,6 +22,7 @@ function requirePlatformAdmin(req:TenantAuthRequest,res:Response,next:NextFuncti
   return next();
 }
 router.use(requirePlatformAdmin);
+router.use("/tenants/:tenantId/onboarding", saasOnboardingRouter);
 
 router.get("/tenants",async(_req:TenantAuthRequest,res:Response)=>{
   try{
