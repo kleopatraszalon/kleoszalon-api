@@ -21,6 +21,7 @@ ALTER TABLE financial_movements
   ADD COLUMN IF NOT EXISTS cancellation_reason text,
   ADD COLUMN IF NOT EXISTS fee_for_movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS reversed_by_id uuid REFERENCES financial_movements(id) ON DELETE RESTRICT,
   ADD COLUMN IF NOT EXISTS reversal_of_id uuid,
   ADD COLUMN IF NOT EXISTS posting_group_id uuid,
   ADD COLUMN IF NOT EXISTS idempotency_key text,
