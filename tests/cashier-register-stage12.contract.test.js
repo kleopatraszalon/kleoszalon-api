@@ -25,7 +25,7 @@ test('daily close includes manual register movements in expected cash',()=>{
 });
 
 test('closed register movements cannot be added or voided',()=>{
-  assert.match(register,/if \(await isClosed\(locationId, businessDate\)\)/);
+  assert.match(register,/SELECT id FROM cash_register_closings/);
   assert.match(register,/Lezárt napi pénztár kasszamozgása nem vonható vissza/);
 });
 
