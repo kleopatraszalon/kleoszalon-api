@@ -8,11 +8,110 @@ router.use(requireAuth);
 
 const PAYMENT_METHODS=new Set(['cash','card','transfer','voucher','other']);
 const money=(v:any)=>{const n=Number(v??0);return Number.isFinite(n)?Math.round(n*100)/100:0};
+const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 
 async function tableExists(name:string){const q=await db.query(`SELECT to_regclass($1) IS NOT NULL ok`,[`public.${name}`]);return Boolean(q.rows[0]?.ok)}
 async function columnTypes(table:string){const q=await db.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[table]);return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]))}
 const textLike=(t:string|undefined)=>['text','character varying','character'].includes(String(t||''));
 function hasActualLoyalty(body:any){return Boolean(Number(body?.wallet_amount||0)>0||Number(body?.points_to_spend||0)>0||String(body?.coupon_code||'').trim()||String(body?.voucher_code||'').trim()||Number(body?.voucher_amount||0)>0||(Array.isArray(body?.pass_usages)&&body.pass_usages.length))}
+
+async function ensureRetailSchema(){
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS retail_sales(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      location_id text NOT NULL,
+      client_id text,
+      customer_name text,
+      customer_email text,
+      customer_phone text,
+      payment_method text NOT NULL,
+      gross_total numeric(14,2) NOT NULL DEFAULT 0,
+      invoice_requested boolean NOT NULL DEFAULT false,
+      finance_invoice_id uuid,
+      status text NOT NULL DEFAULT 'paid',
+      created_by text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS retail_sale_items(
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      sale_id uuid NOT NULL REFERENCES retail_sales(id) ON DELETE CASCADE,
+      product_id text NOT NULL,
+      product_name text NOT NULL,
+      quantity numeric(14,3) NOT NULL,
+      unit_price_gross numeric(14,2) NOT NULL,
+      gross_amount numeric(14,2) NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS retail_sales_location_created_idx ON retail_sales(location_id,created_at DESC);
+  `);
+}
+
+router.get('/retail/products',async(req:AuthRequest,res,next)=>{
+ try{
+  const locationId=String(req.query.location_id||'').trim();
+  const products=(await db.query(`SELECT p.id::text id,p.name,
+    COALESCE(NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price,
+    COALESCE(NULLIF(to_jsonb(b)->>'quantity','')::numeric,0)::numeric available_stock,
+    COALESCE(NULLIF(to_jsonb(p)->>'vat_rate','')::numeric,0.27)::numeric vat_rate
+    FROM products p
+    LEFT JOIN product_stock_balances b ON b.product_id::text=p.id::text AND ($1::text='' OR b.location_id::text=$1)
+    WHERE COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true
+    ORDER BY p.name`,[locationId])).rows;
+  return res.json(products)
+ }catch(e){next(e)}
+});
+
+router.post('/retail/sales',async(req:AuthRequest,res,next)=>{
+ const c=await db.connect();
+ try{
+  await ensureRetailSchema();
+  const locationId=String(req.body?.location_id||req.query.location_id||'').trim();
+  if(!locationId)return res.status(400).json({message:'A termékeladáshoz telephely szükséges.'});
+  const method=String(req.body?.payment_method||'cash').toLowerCase();
+  if(!PAYMENT_METHODS.has(method))return res.status(400).json({message:'Érvénytelen fizetési mód.'});
+  const requestedItems=Array.isArray(req.body?.items)?req.body.items:[];
+  if(!requestedItems.length)return res.status(400).json({message:'Legalább egy terméket válasszon.'});
+  await c.query('BEGIN');
+  const normalized:any[]=[];
+  for(const item of requestedItems){
+    const id=String(item?.product_id||item?.id||'').trim(),qty=Math.max(0,Number(item?.quantity||0));
+    if(!id||!(qty>0)){await c.query('ROLLBACK');return res.status(400).json({message:'A termék és a pozitív mennyiség kötelező.'})}
+    const p=(await c.query(`SELECT p.id::text id,p.name,
+      COALESCE(NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,NULLIF(to_jsonb(p)->>'sale_price','')::numeric,NULLIF(to_jsonb(p)->>'price','')::numeric,0)::numeric price,
+      COALESCE(NULLIF(to_jsonb(p)->>'vat_rate','')::numeric,0.27)::numeric vat_rate
+      FROM products p WHERE p.id::text=$1 AND COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true LIMIT 1`,[id])).rows[0];
+    if(!p){await c.query('ROLLBACK');return res.status(400).json({message:'Egy kiválasztott termék nem található vagy inaktív.'})}
+    const price=money(item?.unit_price??p.price),gross=money(price*qty);
+    normalized.push({...p,quantity:qty,price,gross});
+  }
+  const total=money(normalized.reduce((n,x)=>n+x.gross,0));
+  const sale=(await c.query(`INSERT INTO retail_sales(location_id,client_id,customer_name,customer_email,customer_phone,payment_method,gross_total,invoice_requested,created_by)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[locationId,String(req.body?.client_id||'')||null,String(req.body?.customer_name||'')||null,String(req.body?.customer_email||'')||null,String(req.body?.customer_phone||'')||null,method,total,Boolean(req.body?.invoice_requested),actor(req)])).rows[0];
+  for(const item of normalized){
+    await c.query(`INSERT INTO retail_sale_items(sale_id,product_id,product_name,quantity,unit_price_gross,gross_amount) VALUES($1,$2,$3,$4,$5,$6)`,[sale.id,item.id,item.name,item.quantity,item.price,item.gross]);
+    const balanceExists=await tableExists('product_stock_balances');
+    if(balanceExists)await c.query(`UPDATE product_stock_balances SET quantity=GREATEST(0,COALESCE(quantity,0)-$3) WHERE product_id::text=$1 AND location_id::text=$2`,[item.id,locationId,item.quantity]);
+  }
+
+  let invoice:any=null;
+  if(Boolean(req.body?.invoice_requested)&&await tableExists('finance_invoices')&&await tableExists('finance_invoice_lines')){
+    const fn=(await c.query(`SELECT to_regprocedure('next_internal_invoice_number()') IS NOT NULL ok`)).rows[0]?.ok;
+    const invoiceNo=fn?String((await c.query(`SELECT next_internal_invoice_number() invoice_no`)).rows[0]?.invoice_no||''):`KLEO-TERM-${new Date().getFullYear()}-${String(sale.id).replace(/-/g,'').slice(0,10).toUpperCase()}`;
+    const name=String(req.body?.billing_name||req.body?.customer_name||'Magánszemély').trim()||'Magánszemély';
+    const tax=String(req.body?.billing_tax_number||'').replace(/\D/g,'')||null;
+    const country=String(req.body?.billing_country_code||'HU').toUpperCase();
+    const postal=String(req.body?.billing_postal_code||'').trim()||null,city=String(req.body?.billing_city||'').trim()||null,address=String(req.body?.billing_address||'').trim()||null;
+    const net=money(normalized.reduce((n,x)=>n+x.gross/(1+Number(x.vat_rate||.27)),0)),vat=money(total-net);
+    invoice=(await c.query(`INSERT INTO finance_invoices(location_id,direction,invoice_no,partner_name,customer_name,partner_tax_no,customer_tax_number,customer_vat_status,customer_country_code,customer_postal_code,customer_city,customer_address,issue_date,performance_date,due_date,currency,net_total,vat_total,gross_total,status,note,created_by,document_kind,invoice_type,nav_status,nav_validation_status,payment_method,payment_date)
+      VALUES($1,'outgoing',$2,$3,$3,$4,$4,$5,$6,$7,$8,$9,CURRENT_DATE,CURRENT_DATE,CURRENT_DATE,'HUF',$10,$11,$12,'draft',$13,$14,'internal_draft','NORMAL','not_submitted','not_validated',$15,CURRENT_DATE) RETURNING *`,[locationId,invoiceNo,name,tax,tax?'DOMESTIC':'PRIVATE_PERSON',country,postal,city,address,net,vat,total,`Termékeladás ${sale.id}`,actor(req),method.toUpperCase()])).rows[0];
+    let line=0;
+    for(const item of normalized){line++;const rate=Number(item.vat_rate||.27),lineNet=money(item.gross/(1+rate)),lineVat=money(item.gross-lineNet);await c.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10)`,[invoice.id,line,item.name,item.quantity,Number((lineNet/item.quantity).toFixed(4)),rate,lineNet,lineVat,item.gross,item.id])}
+    await c.query(`UPDATE retail_sales SET finance_invoice_id=$2 WHERE id=$1`,[sale.id,invoice.id]);
+  }
+  await c.query('COMMIT');
+  return res.status(201).json({ok:true,sale:{...sale,finance_invoice_id:invoice?.id||null},invoice,items:normalized,total});
+ }catch(e:any){await c.query('ROLLBACK').catch(()=>undefined);console.error('[retail-sale] failed',e?.code||'',e?.message||e);return next(e)}finally{c.release()}
+});
 
 router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
   if(String(req.baseUrl||'').includes('loyalty-cashier')&&hasActualLoyalty(req.body))return next();
