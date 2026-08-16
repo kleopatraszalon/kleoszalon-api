@@ -15,6 +15,7 @@
     "requirements:check": "node scripts/validate-requirements.mjs",
     "requirements:matrix": "node scripts/validate-requirements.mjs --write-matrix",
     "test:workorders": "node --test tests/workorder-stage8.contract.test.js tests/rbac-failclosed.contract.test.js tests/live-runtime-hotfix.contract.test.js",
+    "test:saas-isolation": "node scripts/saas-cross-tenant-uat.js",
     "start": "node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
     "seed:demo": "node dist/demo/seedRunner.js",
     "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json src/server.ts\""
