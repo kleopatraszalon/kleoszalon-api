@@ -9,6 +9,7 @@ on:
       - 'src/accounting/**'
       - 'src/routes/financeDashboard.ts'
       - 'src/middleware/**'
+      - 'src/sql/20260816_REQUIREMENTS_TRACEABILITY_V1.sql'
       - '.github/workflows/accounting-authenticated-uat.yml'
 
 permissions:
