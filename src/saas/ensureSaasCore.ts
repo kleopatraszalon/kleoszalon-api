@@ -112,7 +112,7 @@ export function ensureSaasCore(): Promise<void> {
         id bigserial PRIMARY KEY,
         tenant_id bigint NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
         franchise_network_id bigint NOT NULL REFERENCES franchise_networks(id) ON DELETE CASCADE,
-        location_id bigint NOT NULL,
+        location_id text NOT NULL,
         member_type text NOT NULL DEFAULT 'franchise',
         agreement_number text,
         agreement_start date,
