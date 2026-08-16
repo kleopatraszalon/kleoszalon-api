@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS franchise_members (
   id bigserial PRIMARY KEY,
   tenant_id bigint NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   franchise_network_id bigint NOT NULL REFERENCES franchise_networks(id) ON DELETE CASCADE,
-  location_id bigint NOT NULL,
+  location_id text NOT NULL,
   member_type text NOT NULL DEFAULT 'franchise' CHECK (member_type IN ('owned','franchise')),
   agreement_number text,
   agreement_start date,
@@ -142,7 +142,6 @@ CREATE TABLE IF NOT EXISTS tenant_users (
   PRIMARY KEY (tenant_id, user_id)
 );
 
--- A meglévő locations táblát tenant-képessé tesszük, de az oszlopot először nullable-ként adjuk hozzá.
 ALTER TABLE locations ADD COLUMN IF NOT EXISTS tenant_id bigint;
 
 UPDATE locations
@@ -162,7 +161,6 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS locations_tenant_idx ON locations(tenant_id);
 
--- Felhasználók tenant-kapcsolata: szöveges user_id-val numeric és UUID/string azonosítók is támogatottak.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='users') THEN
