@@ -56,6 +56,12 @@ export function ensureFinanceNav(){
         '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260816_FINANCIAL_INTEGRITY_V1.sql',
         '20260816_DAY_CLOSE_GUARD_V1.sql',
+        // SaaS/franchise tables are finance dependencies once royalty accounting is enabled.
+        '20260816_SAAS_CORE_V1.sql',
+        '20260816_SAAS_TENANT_ISOLATION_V2.sql',
+        '20260816_SAAS_BILLING_V4.sql',
+        '20260816_FRANCHISE_FINANCE_V5.sql',
+        '20260816_FRANCHISE_ACCOUNTING_V6.sql',
         // UAT core tables must exist before requirements traceability/evidence migrations.
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
