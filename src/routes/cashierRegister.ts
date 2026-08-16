@@ -1,6 +1,10 @@
 import { Router } from "express";
 import db from "../db";
 import type { AuthRequest } from "../middleware/auth";
+import {
+  requireIdempotencyKey,
+  reverseFinancialMovement,
+} from "../finance/financialIntegrity";
 
 const router = Router();
 
@@ -38,6 +42,12 @@ async function ensureSchema() {
     ALTER TABLE cash_register_closings
       ADD COLUMN IF NOT EXISTS cash_in numeric(14,2) NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS cash_out numeric(14,2) NOT NULL DEFAULT 0;
+
+    ALTER TABLE cash_register_movements
+      ADD COLUMN IF NOT EXISTS finance_account_id uuid,
+      ADD COLUMN IF NOT EXISTS financial_movement_id uuid,
+      ADD COLUMN IF NOT EXISTS idempotency_key text,
+      ADD COLUMN IF NOT EXISTS integrity_required boolean NOT NULL DEFAULT false;
   `);
 }
 
@@ -106,6 +116,7 @@ router.get("/register-movements", ready, async (req: AuthRequest, res, next) => 
 });
 
 router.post("/register-movements", ready, async (req: AuthRequest, res, next) => {
+  const client = await db.connect();
   try {
     const locationId = locationFrom(req);
     if (!locationId)
@@ -118,26 +129,97 @@ router.post("/register-movements", ready, async (req: AuthRequest, res, next) =>
     const amount = money(req.body?.amount);
     const reasonCode = String(req.body?.reason_code || "other").trim() || "other";
     const note = String(req.body?.note || "").trim() || null;
+    const idempotencyKey = requireIdempotencyKey(req, "cash-register-movement");
 
     if (!new Set(["in", "out"]).has(direction))
       return res.status(400).json({ message: "Érvénytelen kasszamozgás irány." });
     if (!(amount > 0))
       return res.status(400).json({ message: "A kasszamozgás összege legyen pozitív." });
-    if (await isClosed(locationId, businessDate))
+    await client.query("BEGIN");
+    const existing = await client.query(
+      `SELECT * FROM cash_register_movements
+       WHERE location_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+      [locationId, idempotencyKey],
+    );
+    if (existing.rows[0]) {
+      await client.query("COMMIT");
+      return res.json({ ...existing.rows[0], idempotent: true });
+    }
+    const closed = await client.query(
+      `SELECT id FROM cash_register_closings
+       WHERE location_id=$1 AND business_date=$2::date LIMIT 1`,
+      [locationId, businessDate],
+    );
+    if (closed.rows[0]) {
+      await client.query("ROLLBACK");
       return res.status(409).json({
         message: "A napi pénztár már le van zárva; új kasszamozgás nem rögzíthető.",
       });
-
-    const { rows } = await db.query(
-      `INSERT INTO cash_register_movements
-       (location_id,business_date,direction,amount,reason_code,note,created_by)
-       VALUES ($1,$2::date,$3,$4,$5,$6,$7)
-       RETURNING *`,
-      [locationId, businessDate, direction, amount, reasonCode, note, actor(req)],
+    }
+    const account = await client.query(
+      `SELECT * FROM financial_accounts
+       WHERE active=true AND account_type='cash'
+         AND (location_id::text=$1 OR location_id IS NULL)
+       ORDER BY CASE WHEN location_id::text=$1 THEN 0 ELSE 1 END,
+                is_default DESC,sort_order,name
+       FOR UPDATE LIMIT 1`,
+      [locationId],
     );
+    if (!account.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: "A telephelyhez nincs aktív készpénzes pénzügyi számla konfigurálva.",
+      });
+    }
+    const postingGroupId = (
+      await client.query("SELECT gen_random_uuid() AS id")
+    ).rows[0].id;
+    const ledger = await client.query(
+      `INSERT INTO financial_movements
+       (location_id,account_id,direction,amount,occurred_at,reference_type,
+        counterparty,note,created_by,payment_status,posting_group_id,idempotency_key)
+       VALUES ($1::uuid,$2::uuid,$3,$4,$5::date,'cash_register',$6,$7,$8,
+               'posted',$9::uuid,$10)
+       RETURNING *`,
+      [
+        locationId,
+        account.rows[0].id,
+        direction === "in" ? "income" : "expense",
+        amount,
+        businessDate,
+        reasonCode,
+        note,
+        actor(req),
+        postingGroupId,
+        `${idempotencyKey}:ledger`,
+      ],
+    );
+    const { rows } = await client.query(
+      `INSERT INTO cash_register_movements
+       (location_id,business_date,direction,amount,reason_code,note,created_by,
+        finance_account_id,financial_movement_id,idempotency_key,integrity_required)
+       VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8::uuid,$9::uuid,$10,true)
+       RETURNING *`,
+      [
+        locationId,
+        businessDate,
+        direction,
+        amount,
+        reasonCode,
+        note,
+        actor(req),
+        account.rows[0].id,
+        ledger.rows[0].id,
+        idempotencyKey,
+      ],
+    );
+    await client.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
     next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -173,6 +255,22 @@ router.post("/register-movements/:id/void", ready, async (req: AuthRequest, res,
       await client.query("ROLLBACK");
       return res.status(409).json({
         message: "Lezárt napi pénztár kasszamozgása nem vonható vissza.",
+      });
+    }
+
+    if (!movement.financial_movement_id && movement.integrity_required) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: "A kasszamozgás pénzügyi főkönyvi kapcsolata hiányzik; vezetői egyeztetés szükséges.",
+      });
+    }
+    if (movement.financial_movement_id) {
+      await reverseFinancialMovement(client, {
+        movementId: String(movement.financial_movement_id),
+        actor: actor(req),
+        reason,
+        locationId,
+        includeFees: false,
       });
     }
 
