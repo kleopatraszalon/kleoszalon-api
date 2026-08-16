@@ -1,5 +1,6 @@
 import pool from "../db";
 import { ensureSaasCore } from "../saas/ensureSaasCore";
+import { ensureHrV2 } from "./ensureHrV2";
 
 let ready: Promise<void> | null = null;
 
@@ -7,6 +8,7 @@ export function ensureHrRecruitment(): Promise<void> {
   if (ready) return ready;
   ready = (async () => {
     await ensureSaasCore();
+    await ensureHrV2();
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS tenant_id bigint`);
     await pool.query(`CREATE INDEX IF NOT EXISTS hr_positions_tenant_idx ON hr_positions(tenant_id)`);
