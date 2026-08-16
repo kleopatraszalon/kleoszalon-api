@@ -1,6 +1,13 @@
 import type { Response, NextFunction } from "express";
 import db from "../db";
 import { requireAuth, type AuthRequest } from "./auth";
+import { ensureTenantIsolation } from "../saas/ensureTenantIsolation";
+import {
+  entityBelongsToTenant,
+  locationBelongsToTenant,
+  resolveTenantIdentity,
+  tenantLocationIds,
+} from "../saas/tenantAccess";
 
 export type LocationScopeKind =
   | "dashboard"
@@ -81,6 +88,23 @@ function transformJson(res:Response,transform:(body:any)=>any){
   (res as any).json=(body:any)=>original(transform(body));
 }
 
+function rowAllowedForTenant(row:any,tenantId:string,locations:Set<string>){
+  if(!row||typeof row!=="object") return true;
+  if(row.tenant_id!==undefined&&row.tenant_id!==null&&String(row.tenant_id)!==tenantId) return false;
+  if(row.location_id!==undefined&&row.location_id!==null&&String(row.location_id)!=="") return locations.has(String(row.location_id));
+  return true;
+}
+
+function filterTenantPayload(body:any,tenantId:string,locations:Set<string>){
+  if(Array.isArray(body)) return body.filter(row=>rowAllowedForTenant(row,tenantId,locations));
+  if(!body||typeof body!=="object") return body;
+  const out={...body};
+  for(const key of ["rows","items","data","appointments","employees","clients","workorders","orders","balances"]){
+    if(Array.isArray((out as any)[key])) (out as any)[key]=(out as any)[key].filter((row:any)=>rowAllowedForTenant(row,tenantId,locations));
+  }
+  return out;
+}
+
 function softenChecklistMy(req:AuthRequest,res:Response,kind:LocationScopeKind){
   const parts=pathParts(req);
   if(kind!=="checklists"||req.method!=="GET"||parts.length!==1||parts[0]!=="my") return;
@@ -133,9 +157,57 @@ function sanitizeCreatedEmployee(req:AuthRequest,locationId:string){
   req.body.roles=safe.length?safe:["employee"];
 }
 
+function entityForKind(kind:LocationScopeKind,parts:string[]):{table:string,id:string}|null{
+  if(kind==="employees"&&parts[0]&&isId(parts[0])) return {table:"employees",id:parts[0]};
+  if(kind==="clients"&&parts[0]&&isId(parts[0])) return {table:"clients",id:parts[0]};
+  if(kind==="appointments"&&parts[0]&&isId(parts[0])) return {table:"appointments",id:parts[0]};
+  if(kind==="workorders"){
+    const id=parts[0]==="workorders"?parts[1]:parts[0];
+    if(id&&isId(id)) return {table:"work_orders",id};
+  }
+  if(kind==="inventory"&&parts[0]==="balances"&&parts[1]&&isId(parts[1])) return {table:"product_stock_balances",id:parts[1]};
+  if(kind==="procurement"&&parts[0]==="orders"&&parts[1]&&isId(parts[1])) return {table:"purchase_orders",id:parts[1]};
+  return null;
+}
+
+async function enforceTenantBoundary(req:AuthRequest,res:Response,kind:LocationScopeKind){
+  await ensureTenantIsolation();
+  const tenant=await resolveTenantIdentity(req);
+  if(!tenant){
+    res.status(403).json({error:"A felhasználóhoz nincs aktív tenant-hozzáférés.",code:"TENANT_ACCESS_DENIED"});
+    return false;
+  }
+
+  const locationIds=await tenantLocationIds(tenant.id);
+  const locations=new Set(locationIds);
+  const own=ownLocation(req);
+  if(own&&!locations.has(own)){
+    res.status(403).json({error:"A felhasználó telephelye nem az aktív tenanthoz tartozik.",code:"TENANT_LOCATION_MISMATCH"});
+    return false;
+  }
+
+  const requested=String((req.query as any)?.location_id??req.body?.location_id??"").trim();
+  if(requested&&!(await locationBelongsToTenant(requested,tenant.id))){
+    res.status(403).json({error:"A kért telephely nem az aktív tenanthoz tartozik.",code:"TENANT_LOCATION_FORBIDDEN"});
+    return false;
+  }
+
+  const entity=entityForKind(kind,pathParts(req));
+  if(entity&&!(await entityBelongsToTenant(entity.table,entity.id,tenant.id))){
+    res.status(404).json({error:"A kért rekord nem található ebben a tenantban.",code:"TENANT_ENTITY_NOT_FOUND"});
+    return false;
+  }
+
+  if(["employees","clients","appointments","workorders","inventory","procurement"].includes(kind)){
+    transformJson(res,(body:any)=>filterTenantPayload(body,tenant.id,locations));
+  }
+  return true;
+}
+
 async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:LocationScopeKind){
   try{
     softenChecklistMy(req,res,kind);
+    if(!(await enforceTenantBoundary(req,res,kind))) return;
 
     if(kind==="employees"){
       const parts=pathParts(req);
@@ -147,8 +219,6 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction,kind:Locatio
         return res.status(403).json({error:"Dolgozói, bér- és HR-adatok módosítása csak vezetői jogosultsággal végezhető."});
       }
 
-      // Ordinary authenticated staff may need a staff picker, but never payroll,
-      // login or role metadata. Scope such reads to the user's own salon.
       if(!manager&&req.method==="GET"&&parts.length===0){
         const locationId=ownLocation(req);
         if(!locationId)return res.status(403).json({error:"A felhasználói fiókhoz nincs telephely rendelve."});
