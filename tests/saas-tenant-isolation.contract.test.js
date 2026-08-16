@@ -56,3 +56,12 @@ test('tenant access helper only permits an allowlisted business table set', () =
   assert.match(source, /if \(!allowed\.has\(table\)\) return false/);
   assert.match(source, /e\.tenant_id=\$2::bigint OR l\.tenant_id=\$2::bigint/);
 });
+
+test('dashboard aggregates and counts are scoped inside SQL by tenant', () => {
+  const source = read('src/routes/dashboard.ts');
+  assert.match(source, /tl\.tenant_id=\$4::bigint/);
+  assert.match(source, /FROM clients WHERE tenant_id=\$1::bigint/);
+  assert.match(source, /FROM locations WHERE tenant_id=\$1::bigint/);
+  assert.match(source, /tenantId,roles\.sort\(\)\.join/);
+  assert.match(source, /TENANT_ACCESS_DENIED/);
+});
