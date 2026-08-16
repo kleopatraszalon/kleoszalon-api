@@ -69,6 +69,7 @@ export function ensureFinanceNav(){
         '20260816_UAT_AUTOMATION_STATUS_V4.sql',
         '20260816_UAT_KLEO_MAPPING_V4_FEFO.sql',
         '20260816_UAT_AUTOMATION_STATUS_V5_FEFO.sql',
+        '20260816_UAT_DAY_CLOSE_MAPPING_V6.sql',
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
