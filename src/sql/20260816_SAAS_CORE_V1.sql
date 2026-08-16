@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS franchise_members (
 
 CREATE TABLE IF NOT EXISTS tenant_users (
   tenant_id bigint NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  user_id bigint NOT NULL,
+  user_id text NOT NULL,
   tenant_role text NOT NULL DEFAULT 'member',
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -162,17 +162,15 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS locations_tenant_idx ON locations(tenant_id);
 
--- Felhasználók tenant-kapcsolata: az id típusa környezetenként eltérhet,
--- ezért itt explicit FK helyett migrációs kompatibilitást tartunk fenn.
+-- Felhasználók tenant-kapcsolata: szöveges user_id-val numeric és UUID/string azonosítók is támogatottak.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='users') THEN
     INSERT INTO tenant_users (tenant_id, user_id, tenant_role, active)
-    SELECT (SELECT id FROM tenants WHERE slug='kleopatra'), u.id::bigint,
+    SELECT (SELECT id FROM tenants WHERE slug='kleopatra'), u.id::text,
            CASE WHEN lower(COALESCE(u.role::text,''))='admin' THEN 'owner' ELSE 'member' END,
            true
     FROM users u
-    WHERE u.id::text ~ '^[0-9]+$'
     ON CONFLICT (tenant_id, user_id) DO NOTHING;
   END IF;
 END $$;
