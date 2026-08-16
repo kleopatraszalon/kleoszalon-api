@@ -52,6 +52,11 @@ for (const requirement of catalog.requirements) {
 if (!unique(allRequirementIds)) errors.push('A követelmény-ID-k nem egyediek');
 if (!unique(allAcceptanceIds)) errors.push('Az elfogadásikritérium-ID-k nem egyediek');
 
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const requirementsCheck = String(packageJson.scripts?.['requirements:check'] || '');
+const ciGateConfigured = fs.existsSync(path.join(root, '.github/workflows/requirements-traceability.yml'))
+  && requirementsCheck.includes('node scripts/validate-requirements.mjs');
+
 const checks = [
   { name: 'Egyedi, stabil azonosítók', weight: 1.0, ok: unique(allRequirementIds) && unique(allAcceptanceIds) && catalog.id_policy?.immutable === true && catalog.id_policy?.reuse_forbidden === true },
   { name: 'Atomi követelmény és PDF-forrás', weight: 1.0, ok: catalog.requirements.every((item) => nonEmpty(item.statement) && !vague.test(item.statement) && Number.isInteger(item.source?.page) && nonEmpty(item.source?.section)) },
@@ -60,7 +65,7 @@ const checks = [
   { name: 'Kétirányú nyomonkövetés', weight: 1.5, ok: unique(allAcceptanceIds) && catalog.requirements.every((item) => item.acceptance_criteria.every((criterion) => criterion.id.startsWith(`${item.id}-AC-`) && criterion.verification.test_case_id.endsWith(criterion.id))) },
   { name: 'Prioritás, felelős és életciklus', weight: 1.0, ok: catalog.requirements.every((item) => priorities.has(item.priority) && nonEmpty(item.owner_role) && lifecycleStatuses.has(item.lifecycle_status)) },
   { name: 'Változáskezelés', weight: 1.0, ok: Object.values(catalog.change_control || {}).every((value) => value === true) && fs.existsSync(path.join(root, 'docs/requirements/README.md')) },
-  { name: 'Automatikus CI-kapu', weight: 1.0, ok: fs.existsSync(path.join(root, '.github/workflows/requirements-traceability.yml')) && JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts?.['requirements:check'] === 'node scripts/validate-requirements.mjs' },
+  { name: 'Automatikus CI-kapu', weight: 1.0, ok: ciGateConfigured },
 ];
 
 const matrix = [
