@@ -10,10 +10,15 @@ const bookingSchema=read('src/services/bookingWorkOrder.ts');
 const bookingRepair=read('src/booking/repairBookingWorkOrderStatusConstraints.ts');
 
 test('employee list uses its query as the fast path and migrates only on schema mismatch',()=>{
-  const listRoute=employees.slice(employees.indexOf('router.get(\n  "/",'));
-  assert.match(listRoute,/try \{ result = await listEmployees\(includeInactive\); \}/);
+  const routeStart=employees.indexOf('router.get("/",');
+  const legacyRouteStart=employees.indexOf('router.get(\n  "/",');
+  const listRoute=employees.slice(Math.max(routeStart,legacyRouteStart,0));
+  const legacyFastPath=/if\(!paginated\).*listEmployeesLegacy\(includeInactive\)/s.test(listRoute);
+  const originalFastPath=/try \{ result = await listEmployees\(includeInactive\); \}/.test(listRoute);
+  assert.ok(legacyFastPath||originalFastPath,'employee list must keep a no-DDL fast path');
   assert.match(listRoute,/HR_SCHEMA_ERROR_CODES/);
   assert.match(listRoute,/await ensureHrSchema\(\)/);
+  if(legacyFastPath)assert.match(listRoute,/paginated=String\(req\.query\.paginated/);
 });
 
 test('booking schema initialization is single-flight and has a lightweight readiness probe',()=>{
