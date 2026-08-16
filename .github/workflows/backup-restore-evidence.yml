@@ -44,12 +44,7 @@ jobs:
           set -euo pipefail
           PGPASSWORD=postgres createdb -h localhost -U postgres kleo_restore_target
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PGPASSWORD=postgres psql -h localhost -U postgres -d kleo_backup_fixture <<'SQL'
-            CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL);
-            CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id));
-            INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon');
-            INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');
-            SQL
+            PGPASSWORD=postgres psql -h localhost -U postgres -d kleo_backup_fixture -v ON_ERROR_STOP=1 -c "CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id)); INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon'); INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');"
           fi
 
       - name: Resolve source without exposing secret
