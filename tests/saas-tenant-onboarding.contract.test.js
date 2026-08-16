@@ -42,3 +42,22 @@ test('onboarding is resumable, audited and provider-safe', () => {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS tenant_onboarding/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS tenant_onboarding_events/);
 });
+
+test('tenant creation starts provisioning atomically with an audited onboarding record', () => {
+  assert.match(platform, /INSERT INTO tenant_onboarding\(tenant_id,status,current_step,created_by\)/);
+  assert.match(platform, /'in_progress','company'/);
+  assert.match(platform, /onboarding_started/);
+  assert.match(platform, /source:'platform_tenant_create'/);
+  assert.match(platform, /onboarding:\{status:'in_progress',current_step:'company',started:true\}/);
+});
+
+test('platform tenant list exposes derived provisioning progress and next action', () => {
+  for (const field of ['company_complete','admin_complete','location_complete','branding_complete','modules_complete','subscription_complete']) {
+    assert.match(platform, new RegExp(field));
+  }
+  assert.match(platform, /onboarding_progress/);
+  assert.match(platform, /onboarding_ready/);
+  assert.match(platform, /onboarding_next_step/);
+  assert.match(platform, /admin_invitation_status/);
+  assert.match(platform, /tenant_admin_invitations/);
+});
