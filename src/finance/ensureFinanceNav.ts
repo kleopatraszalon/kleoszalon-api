@@ -48,21 +48,22 @@ export function ensureFinanceNav(){
         '20260811_NAV_ONLINE_INVOICE_41A.sql',
         '20260811_NAV_ONLINE_INVOICE_41B_XSD.sql',
         '20260807_NOTIFICATION_CENTER_V1.sql',
-        // Named preflight stages make legacy production schema drift diagnosable
-        // without exposing database error text through public endpoints.
         '20260814_FINANCE_V5_PREFLIGHT_A_MASTER.sql',
         '20260814_FINANCE_V5_PREFLIGHT_B_CATALOG.sql',
         '20260814_FINANCE_V5_PREFLIGHT_C_LEDGER.sql',
         '20260813_FINANCE_ALTEGIO_V5.sql',
         '20260816_FINANCIAL_INTEGRITY_V1.sql',
         '20260816_DAY_CLOSE_GUARD_V1.sql',
-        // UAT core tables must exist before requirements traceability/evidence migrations.
+        '20260816_SAAS_CORE_V1.sql',
+        '20260816_SAAS_TENANT_ISOLATION_V2.sql',
+        '20260816_SAAS_BILLING_V4.sql',
+        '20260816_FRANCHISE_FINANCE_V5.sql',
+        '20260816_FRANCHISE_ACCOUNTING_V6.sql',
         '20260807_UAT_TEST_CENTER_V1.sql',
         '20260807_UAT_SANDBOX_V2.sql',
         '20260807_UAT_ISSUES_V3.sql',
         '20260809_UAT_STAGE10_V1.sql',
         '20260814_BOOKING_UAT_FINAL_V1.sql',
-        // Canonical requirement metadata, execution evidence and UAT mapping.
         '20260816_REQUIREMENTS_TRACEABILITY_V1.sql',
         '20260816_REQUIREMENTS_EVIDENCE_V2.sql',
         '20260816_UAT_KLEO_MAPPING_V3.sql',
@@ -74,11 +75,7 @@ export function ensureFinanceNav(){
       ])await step(`sql:${file}`,()=>runSql(file));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
-      // Fail-closed must be applied after every menu self-heal so all active
-      // menu/role combinations receive an explicit ALLOW or DENY row.
       await step('sql:20260810_RBAC_FAIL_CLOSED_V1.sql',()=>runSql('20260810_RBAC_FAIL_CLOSED_V1.sql'));
-      // Accounting is a dedicated module-admin role and is applied after the
-      // canonical fail-closed matrix so its explicit finance grants win.
       await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
     })().catch(err=>{ensurePromise=null;throw err});
   }

@@ -24,13 +24,12 @@ const roleKeys = (role: unknown): string[] => {
   return String(role || "").split(",").map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase()).filter(Boolean);
 };
 
-async function loadDashboard(from: string, to: string, locationId: any, isAdmin: boolean, now: Date) {
+async function loadDashboard(from: string, to: string, locationId: any, isAdmin: boolean, tenantId: string, now: Date) {
   await ensureDashboardAnalytics();
-  const params = [from, to, locationId];
-  const filter = `f.fact_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR f.location_id=$3::uuid)`;
+  const params = [from, to, locationId, tenantId];
+  const tenantFact = `EXISTS (SELECT 1 FROM locations tl WHERE tl.id=f.location_id AND tl.tenant_id=$4::bigint)`;
+  const filter = `f.fact_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR f.location_id=$3::uuid) AND ${tenantFact}`;
 
-  // Maximum 4 analytics query fut egyszerre: a 10 kapcsolatos alap poolból marad
-  // kapacitás a menünek, jogosultságnak, időpontoknak és egyéb kezdőképernyős kéréseknek.
   const [summaryRes, trendRes, locationRes, positionRes] = await Promise.all([
     pool.query(`
       SELECT
@@ -59,7 +58,10 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         COALESCE(SUM(f.service_revenue),0)::numeric service_revenue,
         COALESCE(SUM(f.product_revenue),0)::numeric product_revenue,
         COALESCE(SUM(f.completed_count),0)::int completed
-      FROM days d LEFT JOIN management_daily_facts f ON f.fact_date=d.fact_day AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
+      FROM days d LEFT JOIN management_daily_facts f
+        ON f.fact_date=d.fact_day
+       AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
+       AND EXISTS (SELECT 1 FROM locations tl WHERE tl.id=f.location_id AND tl.tenant_id=$4::bigint)
       GROUP BY d.fact_day ORDER BY d.fact_day`, params),
     pool.query(`
       SELECT l.id,l.name,
@@ -70,7 +72,8 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity,
         ROUND(100.0*SUM(f.no_show_count)/NULLIF(SUM(f.appointment_count),0),1)::numeric no_show_rate
       FROM management_daily_facts f JOIN locations l ON l.id=f.location_id
-      WHERE ${filter} GROUP BY l.id,l.name ORDER BY revenue DESC`, params),
+      WHERE ${filter} AND l.tenant_id=$4::bigint
+      GROUP BY l.id,l.name ORDER BY revenue DESC`, params),
     pool.query(`
       SELECT COALESCE(p.name,'Nincs munkakör') position_name,
         SUM(f.service_revenue+f.product_revenue)::numeric revenue,
@@ -91,7 +94,8 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
       FROM management_daily_facts f JOIN employees e ON e.id=f.employee_id
       JOIN locations l ON l.id=f.location_id LEFT JOIN hr_positions p ON p.id=f.position_id
-      WHERE ${filter} GROUP BY e.id,e.full_name,p.name,l.name ORDER BY revenue DESC LIMIT 10`, params),
+      WHERE ${filter} AND l.tenant_id=$4::bigint
+      GROUP BY e.id,e.full_name,p.name,l.name ORDER BY revenue DESC LIMIT 10`, params),
     pool.query(`
       SELECT COALESCE(p.name,'Nincs munkakör') position_name,
         ROUND(SUM(f.sick_minutes)/480.0,1)::numeric sick_days,
@@ -103,8 +107,8 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
       WHERE ${filter} GROUP BY p.id,p.name
       HAVING SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)>0
       ORDER BY absence_rate DESC`, params),
-    pool.query(`SELECT COUNT(*)::int total_clients FROM clients`),
-    pool.query(`SELECT id,name FROM locations WHERE ($1::boolean OR id=$2::uuid) ORDER BY name`, [isAdmin, locationId]),
+    pool.query(`SELECT COUNT(*)::int total_clients FROM clients WHERE tenant_id=$1::bigint`, [tenantId]),
+    pool.query(`SELECT id,name FROM locations WHERE tenant_id=$1::bigint AND ($2::boolean OR id=$3::uuid) ORDER BY name`, [tenantId, isAdmin, locationId]),
   ]);
 
   const summary = summaryRes.rows[0] || {};
@@ -147,11 +151,14 @@ router.get("/", requireAuth, async (req: AuthRequest, res) => {
   const isAdmin = roles.includes("admin");
   const requestedLocation = String(req.query.location_id || "").trim() || null;
   const locationId = isAdmin ? requestedLocation : (req.user?.location_id || null);
-  const cacheKey = `dashboard:${scopedCacheKey([from,to,locationId,isAdmin,roles.sort().join(",")])}`;
+  const authUser = req.user as (NonNullable<AuthRequest["user"]> & { tenant_id?: string | number | null }) | undefined;
+  const tenantId = authUser?.tenant_id == null ? "" : String(authUser.tenant_id);
+  if (!tenantId) return res.status(403).json({error:"A dashboardhoz nincs aktív tenant-környezet.",code:"TENANT_ACCESS_DENIED"});
+  const cacheKey = `dashboard:${scopedCacheKey([from,to,locationId,isAdmin,tenantId,roles.sort().join(",")])}`;
 
   try {
     const payload = await shortCache(cacheKey, DASHBOARD_CACHE_MS, () =>
-      timed(`/api/dashboard ${from}..${to} ${locationId || "all"}`, () => loadDashboard(from,to,locationId,isAdmin,now)),
+      timed(`/api/dashboard ${from}..${to} ${locationId || "all"} tenant=${tenantId}`, () => loadDashboard(from,to,locationId,isAdmin,tenantId,now)),
     );
     res.setHeader("Cache-Control", "private, no-store");
     return res.json(payload);
