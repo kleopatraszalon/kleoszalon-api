@@ -5,8 +5,9 @@ import saasOnboardingRouter from "./saasOnboarding";
 import { issueTenantAdminInvitation, latestTenantAdminInvitation } from "../services/tenantAdminInvitations";
 
 const router = Router();
-
 const SYSTEM_ADMIN_ROLES = new Set(["admin","administrator","rendszergazda","superadmin","super_admin","platform_admin"]);
+const PLAN_FEATURE_KEYS = ["booking","crm","hr","inventory","finance","marketing","franchise","mobile_app","white_label","api","payroll","ai"] as const;
+
 const parseRoles = (raw:any):string[] => {
   if(Array.isArray(raw)) return raw.map(String).map(x=>x.toLowerCase());
   try { const parsed=JSON.parse(String(raw||"")); if(Array.isArray(parsed)) return parsed.map(String).map(x=>x.toLowerCase()); } catch {}
@@ -22,6 +23,13 @@ function requirePlatformAdmin(req:TenantAuthRequest,res:Response,next:NextFuncti
   }
   return next();
 }
+
+function enabledFeatures(raw:any):string[]{
+  const features=raw&&typeof raw==="object"?raw:{};
+  if(features.all_modules===true)return [...PLAN_FEATURE_KEYS];
+  return PLAN_FEATURE_KEYS.filter(key=>features[key]===true);
+}
+
 router.use(requirePlatformAdmin);
 router.use("/tenants/:tenantId/onboarding", saasOnboardingRouter);
 
@@ -95,25 +103,88 @@ router.post("/tenants",async(req:TenantAuthRequest,res:Response)=>{
   const billingEmail=String(req.body?.billing_email||"").trim().toLowerCase()||null;
   const planCode=String(req.body?.plan_code||"start").trim().toLowerCase();
   const status=req.body?.status==="trial"?"trial":"active";
+  const applyPlanModules=req.body?.apply_plan_modules!==false;
+  const provisionLocation=req.body?.provision_location===true;
+  const autoInviteAdmin=req.body?.auto_invite_admin===true;
+  const adminEmail=String(req.body?.admin_email||"").trim().toLowerCase();
+  const locationName=String(req.body?.location_name||"").trim();
+  const locationCity=String(req.body?.location_city||"").trim();
+  const locationAddress=String(req.body?.location_address||"").trim()||null;
+  const locationEmail=String(req.body?.location_email||"").trim().toLowerCase()||null;
+
   if(!/^[a-z0-9][a-z0-9-]{2,62}$/.test(slug))return res.status(400).json({ok:false,error:"A tenant slug 3–63 karakteres, kisbetűs betű/szám/kötőjel formátumú legyen."});
   if(name.length<2||name.length>160)return res.status(400).json({ok:false,error:"A tenant neve 2–160 karakter lehet."});
   if(billingEmail&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail))return res.status(400).json({ok:false,error:"Érvénytelen számlázási e-mail cím."});
+  if(autoInviteAdmin&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail))return res.status(400).json({ok:false,error:"Az automatikus admin-meghíváshoz érvényes admin e-mail cím szükséges."});
+  if(provisionLocation&&(locationName.length<2||locationCity.length<2))return res.status(400).json({ok:false,error:"Az automatikus telephely-létrehozáshoz a telephely neve és városa kötelező."});
+  if(locationEmail&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(locationEmail))return res.status(400).json({ok:false,error:"Érvénytelen telephely e-mail cím."});
+
   const client=await db.connect();
+  let tenantRow:any=null;
+  let planRow:any=null;
+  let locationId:string|null=null;
+  let appliedFeatures:string[]=[];
   try{
     await client.query("BEGIN");
     const plan=await client.query(`SELECT id,code,name,features FROM subscription_plans WHERE code=$1 AND active=true LIMIT 1`,[planCode]);
     if(!plan.rowCount){await client.query("ROLLBACK");return res.status(404).json({ok:false,error:"Az előfizetési csomag nem található."});}
+    planRow=plan.rows[0];
+    appliedFeatures=applyPlanModules?enabledFeatures(planRow.features):[];
     const tenant=await client.query(`INSERT INTO tenants(slug,name,legal_name,tax_number,billing_email,status) VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text,slug,name,legal_name,status`,[slug,name,legalName,taxNumber,billingEmail,status]);
-    const tenantId=tenant.rows[0].id;
+    tenantRow=tenant.rows[0];
+    const tenantId=tenantRow.id;
     await client.query(`INSERT INTO tenant_settings(tenant_id,settings) VALUES($1::bigint,'{}'::jsonb) ON CONFLICT(tenant_id) DO NOTHING`,[tenantId]);
-    await client.query(`INSERT INTO subscriptions(tenant_id,plan_id,status,trial_ends_at) VALUES($1::bigint,$2,$3,CASE WHEN $3='trial' THEN now()+interval '14 days' ELSE NULL END)`,[tenantId,plan.rows[0].id,status]);
+    await client.query(`INSERT INTO subscriptions(tenant_id,plan_id,status,trial_ends_at) VALUES($1::bigint,$2,$3,CASE WHEN $3='trial' THEN now()+interval '14 days' ELSE NULL END)`,[tenantId,planRow.id,status]);
     await client.query(`INSERT INTO tenant_onboarding(tenant_id,status,current_step,created_by) VALUES($1::bigint,'in_progress','company',$2) ON CONFLICT(tenant_id) DO NOTHING`,[tenantId,String(req.user?.id||req.user?.email||"")||null]);
-    await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'company','onboarding_started',$2,$3::jsonb)`,[tenantId,String(req.user?.id||"")||null,JSON.stringify({source:'platform_tenant_create',plan_code:plan.rows[0].code,status})]);
+    await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'company','onboarding_started',$2,$3::jsonb)`,[tenantId,String(req.user?.id||"")||null,JSON.stringify({source:'platform_tenant_create',plan_code:planRow.code,status,one_click:true})]);
+
+    for(const featureKey of appliedFeatures){
+      await client.query(`INSERT INTO tenant_features(tenant_id,feature_key,enabled,config) VALUES($1::bigint,$2,true,'{}'::jsonb) ON CONFLICT(tenant_id,feature_key) DO UPDATE SET enabled=true,updated_at=now()`,[tenantId,featureKey]);
+    }
+    if(appliedFeatures.length){
+      await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'modules','plan_modules_provisioned',$2,$3::jsonb)`,[tenantId,String(req.user?.id||"")||null,JSON.stringify({plan_code:planRow.code,features:appliedFeatures})]);
+    }
+
+    if(provisionLocation){
+      const inserted=await client.query(`INSERT INTO locations(name,city,address,email,is_active,tenant_id) VALUES($1,$2,$3,$4,true,$5::bigint) RETURNING id::text`,[locationName,locationCity,locationAddress,locationEmail,tenantId]);
+      locationId=inserted.rows[0].id;
+      await client.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'location','default_location_provisioned',$2,$3::jsonb)`,[tenantId,String(req.user?.id||"")||null,JSON.stringify({location_id:locationId,name:locationName,city:locationCity})]);
+    }
+
     await client.query(`INSERT INTO subscription_events(tenant_id,subscription_id,event_type,source,payload)
-      SELECT $1::bigint,s.id,'tenant_created','platform_admin',$2::jsonb FROM subscriptions s WHERE s.tenant_id=$1::bigint ORDER BY s.created_at DESC LIMIT 1`,[tenantId,JSON.stringify({plan_code:plan.rows[0].code,created_by:String(req.user?.id||"")})]);
+      SELECT $1::bigint,s.id,'tenant_created','platform_admin',$2::jsonb FROM subscriptions s WHERE s.tenant_id=$1::bigint ORDER BY s.created_at DESC LIMIT 1`,[tenantId,JSON.stringify({plan_code:planRow.code,created_by:String(req.user?.id||""),provisioned_features:appliedFeatures,default_location_id:locationId})]);
     await client.query("COMMIT");
-    return res.status(201).json({ok:true,tenant:tenant.rows[0],plan:plan.rows[0],onboarding:{status:'in_progress',current_step:'company',started:true}});
-  }catch(error:any){await client.query("ROLLBACK").catch(()=>{});if(error?.code==="23505")return res.status(409).json({ok:false,error:"Ez a tenant slug már foglalt."});console.error("[SAAS PLATFORM] tenant create:",error);return res.status(500).json({ok:false,error:"A tenant nem hozható létre."});}finally{client.release();}
+  }catch(error:any){
+    await client.query("ROLLBACK").catch(()=>{});
+    if(error?.code==="23505")return res.status(409).json({ok:false,error:"Ez a tenant slug már foglalt."});
+    console.error("[SAAS PLATFORM] tenant create:",error);
+    return res.status(500).json({ok:false,error:"A tenant nem hozható létre."});
+  }finally{client.release();}
+
+  let invitation:any=null;
+  let invitationWarning:string|null=null;
+  if(autoInviteAdmin&&adminEmail&&tenantRow){
+    try{
+      invitation=await issueTenantAdminInvitation({tenantId:String(tenantRow.id),email:adminEmail,tenantName:tenantRow.name,invitedBy:String(req.user?.id||req.user?.email||"")||null});
+      await db.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'admin',$2,$3,$4::jsonb)`,[tenantRow.id,invitation.existing_user?'existing_admin_assigned':'invitation_sent',String(req.user?.id||"")||null,JSON.stringify({email:adminEmail,invitation_id:invitation.invitation?.id||null,delivery:invitation.delivery||null,source:'one_click_provisioning'})]);
+    }catch(error:any){
+      invitationWarning=error?.message||"Az admin meghívó elküldése nem sikerült; az onboarding felületről újraküldhető.";
+      await db.query(`INSERT INTO tenant_onboarding_events(tenant_id,step_key,event_type,actor_user_id,payload) VALUES($1::bigint,'admin','invitation_delivery_failed',$2,$3::jsonb)`,[tenantRow.id,String(req.user?.id||"")||null,JSON.stringify({email:adminEmail,code:error?.code||null})]).catch(()=>{});
+    }
+  }
+
+  return res.status(201).json({
+    ok:true,
+    tenant:tenantRow,
+    plan:planRow,
+    onboarding:{status:'in_progress',current_step:legalName&&billingEmail?'admin':'company',started:true},
+    provisioning:{
+      one_click:true,
+      plan_modules:{requested:applyPlanModules,applied:appliedFeatures},
+      default_location:{requested:provisionLocation,created:Boolean(locationId),location_id:locationId},
+      admin_invitation:{requested:autoInviteAdmin,email:adminEmail||null,status:invitationWarning?'failed':invitation?.existing_user?'assigned':invitation?'sent':'skipped',warning:invitationWarning}
+    }
+  });
 });
 
 router.get("/tenants/:tenantId/admin-invitation",async(req:TenantAuthRequest,res:Response)=>{
