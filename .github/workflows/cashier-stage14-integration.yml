@@ -85,6 +85,7 @@ jobs:
           SQL
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V1.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260813_CASHIER_ALTEGIO_PARITY_V2.sql
+          # The integrity migration is intentionally verified against this isolated schema.
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_FINANCIAL_INTEGRITY_V1.sql
       - name: Run cashier stage14 integration
         run: node tests/cashier_stage14.integration.js
