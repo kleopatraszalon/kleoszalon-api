@@ -1,0 +1,35 @@
+name: TLS security requirement evidence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tests/tls_security_evidence.sh'
+      - 'docs/requirements/**'
+      - '.github/workflows/tls-security-evidence.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '30 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  production-tls-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Probe HTTPS redirect, protocol floor, certificate chain and expiry
+        env:
+          KLEO_TLS_HOST: kleoszalon-api-1.onrender.com
+        run: bash tests/tls_security_evidence.sh
+      - name: Upload TLS requirement evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: requirements-evidence-tls-security-${{ github.sha }}
+          path: evidence/requirements-evidence-tls-security.json
+          retention-days: 90

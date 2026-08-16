@@ -1,7 +1,7 @@
 'use strict';
 
 module.exports = {
-  schema_version: '2.2.0',
+  schema_version: '2.3.0',
   generated_evidence_required: true,
   entries: [
     { criterion_id: 'KLEO-FUN-WO-003-AC-02', test_ref: 'tests/requirements-critical-automation.contract.test.js', execution_type: 'contract' },
@@ -63,6 +63,16 @@ module.exports = {
     { criterion_id: 'KLEO-FUN-WO-001-AC-02', test_ref: 'tests/requirements-critical-automation-v13.contract.test.js', execution_type: 'integration' },
     { criterion_id: 'KLEO-FUN-BOOK-004-AC-01', test_ref: 'tests/requirements-critical-automation-v13.contract.test.js', execution_type: 'e2e' },
     { criterion_id: 'KLEO-NFR-BCK-001-AC-01', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'resilience', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' },
-    { criterion_id: 'KLEO-NFR-BCK-001-AC-02', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'resilience', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' }
+    { criterion_id: 'KLEO-NFR-BCK-001-AC-02', test_ref: 'tests/backup_restore_rehearsal.mjs', execution_type: 'resilience', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/backup-restore-evidence.yml' },
+    { criterion_id: 'KLEO-FUN-FIN-002-AC-01', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-FUN-FIN-002-AC-02', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'integration' },
+    { criterion_id: 'KLEO-NFR-SEC-002-AC-01', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-NFR-SEC-002-AC-02', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-NFR-SEC-003-AC-01', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-NFR-SEC-003-AC-02', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'security' },
+    { criterion_id: 'KLEO-NFR-RES-001-AC-01', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'resilience' },
+    { criterion_id: 'KLEO-NFR-QLT-001-AC-02', test_ref: 'tests/requirements-critical-automation-v14.contract.test.js', execution_type: 'contract' },
+    { criterion_id: 'KLEO-NFR-SEC-001-AC-01', test_ref: 'tests/tls_security_evidence.sh', execution_type: 'security', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/tls-security-evidence.yml' },
+    { criterion_id: 'KLEO-NFR-SEC-001-AC-02', test_ref: 'tests/tls_security_evidence.sh', execution_type: 'security', evidence_mode: 'external-workflow', workflow_ref: '.github/workflows/tls-security-evidence.yml' }
   ]
 };
