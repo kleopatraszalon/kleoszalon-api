@@ -1,0 +1,93 @@
+name: NPM audit fix validation
+
+on:
+  push:
+    branches:
+      - agent/npm-audit-fix
+
+permissions:
+  contents: write
+
+jobs:
+  audit-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: agent/npm-audit-fix
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Audit before
+        shell: bash
+        run: |
+          npm audit --json > audit-before.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const a = JSON.parse(fs.readFileSync('audit-before.json', 'utf8'));
+          console.log('AUDIT_BEFORE=' + JSON.stringify(a.metadata?.vulnerabilities || {}));
+          NODE
+
+      - name: Apply non-breaking audit fixes to lockfile
+        run: npm audit fix --package-lock-only --include=dev --no-fund
+
+      - name: Reinstall from fixed lockfile
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Audit after
+        shell: bash
+        run: |
+          npm audit --json > audit-after.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const a = JSON.parse(fs.readFileSync('audit-after.json', 'utf8'));
+          console.log('AUDIT_AFTER=' + JSON.stringify(a.metadata?.vulnerabilities || {}));
+          const vulns = a.vulnerabilities || {};
+          const remaining = Object.entries(vulns).map(([name, v]) => ({
+            name,
+            severity: v.severity,
+            isDirect: v.isDirect,
+            range: v.range,
+            fixAvailable: v.fixAvailable,
+            via: Array.isArray(v.via) ? v.via.map(x => typeof x === 'string' ? x : ({
+              source: x.source,
+              name: x.name,
+              severity: x.severity,
+              title: x.title,
+              range: x.range
+            })) : v.via
+          }));
+          console.log('AUDIT_REMAINING=' + JSON.stringify(remaining));
+          NODE
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Build API
+        run: npm run build
+
+      - name: Show dependency diff
+        shell: bash
+        run: |
+          git diff -- package.json package-lock.json || true
+
+      - name: Commit validated lockfile fixes
+        shell: bash
+        run: |
+          if git diff --quiet -- package-lock.json package.json; then
+            echo "No dependency changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json package.json
+          git commit -m "fix npm audit vulnerabilities [skip ci]"
+          git push origin HEAD:agent/npm-audit-fix
