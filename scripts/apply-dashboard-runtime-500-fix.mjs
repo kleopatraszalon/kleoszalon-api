@@ -14,9 +14,8 @@ function replaceOnce(source,before,after,label){
   const path='src/routes/employees.ts';
   let s=read(path);
   s=replaceOnce(s,
-    'FROM employees e LEFT JOIN locations l ON l.id=e.location_id LEFT JOIN hr_positions p ON p.id::text=e.position_id::text`;
-    ,
-    'FROM employees e LEFT JOIN locations l ON l.id::text=e.location_id::text LEFT JOIN hr_positions p ON p.id::text=e.position_id::text`;',
+    'FROM employees e LEFT JOIN locations l ON l.id=e.location_id LEFT JOIN hr_positions p ON p.id::text=e.position_id::text',
+    'FROM employees e LEFT JOIN locations l ON l.id::text=e.location_id::text LEFT JOIN hr_positions p ON p.id::text=e.position_id::text',
     'employees location join');
   s=replaceOnce(s,
     'async function listEmployeesLegacy(includeInactive:boolean){return pool.query(`${employeeSelect} ${includeInactive?"":"WHERE COALESCE(e.active,true)=true"} ORDER BY e.active DESC,e.full_name NULLS LAST,e.last_name,e.first_name`)}',
