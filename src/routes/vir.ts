@@ -2,9 +2,11 @@ import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
+import receiptComplianceRouter from "./receiptCompliance";
 
 const router = Router();
 router.use(requireAuth);
+router.use("/receipt-compliance", receiptComplianceRouter);
 
 type VirQueryParams = {
   from?: string;
