@@ -1,0 +1,5 @@
+- Added canonical daily-action applicability resolver.
+- Added normalized `location_id`, `service_id`, and `discount_percent` campaign fields with legacy auto-selector fallback.
+- Public daily-action listing now resolves location/time/audience eligibility through the canonical resolver.
+- Work-order settlement resolves the same promotion and applies its service-scoped financial discount.
+- Registered and tests both PROMO-001 acceptance criteria in critical CI.
