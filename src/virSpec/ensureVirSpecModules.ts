@@ -23,6 +23,7 @@ const migrationFiles = [
   "20260817_PRODUCT_PRICE_HISTORY_PREP.sql",
   "20260817_PRODUCT_PRICE_HISTORY_V1.sql",
   "20260817_PRODUCT_REPRICING_USABILITY_V2.sql",
+  "20260817_PRODUCT_STOCK_POLICY_V3.sql",
 ];
 
 async function runSqlFile(fileName: string) {
