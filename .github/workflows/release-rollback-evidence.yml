@@ -1,0 +1,128 @@
+name: Release rollback runtime evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      failed_candidate_health_url:
+        description: Health URL of the intentionally failed candidate; must be unhealthy before rollback
+        required: true
+        type: string
+      restored_health_url:
+        description: Health URL expected to become healthy after rollback or forward fix
+        required: true
+        type: string
+      rollback_trigger_url:
+        description: Protected staging/production rollback trigger endpoint
+        required: true
+        type: string
+      rto_seconds:
+        description: Approved maximum recovery time in seconds
+        required: true
+        default: '300'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rollback-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.RELEASE_ROLLBACK_DATABASE_URL }}
+      ROLLBACK_TRIGGER_TOKEN: ${{ secrets.RELEASE_ROLLBACK_TRIGGER_TOKEN }}
+    steps:
+      - name: Fail closed when runtime evidence secrets are absent
+        run: |
+          test -n "$DATABASE_URL" || { echo 'RELEASE_ROLLBACK_DATABASE_URL is required'; exit 1; }
+          test -n "$ROLLBACK_TRIGGER_TOKEN" || { echo 'RELEASE_ROLLBACK_TRIGGER_TOKEN is required'; exit 1; }
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
+
+      - name: Confirm candidate smoke failure
+        env:
+          FAILED_URL: ${{ inputs.failed_candidate_health_url }}
+        run: |
+          if curl --fail --silent --show-error --max-time 10 "$FAILED_URL" >/dev/null 2>&1; then
+            echo 'Candidate is healthy; rollback evidence requires an observed failed smoke state.'
+            exit 1
+          fi
+
+      - name: Create persistent no-data-loss probe
+        id: probe
+        run: |
+          PROBE_ID="rollback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "probe_id=$PROBE_ID" >> "$GITHUB_OUTPUT"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+          CREATE TABLE IF NOT EXISTS release_runtime_evidence_probes(
+            probe_id text PRIMARY KEY,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            payload text NOT NULL
+          );
+          INSERT INTO release_runtime_evidence_probes(probe_id,payload)
+          VALUES ('$PROBE_ID','accepted-before-rollback')
+          ON CONFLICT (probe_id) DO NOTHING;
+          SQL
+
+      - name: Trigger rollback or compatible forward fix
+        env:
+          TRIGGER_URL: ${{ inputs.rollback_trigger_url }}
+        run: |
+          date +%s > /tmp/rollback-start-epoch
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/rollback-start-iso
+          curl --fail --silent --show-error -X POST "$TRIGGER_URL" \
+            -H "Authorization: Bearer $ROLLBACK_TRIGGER_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data "{\"source\":\"github-actions\",\"run_id\":\"$GITHUB_RUN_ID\"}"
+
+      - name: Wait for known-good service within approved RTO
+        env:
+          HEALTH_URL: ${{ inputs.restored_health_url }}
+          RTO_SECONDS: ${{ inputs.rto_seconds }}
+        run: |
+          case "$RTO_SECONDS" in ''|*[!0-9]*) echo 'rto_seconds must be numeric'; exit 1;; esac
+          START=$(cat /tmp/rollback-start-epoch)
+          while true; do
+            NOW=$(date +%s)
+            ELAPSED=$((NOW-START))
+            if curl --fail --silent --show-error --max-time 10 "$HEALTH_URL" >/dev/null 2>&1; then
+              echo "$ELAPSED" > /tmp/rollback-rto-seconds
+              date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/rollback-restored-iso
+              break
+            fi
+            if [ "$ELAPSED" -ge "$RTO_SECONDS" ]; then
+              echo "Rollback exceeded approved RTO: ${RTO_SECONDS}s"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Verify accepted pre-rollback data survived
+        env:
+          PROBE_ID: ${{ steps.probe.outputs.probe_id }}
+        run: |
+          COUNT=$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM release_runtime_evidence_probes WHERE probe_id='${PROBE_ID}' AND payload='accepted-before-rollback'")
+          test "$COUNT" = "1" || { echo 'Accepted pre-rollback probe data was lost'; exit 1; }
+
+      - name: Build rollback evidence artifact
+        env:
+          PROBE_ID: ${{ steps.probe.outputs.probe_id }}
+          FAILED_URL: ${{ inputs.failed_candidate_health_url }}
+          RESTORED_URL: ${{ inputs.restored_health_url }}
+          RTO_LIMIT: ${{ inputs.rto_seconds }}
+        run: |
+          mkdir -p artifacts
+          node - <<'NODE'
+          const fs=require('fs');
+          const out={criterion_id:'KLEO-NFR-REL-001-AC-02',result:'passed',run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,failed_candidate_health_url:process.env.FAILED_URL,restored_health_url:process.env.RESTORED_URL,rollback_started_at:fs.readFileSync('/tmp/rollback-start-iso','utf8').trim(),restored_at:fs.readFileSync('/tmp/rollback-restored-iso','utf8').trim(),measured_rto_seconds:Number(fs.readFileSync('/tmp/rollback-rto-seconds','utf8').trim()),approved_rto_seconds:Number(process.env.RTO_LIMIT),probe_id:process.env.PROBE_ID,data_loss:false,generated_at:new Date().toISOString()};
+          fs.writeFileSync('artifacts/release-rollback-evidence.json',JSON.stringify(out,null,2)+'\n');
+          NODE
+
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-rollback-evidence-${{ github.run_id }}
+          path: artifacts/release-rollback-evidence.json
+          retention-days: 180
+          if-no-files-found: error

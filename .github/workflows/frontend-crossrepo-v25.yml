@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: kleopatraszalon/kleoszalon-frontend
-          ref: 39db825fa72ca69064036063a52e7e1d7f0feced
+          ref: 926a913d5cb9235bde208ed689388803a50e761a
           path: frontend
       - name: Use Node.js
         uses: actions/setup-node@v4
@@ -32,7 +32,7 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci --no-audit --no-fund
-      - name: Run KLEO v25 column-filter evidence
+      - name: Run KLEO v25/v26 column-filter evidence
         run: node api/tests/frontend_crossrepo_v25.evidence.mjs frontend
       - name: Production frontend build
         working-directory: frontend

@@ -1,0 +1,95 @@
+name: Manual release approval
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: Git ref or commit SHA to approve
+        required: true
+        type: string
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+      manual_evidence_json:
+        description: JSON manual test protocol with release_ref, environment, tester, executed_at, approval_status and test_cases[]
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-approval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout requested release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_ref }}
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Deterministic clean install
+        run: npm ci --no-audit --no-fund
+
+      - name: Persist supplied manual evidence
+        env:
+          MANUAL_EVIDENCE_JSON: ${{ inputs.manual_evidence_json }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_ENV: ${{ inputs.environment }}
+        run: |
+          mkdir -p artifacts
+          node - <<'NODE'
+          const fs=require('fs');
+          const raw=process.env.MANUAL_EVIDENCE_JSON||'';
+          const parsed=JSON.parse(raw);
+          if(String(parsed.release_ref||'')!==String(process.env.RELEASE_REF||'')) throw new Error('manual evidence release_ref does not match workflow input');
+          if(String(parsed.environment||'')!==String(process.env.RELEASE_ENV||'')) throw new Error('manual evidence environment does not match workflow input');
+          fs.writeFileSync('artifacts/manual-release-evidence.json',JSON.stringify(parsed,null,2)+'\n');
+          NODE
+
+      - name: Validate manual test protocol
+        run: node scripts/validate-manual-release-evidence.mjs artifacts/manual-release-evidence.json
+
+      - name: Reject non-approved protocol
+        run: node -e "const e=require('./artifacts/manual-release-evidence.json'); if(String(e.approval_status).toLowerCase()!=='approved') { console.error('Manual protocol is not approved'); process.exit(1); }"
+
+      - name: Validate requirement registry
+        run: npm run requirements:check
+
+      - name: Full automated regression
+        run: npm test
+
+      - name: Production TypeScript build
+        run: npm run build
+
+      - name: Generate release decision
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_ENV: ${{ inputs.environment }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          node - <<'NODE'
+          const fs=require('fs');
+          const evidence=require('./artifacts/manual-release-evidence.json');
+          const out={schema_version:'1.0.0',decision:'GO',release_ref:process.env.RELEASE_REF,environment:process.env.RELEASE_ENV,manual_tester:evidence.tester,manual_executed_at:evidence.executed_at,manual_test_case_ids:evidence.test_cases.map(x=>x.id),github_run_id:process.env.GITHUB_RUN_ID_VALUE,workflow_sha:process.env.GITHUB_SHA_VALUE,decided_at:new Date().toISOString()};
+          fs.writeFileSync('artifacts/release-decision.json',JSON.stringify(out,null,2)+'\n');
+          NODE
+
+      - name: Upload release approval evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-approval-${{ inputs.release_ref }}
+          path: |
+            artifacts/manual-release-evidence.json
+            artifacts/release-decision.json
+          retention-days: 180
+          if-no-files-found: error
