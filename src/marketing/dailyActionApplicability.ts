@@ -12,12 +12,14 @@ export function ensureDailyActionApplicabilitySchema(q:Queryable=db):Promise<voi
  return schemaReady;
 }
 async function ensureSchema(q:Queryable){
- await q.query(`
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS location_id uuid REFERENCES locations(id);
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS service_id uuid;
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_percent numeric(5,2);
-  CREATE INDEX IF NOT EXISTS daily_action_campaigns_applicability_idx ON daily_action_campaigns(status,location_id,valid_from,valid_until);
- `);
+ // Keep this migration compatible with both the canonical UUID schema and
+ // older production databases. In particular, do not attach a FK while the
+ // legacy locations.id type may still differ from UUID.
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS location_id uuid`);
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS service_id uuid`);
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_percent numeric(5,2)`);
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS auto_selector_meta jsonb DEFAULT '{}'::jsonb`);
+ await q.query(`CREATE INDEX IF NOT EXISTS daily_action_campaigns_applicability_idx ON daily_action_campaigns(status,location_id,valid_from,valid_until)`);
 }
 const text=(v:any)=>String(v??'').trim();
 const number=(v:any,fallback=0)=>{const n=Number(v);return Number.isFinite(n)?n:fallback};
@@ -62,17 +64,18 @@ export async function applicableDailyActions(q:Queryable,context:DailyActionCont
  await ensureDailyActionApplicabilitySchema(q);
  const locationId=text(context.locationId)||null,clientId=text(context.clientId)||null,at=atValue(context.at);
  const {rows}=await q.query(`
-  SELECT id::text,headline,description_html,image_url,cta_label,cta_url,discount_text,
-         discount_percent,valid_from,valid_until,location_id::text,service_id::text,audience,auto_selector_meta
-    FROM daily_action_campaigns
-   WHERE status='published'
-     AND valid_from<=$1::timestamptz AND valid_until>=$1::timestamptz
+  SELECT d.id::text,d.headline,d.description_html,d.image_url,d.cta_label,d.cta_url,d.discount_text,
+         d.discount_percent,d.valid_from,d.valid_until,d.location_id::text,d.service_id::text,d.audience,
+         COALESCE(to_jsonb(d)->'auto_selector_meta','{}'::jsonb) AS auto_selector_meta
+    FROM daily_action_campaigns d
+   WHERE d.status='published'
+     AND d.valid_from<=$1::timestamptz AND d.valid_until>=$1::timestamptz
      AND (
-       (location_id IS NULL AND COALESCE(auto_selector_meta->>'location_id','')='')
-       OR location_id::text=$2
-       OR auto_selector_meta->>'location_id'=$2
+       (d.location_id IS NULL AND COALESCE(to_jsonb(d)->'auto_selector_meta'->>'location_id','')='')
+       OR d.location_id::text=$2
+       OR to_jsonb(d)->'auto_selector_meta'->>'location_id'=$2
      )
-   ORDER BY valid_until,id
+   ORDER BY d.valid_until,d.id
  `,[at.toISOString(),locationId]);
  const out:ApplicableDailyAction[]=[];
  for(const row of rows){
