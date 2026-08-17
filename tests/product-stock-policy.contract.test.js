@@ -49,6 +49,7 @@ test('stock policy has an audited VIR management surface on a supported generic 
   assert.match(sql,/Termék ID \/ belső kód \/ vonalkód/);
   assert.match(sql,/Negatív készlet engedélyezve/);
   assert.match(routeSql,/\/spec\/product-stock-policy/);
+  assert.match(routeSql,/code IN\('warehouse','inventory','masterdata'\)/);
   assert.match(bootstrap,/20260817_PRODUCT_STOCK_POLICY_V3\.sql/);
   assert.match(bootstrap,/20260817_PRODUCT_STOCK_POLICY_ROUTE_V4\.sql/);
 });
