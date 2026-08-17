@@ -1,0 +1,115 @@
+name: Application HA failover runtime evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      load_balancer_url:
+        description: Load-balancer critical request URL
+        required: true
+        type: string
+      failure_trigger_url:
+        description: Protected endpoint that stops exactly one application instance
+        required: true
+        type: string
+      duration_seconds:
+        description: Observation duration after failure injection
+        required: true
+        default: '600'
+        type: string
+      interval_seconds:
+        description: Request interval
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  application-ha-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HA_TRIGGER_TOKEN: ${{ secrets.HA_APPLICATION_TRIGGER_TOKEN }}
+      HA_WRITE_PROBE_URL: ${{ secrets.HA_APPLICATION_WRITE_PROBE_URL }}
+      HA_WRITE_PROBE_TOKEN: ${{ secrets.HA_APPLICATION_WRITE_PROBE_TOKEN }}
+    steps:
+      - name: Fail closed when HA harness is not configured
+        run: |
+          test -n "$HA_TRIGGER_TOKEN" || { echo 'HA_APPLICATION_TRIGGER_TOKEN is required'; exit 1; }
+          test -n "$HA_WRITE_PROBE_URL" || { echo 'HA_APPLICATION_WRITE_PROBE_URL is required'; exit 1; }
+          test -n "$HA_WRITE_PROBE_TOKEN" || { echo 'HA_APPLICATION_WRITE_PROBE_TOKEN is required'; exit 1; }
+
+      - name: Verify healthy load balancer before failure injection
+        env:
+          LB_URL: ${{ inputs.load_balancer_url }}
+        run: curl --fail --silent --show-error --max-time 10 "$LB_URL" >/dev/null
+
+      - name: Create accepted write probe before instance failure
+        id: writeprobe
+        run: |
+          PROBE_ID="ha-app-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "probe_id=$PROBE_ID" >> "$GITHUB_OUTPUT"
+          curl --fail --silent --show-error -X POST "$HA_WRITE_PROBE_URL" \
+            -H "Authorization: Bearer $HA_WRITE_PROBE_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: $PROBE_ID" \
+            --data "{\"probe_id\":\"$PROBE_ID\",\"payload\":\"accepted-before-instance-failure\"}" >/tmp/ha-write-response.json
+
+      - name: Stop one application instance
+        env:
+          TRIGGER_URL: ${{ inputs.failure_trigger_url }}
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/ha-started-at
+          curl --fail --silent --show-error -X POST "$TRIGGER_URL" \
+            -H "Authorization: Bearer $HA_TRIGGER_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data "{\"source\":\"github-actions\",\"run_id\":\"$GITHUB_RUN_ID\",\"action\":\"stop-one-instance\"}"
+
+      - name: Measure critical request success for observation window
+        env:
+          LB_URL: ${{ inputs.load_balancer_url }}
+          DURATION: ${{ inputs.duration_seconds }}
+          INTERVAL: ${{ inputs.interval_seconds }}
+        run: |
+          case "$DURATION" in ''|*[!0-9]*) echo 'duration_seconds must be numeric'; exit 1;; esac
+          case "$INTERVAL" in ''|*[!0-9]*) echo 'interval_seconds must be numeric'; exit 1;; esac
+          test "$INTERVAL" -gt 0
+          START=$(date +%s); TOTAL=0; SUCCESS=0
+          while [ $(( $(date +%s)-START )) -lt "$DURATION" ]; do
+            TOTAL=$((TOTAL+1))
+            if curl --fail --silent --show-error --max-time 10 "$LB_URL" >/dev/null 2>&1; then SUCCESS=$((SUCCESS+1)); fi
+            sleep "$INTERVAL"
+          done
+          echo "$TOTAL" > /tmp/ha-total
+          echo "$SUCCESS" > /tmp/ha-success
+          node - <<'NODE'
+          const fs=require('fs');const total=Number(fs.readFileSync('/tmp/ha-total','utf8'));const success=Number(fs.readFileSync('/tmp/ha-success','utf8'));const pct=total?success/total*100:0;console.log({total,success,pct});if(pct<99.9)process.exit(1);
+          NODE
+
+      - name: Verify accepted write still exists after instance failure
+        env:
+          PROBE_ID: ${{ steps.writeprobe.outputs.probe_id }}
+        run: |
+          curl --fail --silent --show-error "$HA_WRITE_PROBE_URL/$PROBE_ID" \
+            -H "Authorization: Bearer $HA_WRITE_PROBE_TOKEN" > /tmp/ha-write-readback.json
+          node - <<'NODE'
+          const fs=require('fs');const p=JSON.parse(fs.readFileSync('/tmp/ha-write-readback.json','utf8'));if(String(p.probe_id||p.id||'')!==process.env.PROBE_ID)throw new Error('accepted write probe was not recoverable');
+          NODE
+
+      - name: Build application HA evidence artifact
+        env:
+          PROBE_ID: ${{ steps.writeprobe.outputs.probe_id }}
+        run: |
+          mkdir -p artifacts
+          node - <<'NODE'
+          const fs=require('fs');const total=Number(fs.readFileSync('/tmp/ha-total','utf8'));const success=Number(fs.readFileSync('/tmp/ha-success','utf8'));const out={criterion_id:'KLEO-NFR-HA-001-AC-01',result:'passed',run_id:process.env.GITHUB_RUN_ID,started_at:fs.readFileSync('/tmp/ha-started-at','utf8').trim(),duration_seconds:Number('${{ inputs.duration_seconds }}'),requests_total:total,requests_successful:success,success_percent:total?success/total*100:0,probe_id:process.env.PROBE_ID,lost_accepted_writes:0,generated_at:new Date().toISOString()};fs.writeFileSync('artifacts/ha-application-evidence.json',JSON.stringify(out,null,2)+'\n');
+          NODE
+
+      - name: Upload application HA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ha-application-evidence-${{ github.run_id }}
+          path: artifacts/ha-application-evidence.json
+          retention-days: 180
+          if-no-files-found: error
