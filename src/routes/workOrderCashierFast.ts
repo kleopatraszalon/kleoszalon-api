@@ -2,6 +2,7 @@ import {Router} from 'express';
 import db from '../db';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 import {ensureLoyaltyProgram,loyaltyDiscountForWorkOrder} from '../loyalty/loyaltyProgramService';
+import {dailyActionDiscountForWorkOrder} from '../marketing/dailyActionApplicability';
 import {requireIdempotencyKey} from '../finance/financialIntegrity';
 import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
 import {recordFranchiseRevenueIfApplicable} from '../franchise/franchiseRevenueLedger';
@@ -133,7 +134,7 @@ router.post('/retail/sales',async(req:AuthRequest,res,next)=>{
     const country=String(req.body?.billing_country_code||'HU').toUpperCase();
     const postal=String(req.body?.billing_postal_code||'').trim()||null,city=String(req.body?.billing_city||'').trim()||null,address=String(req.body?.billing_address||'').trim()||null;
     const net=money(normalized.reduce((n,x)=>n+x.gross/(1+Number(x.vat_rate||.27)),0)),vat=money(total-net);
-    invoice=(await c.query(`INSERT INTO finance_invoices(location_id,direction,invoice_no,partner_name,customer_name,partner_tax_no,customer_tax_number,customer_vat_status,customer_country_code,customer_postal_code,customer_city,customer_address,issue_date,performance_date,due_date,currency,net_total,vat_total,gross_total,status,note,created_by,document_kind,invoice_type,nav_status,nav_validation_status,payment_method,payment_date)
+    invoice=(await c.query(`INSERT INTO finance_invoices(location_id,direction,invoice_no,partner_name,customer_name,partner_tax_no,customer_vat_status,customer_country_code,customer_postal_code,customer_city,customer_address,issue_date,performance_date,due_date,currency,net_total,vat_total,gross_total,status,note,created_by,document_kind,invoice_type,nav_status,nav_validation_status,payment_method,payment_date)
       VALUES($1,'outgoing',$2,$3,$3,$4,$4,$5,$6,$7,$8,$9,CURRENT_DATE,CURRENT_DATE,CURRENT_DATE,'HUF',$10,$11,$12,'draft',$13,$14,'internal_draft','NORMAL','not_submitted','not_validated',$15,CURRENT_DATE) RETURNING *`,[locationId,invoiceNo,name,tax,tax?'DOMESTIC':'PRIVATE_PERSON',country,postal,city,address,net,vat,total,`Termékeladás ${sale.id}`,actor(req),method.toUpperCase()])).rows[0];
     let line=0;
     for(const item of normalized){line++;const rate=Number(item.vat_rate||.27),lineNet=money(item.gross/(1+rate)),lineVat=money(item.gross-lineNet);await c.query(`INSERT INTO finance_invoice_lines(invoice_id,line_number,description,quantity,unit_of_measure,unit_price_net,vat_rate,net_amount,vat_amount,gross_amount,product_id) VALUES($1,$2,$3,$4,'PIECE',$5,$6,$7,$8,$9,$10)`,[invoice.id,line,item.name,item.quantity,Number((lineNet/item.quantity).toFixed(4)),rate,lineNet,lineVat,item.gross,item.id])}
@@ -190,17 +191,17 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{
       c.query(`SELECT COALESCE(SUM(line_total),0)::numeric gross FROM work_order_items WHERE work_order_id::text=$1`,[req.params.id]),
       c.query(`SELECT COALESCE(SUM(${paidExpr}),0)::numeric paid FROM work_order_payments wp WHERE wp.work_order_id::text=$1`,[req.params.id]),
     ]);
-    const gross=money(grossQ.rows[0]?.gross),paid=money(paidQ.rows[0]?.paid),loyalty=await loyaltyDiscountForWorkOrder(c,req.params.id,gross),discount=Math.max(requestedDiscount,money(loyalty.amount)),due=Math.max(0,money(gross-discount+tip)),paymentStatus=paid<=0?'unpaid':paid+.009<due?'partial':'paid';
+    const gross=money(grossQ.rows[0]?.gross),paid=money(paidQ.rows[0]?.paid),loyalty=await loyaltyDiscountForWorkOrder(c,req.params.id,gross),promo=await dailyActionDiscountForWorkOrder(c,req.params.id,gross),discount=Math.max(requestedDiscount,money(loyalty.amount),money(promo.amount)),due=Math.max(0,money(gross-discount+tip)),paymentStatus=paid<=0?'unpaid':paid+.009<due?'partial':'paid';
     if(closeFinancially&&paymentStatus!=='paid'){await c.query('ROLLBACK');return res.status(400).json({message:`A munkalap nem zárható pénzügyileg: még ${money(due-paid).toLocaleString('hu-HU')} Ft fizetendő.`})}
 
     const sets:string[]=[],params:any[]=[req.params.id],add=(col:string,val:any)=>{if(!woCols.has(col))return;params.push(val);sets.push(`${col}=$${params.length}`)};
-    add('gross_total',gross);add('discount_amount',discount);add('tip_amount',tip);add('amount_due',due);add('amount_paid',paid);add('payment_status',paymentStatus);add('fully_paid',paymentStatus==='paid');add('invoice_status',invoiceStatus);add('loyalty_tier_code',loyalty.tier_code);add('loyalty_discount_percent',loyalty.percent);add('loyalty_discount_amount',loyalty.amount);
+    add('gross_total',gross);add('discount_amount',discount);add('tip_amount',tip);add('amount_due',due);add('amount_paid',paid);add('payment_status',paymentStatus);add('fully_paid',paymentStatus==='paid');add('invoice_status',invoiceStatus);add('loyalty_tier_code',loyalty.tier_code);add('loyalty_discount_percent',loyalty.percent);add('loyalty_discount_amount',loyalty.amount);add('daily_action_campaign_id',promo.campaign_id);add('daily_action_discount_percent',promo.percent);add('daily_action_discount_amount',promo.amount);
     if(closeFinancially){if(woCols.has('financial_closed_at'))sets.push('financial_closed_at=COALESCE(financial_closed_at,now())');if(woCols.has('financial_closed_by')&&textLike(woTypes.get('financial_closed_by'))){params.push(req.user?.email||String(req.user?.id||''));sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}}
     if(woCols.has('updated_at'))sets.push('updated_at=now()');
     if(!sets.length){await c.query('ROLLBACK');return next()}
     const updated=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id::text=$1 RETURNING *`,params)).rows[0];
-    await c.query(`UPDATE work_order_settlements SET completed_at=now(),result_snapshot=$2::jsonb WHERE settlement_key=$1`,[settlementKey,JSON.stringify({work_order_id:req.params.id,payment_status:updated.payment_status,amount_paid:updated.amount_paid,financial_closed_at:updated.financial_closed_at||null})]);
-    await c.query('COMMIT');return res.json({...updated,fast:true,loyalty_passthrough:false,lifecycle_required:false});
+    await c.query(`UPDATE work_order_settlements SET completed_at=now(),result_snapshot=$2::jsonb WHERE settlement_key=$1`,[settlementKey,JSON.stringify({work_order_id:req.params.id,payment_status:updated.payment_status,amount_paid:updated.amount_paid,financial_closed_at:updated.financial_closed_at||null,daily_action_campaign_id:promo.campaign_id,daily_action_discount_amount:promo.amount})]);
+    await c.query('COMMIT');return res.json({...updated,fast:true,loyalty_passthrough:false,lifecycle_required:false,daily_action_promotion:promo});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);console.error('[workorder-cashier-fast] failed',e?.code||'',e?.message||e);
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code:e.code});
