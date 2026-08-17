@@ -69,7 +69,7 @@ function pick(cols: ColSet, names: string[]): string | null {
   return null;
 }
 
-function buildEmployeesSelect(cols: ColSet) {
+function buildEmployeesSelect(cols: ColSet, locationId: string | null = null) {
   const fullNameCol = pick(cols, ["full_name", "fullname", "name", "display_name"]);
   const shortNameCol = pick(cols, ["short_name", "shortname", "nick", "nickname", "initials"]);
   const firstNameCol = pick(cols, ["first_name", "firstname", "given_name"]);
@@ -94,7 +94,8 @@ function buildEmployeesSelect(cols: ColSet) {
 
   const photoExpr = photoCol ? `e.${photoCol}::text` : `NULL::text`;
   const roleExpr = roleCol ? `e.${roleCol}::text` : `NULL::text`;
-  const locExpr = locationCol ? `e.${locationCol}::uuid` : `NULL::uuid`;
+  const locExpr = locationCol ? `e.${locationCol}::text` : `NULL::text`;
+  const locationWhere = locationId && locationCol ? `WHERE e.${locationCol}::text = $1::text` : ``;
 
   return `
     SELECT
@@ -105,6 +106,7 @@ function buildEmployeesSelect(cols: ColSet) {
       ${roleExpr} AS role,
       ${locExpr} AS location_id
     FROM employees e
+    ${locationWhere}
     ORDER BY COALESCE(${shortNameExpr}, ${fullNameExpr}) ASC
   `;
 }
@@ -128,11 +130,11 @@ router.get("/schedule", asyncRoute(async (req, res) => {
       COALESCE(w.voluntary_overtime_agreement,false) voluntary_overtime_agreement,
       COALESCE(w.annual_overtime_limit,250) annual_overtime_limit,COALESCE(w.voluntary_overtime_limit,150) voluntary_overtime_limit,
       w.frame_start,w.frame_end,COALESCE(w.settlement_period_weeks,1) settlement_period_weeks,w.valid_from,w.valid_to,w.notes
-      FROM employees e LEFT JOIN locations l ON l.id=e.location_id LEFT JOIN hr_positions p ON p.id=e.position_id
+      FROM employees e LEFT JOIN locations l ON l.id::text=e.location_id::text LEFT JOIN hr_positions p ON p.id::text=e.position_id::text
       LEFT JOIN employee_work_time_profiles w ON w.employee_id=e.id
-      WHERE COALESCE(e.active,true) AND ($1::uuid IS NULL OR e.location_id=$1) ORDER BY e.full_name`,[locationId]),
-    pool.query(`SELECT s.*,e.full_name,l.name location_name FROM work_shifts s JOIN employees e ON e.id=s.employee_id LEFT JOIN locations l ON l.id=s.location_id
-      WHERE s.work_date BETWEEN $1 AND $2 AND ($3::uuid IS NULL OR s.location_id=$3 OR (s.location_id IS NULL AND e.location_id=$3)) ORDER BY s.starts_at`,[from,to,locationId]),
+      WHERE COALESCE(e.active,true) AND ($1::text IS NULL OR e.location_id::text=$1::text) ORDER BY e.full_name`,[locationId]),
+    pool.query(`SELECT s.*,e.full_name,l.name location_name FROM work_shifts s JOIN employees e ON e.id=s.employee_id LEFT JOIN locations l ON l.id::text=s.location_id::text
+      WHERE s.work_date BETWEEN $1 AND $2 AND ($3::text IS NULL OR s.location_id::text=$3::text OR (s.location_id IS NULL AND e.location_id::text=$3::text)) ORDER BY s.starts_at`,[from,to,locationId]),
     pool.query("SELECT holiday_date,name FROM public_holidays WHERE is_active AND holiday_date BETWEEN $1 AND $2",[from,to]),
     pool.query("SELECT id,name FROM locations WHERE COALESCE(is_active,true) ORDER BY name")
   ]);
@@ -184,11 +186,11 @@ router.delete("/shifts/:id", asyncRoute(async (req,res)=>{
 
 router.post("/publish", asyncRoute(async (req,res)=>{
   await ensureHrV2();const b=req.body||{};if(!b.from||!b.to)return res.status(400).json({error:"Az időszak kötelező."});
-  const [sr,er,hr]=await Promise.all([pool.query("SELECT * FROM work_shifts WHERE work_date BETWEEN $1 AND $2 AND status<>'cancelled' AND ($3::uuid IS NULL OR location_id=$3)",[b.from,b.to,b.location_id||null]),pool.query("SELECT e.id,w.* FROM employees e LEFT JOIN employee_work_time_profiles w ON w.employee_id=e.id"),pool.query("SELECT holiday_date FROM public_holidays WHERE is_active AND holiday_date BETWEEN $1 AND $2",[b.from,b.to])]);
+  const [sr,er,hr]=await Promise.all([pool.query("SELECT * FROM work_shifts WHERE work_date BETWEEN $1 AND $2 AND status<>'cancelled' AND ($3::text IS NULL OR location_id::text=$3::text)",[b.from,b.to,b.location_id||null]),pool.query("SELECT e.id,w.* FROM employees e LEFT JOIN employee_work_time_profiles w ON w.employee_id=e.id"),pool.query("SELECT holiday_date FROM public_holidays WHERE is_active AND holiday_date BETWEEN $1 AND $2",[b.from,b.to])]);
   const warnings=legalWarnings(sr.rows,new Map(er.rows.map((x:any)=>[String(x.id),x])),new Set(hr.rows.map((x:any)=>String(x.holiday_date).slice(0,10))));
   const errors=warnings.filter((x:any)=>x.severity==="error"&&!sr.rows.find((s:any)=>s.id===x.shift_id)?.legal_override_reason);
   if(errors.length)return res.status(422).json({error:"A beosztás munkajogi hibákat tartalmaz, ezért nem tehető közzé.",warnings});
-  await pool.query("UPDATE work_shifts SET status='published',published_at=now(),published_by=$4,updated_at=now() WHERE work_date BETWEEN $1 AND $2 AND status='draft' AND ($3::uuid IS NULL OR location_id=$3)",[b.from,b.to,b.location_id||null,actor(req)]);
+  await pool.query("UPDATE work_shifts SET status='published',published_at=now(),published_by=$4,updated_at=now() WHERE work_date BETWEEN $1 AND $2 AND status='draft' AND ($3::text IS NULL OR location_id::text=$3::text)",[b.from,b.to,b.location_id||null,actor(req)]);
   await pool.query(`INSERT INTO work_schedule_publications(location_id,period_from,period_to,published_by,note) VALUES($1,$2,$3,$4,$5) ON CONFLICT(location_id,period_from,period_to) DO UPDATE SET published_at=now(),published_by=EXCLUDED.published_by,note=EXCLUDED.note`,[b.location_id||null,b.from,b.to,actor(req),b.note||null]);
   res.json({ok:true,warnings,published_at:new Date().toISOString()});
 }));
@@ -205,23 +207,30 @@ router.get("/", async (req: AuthRequest, res) => {
   }
 
   try {
+    const locationId=String((req.query as any).location_id||"").trim()||null;
     const cols = await loadEmployeesCols();
-    const employeesSql = buildEmployeesSelect(cols);
-    const employeesRes = await pool.query(employeesSql);
+    const employeesSql = buildEmployeesSelect(cols,locationId);
+    const employeesRes = await pool.query(employeesSql,locationId?[locationId]:[]);
+
+    const relationState=await pool.query(`SELECT to_regclass('public.appointment_services') IS NOT NULL has_services,to_regclass('public.appointment_products') IS NOT NULL has_products`);
+    const hasServices=Boolean(relationState.rows[0]?.has_services),hasProducts=Boolean(relationState.rows[0]?.has_products);
+    const serviceNamesSql=hasServices
+      ? `COALESCE((SELECT array_agg(COALESCE(s.name,'') ORDER BY aps.sort_order,aps.created_at) FROM appointment_services aps LEFT JOIN services s ON s.id::text=aps.service_id::text WHERE aps.appointment_id::text=a.id::text),ARRAY[]::text[])`
+      : `ARRAY[]::text[]`;
+    const serviceTotalSql=hasServices
+      ? `COALESCE((SELECT SUM(COALESCE(aps.price,0)) FROM appointment_services aps WHERE aps.appointment_id::text=a.id::text),0)`
+      : `0`;
+    const productTotalSql=hasProducts
+      ? `COALESCE((SELECT SUM(COALESCE(ap.qty,1)*COALESCE(ap.price,0)) FROM appointment_products ap WHERE ap.appointment_id::text=a.id::text),0)`
+      : `0`;
 
     const apRes = await pool.query(
       `
-      WITH has_aps AS (
-        SELECT to_regclass('public.appointment_services') IS NOT NULL AS ok
-      ),
-      has_app_prod AS (
-        SELECT to_regclass('public.appointment_products') IS NOT NULL AS ok
-      )
       SELECT
         a.id::text,
         a.employee_id::text,
         a.client_id::text AS client_id,
-        COALESCE(c.full_name, c.name, '') AS client_name,
+        COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'') AS client_name,
         a.location_id::text,
         NULL::text AS location_name,
         a.title,
@@ -240,60 +249,22 @@ router.get("/", async (req: AuthRequest, res) => {
                 )
             ) THEN 'work_order_closed'
           WHEN lower(COALESCE(a.status,''))='in_progress'
-            OR EXISTS(
-              SELECT 1 FROM work_orders w
-              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
-                AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress'
-            ) THEN 'in_progress'
+            OR EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=NULLIF(to_jsonb(a)->>'work_order_id','') AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress') THEN 'in_progress'
           WHEN lower(COALESCE(a.status,''))='arrived'
-            OR EXISTS(
-              SELECT 1 FROM work_orders w
-              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
-                AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived'
-            ) THEN 'arrived'
+            OR EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=NULLIF(to_jsonb(a)->>'work_order_id','') AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived') THEN 'arrived'
           ELSE COALESCE(NULLIF(lower(a.status),''),'waiting')
         END AS operational_status,
         a.notes,
-        (
-          CASE
-            WHEN (SELECT ok FROM has_aps) THEN
-              COALESCE((
-                SELECT array_agg(COALESCE(s.name, '') ORDER BY aps.sort_order, aps.created_at)
-                FROM appointment_services aps
-                LEFT JOIN services s ON s.id = aps.service_id
-                WHERE aps.appointment_id = a.id
-              ), ARRAY[]::text[])
-            ELSE ARRAY[]::text[]
-          END
-        ) AS service_names,
-        (
-          CASE
-            WHEN (SELECT ok FROM has_aps) THEN
-              COALESCE((
-                SELECT COALESCE(SUM(COALESCE(aps.price, 0)), 0)
-                FROM appointment_services aps
-                WHERE aps.appointment_id = a.id
-              ), 0)
-            ELSE 0
-          END
-          +
-          CASE
-            WHEN (SELECT ok FROM has_app_prod) THEN
-              COALESCE((
-                SELECT COALESCE(SUM(COALESCE(ap.qty,1) * COALESCE(ap.price,0)), 0)
-                FROM appointment_products ap
-                WHERE ap.appointment_id = a.id
-              ), 0)
-            ELSE 0
-          END
-        )::numeric AS total
+        ${serviceNamesSql} AS service_names,
+        (${serviceTotalSql}+${productTotalSql})::numeric AS total
       FROM appointments a
-      LEFT JOIN clients c ON c.id = a.client_id
+      LEFT JOIN clients c ON c.id::text=a.client_id::text
       WHERE a.start_time >= ($1::date)::timestamp
-        AND a.start_time <  (($2::date + INTERVAL '1 day')::timestamp)
+        AND a.start_time < (($2::date + INTERVAL '1 day')::timestamp)
+        AND ($3::text IS NULL OR a.location_id::text=$3::text)
       ORDER BY a.start_time ASC
       `,
-      [from, to]
+      [from,to,locationId]
     );
 
     return res.json({
