@@ -1,11 +1,14 @@
 import db from "../db";
+import { ensureInventoryOperationsSchema } from "../inventory/ensureInventoryOperationsSchema";
 
 let ready: Promise<void> | null = null;
 
 export function ensureInventoryMinMaxCompliance(): Promise<void> {
   if (ready) return ready;
   ready = (async () => {
+    await ensureInventoryOperationsSchema();
     await db.query(`
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
       DO $$ BEGIN
         IF to_regclass('public.inventory_warehouse_balances') IS NOT NULL THEN
           ALTER TABLE inventory_warehouse_balances
@@ -23,6 +26,8 @@ export function ensureInventoryMinMaxCompliance(): Promise<void> {
         END IF;
 
         IF to_regclass('public.product_stock_balances') IS NOT NULL THEN
+          ALTER TABLE product_stock_balances
+            ADD COLUMN IF NOT EXISTS optimal_quantity numeric(16,3) NOT NULL DEFAULT 0;
           ALTER TABLE product_stock_balances
             ADD COLUMN IF NOT EXISTS max_quantity numeric(16,3) NOT NULL DEFAULT 0;
           UPDATE product_stock_balances
@@ -66,13 +71,11 @@ export function ensureInventoryMinMaxCompliance(): Promise<void> {
       END $$;
 
       DO $$ BEGIN
-        IF to_regclass('public.inventory_warehouse_balances') IS NOT NULL THEN
-          DROP TRIGGER IF EXISTS trg_kleo_inventory_minmax_normalize ON inventory_warehouse_balances;
-          CREATE TRIGGER trg_kleo_inventory_minmax_normalize
-            BEFORE INSERT OR UPDATE OF min_quantity,optimal_quantity,max_quantity
-            ON inventory_warehouse_balances
-            FOR EACH ROW EXECUTE FUNCTION kleo_inventory_minmax_normalize();
-        END IF;
+        DROP TRIGGER IF EXISTS trg_kleo_inventory_minmax_normalize ON inventory_warehouse_balances;
+        CREATE TRIGGER trg_kleo_inventory_minmax_normalize
+          BEFORE INSERT OR UPDATE OF min_quantity,optimal_quantity,max_quantity
+          ON inventory_warehouse_balances
+          FOR EACH ROW EXECUTE FUNCTION kleo_inventory_minmax_normalize();
         IF to_regclass('public.product_stock_balances') IS NOT NULL THEN
           DROP TRIGGER IF EXISTS trg_kleo_legacy_minmax_normalize ON product_stock_balances;
           CREATE TRIGGER trg_kleo_legacy_minmax_normalize
@@ -139,14 +142,10 @@ export function ensureInventoryMinMaxCompliance(): Promise<void> {
         RETURN NEW;
       END $$;
 
-      DO $$ BEGIN
-        IF to_regclass('public.inventory_warehouse_balances') IS NOT NULL THEN
-          DROP TRIGGER IF EXISTS trg_kleo_minmax_auto_replenishment ON inventory_warehouse_balances;
-          CREATE TRIGGER trg_kleo_minmax_auto_replenishment
-            AFTER UPDATE OF quantity ON inventory_warehouse_balances
-            FOR EACH ROW EXECUTE FUNCTION kleo_minmax_auto_replenishment();
-        END IF;
-      END $$;
+      DROP TRIGGER IF EXISTS trg_kleo_minmax_auto_replenishment ON inventory_warehouse_balances;
+      CREATE TRIGGER trg_kleo_minmax_auto_replenishment
+        AFTER UPDATE OF quantity ON inventory_warehouse_balances
+        FOR EACH ROW EXECUTE FUNCTION kleo_minmax_auto_replenishment();
     `);
   })().catch(error => {
     ready = null;
