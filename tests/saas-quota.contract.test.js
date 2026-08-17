@@ -30,9 +30,12 @@ test('locations API is tenant scoped',()=>{
   assert.match(locations,/tenant_id\) VALUES/);
 });
 
-test('tenant admin assignment and activation consume user quota',()=>{
-  assert.match(invitations,/assertTenantQuota\(input\.tenantId,'users',1,client\)/);
+test('tenant admin assignment and activation consume user quota only for a new active membership',()=>{
+  assert.match(invitations,/async function ensureMembershipQuota/);
+  assert.match(invitations,/if\(!existing\.rows\[0\]\?\.active\)await assertTenantQuota\(tenantId,'users',1,client\)/);
+  assert.match(invitations,/ensureMembershipQuota\(client,input\.tenantId,userId\)/);
   assert.match(invitations,/assertTenantQuota\(String\(invite\.tenant_id\),'users',1,client\)/);
+  assert.match(invitations,/ensureMembershipQuota\(client,String\(invite\.tenant_id\),userId\)/);
 });
 
 test('V12 enforces quota at database level and is part of startup bootstrap',()=>{
