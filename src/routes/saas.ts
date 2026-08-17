@@ -5,6 +5,7 @@ import { requireTenantContext, requireTenantRole, TenantAuthRequest } from "../m
 import franchiseFinanceRouter from "./franchiseFinance";
 import franchiseAccountingRouter from "./franchiseAccounting";
 import saasPlatformRouter from "./saasPlatform";
+import saasLifecyclePolicyRouter from "./saasLifecyclePolicy";
 import tenantAdminInvitationsPublic from "./tenantAdminInvitationsPublic";
 
 const router = Router();
@@ -12,6 +13,7 @@ router.use("/admin-invitations",tenantAdminInvitationsPublic);
 router.use(requireAuth, requireTenantContext);
 router.use("/franchise-finance",franchiseFinanceRouter);
 router.use("/franchise-accounting",franchiseAccountingRouter);
+router.use("/platform",saasLifecyclePolicyRouter);
 router.use("/platform",saasPlatformRouter);
 
 router.get("/context", async (req: TenantAuthRequest, res: Response) => {
