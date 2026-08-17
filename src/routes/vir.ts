@@ -3,10 +3,12 @@ import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
 import receiptComplianceRouter from "./receiptCompliance";
+import deviceControlRouter from "./deviceControl";
 
 const router = Router();
 router.use(requireAuth);
 router.use("/receipt-compliance", receiptComplianceRouter);
+router.use("/device-control", deviceControlRouter);
 
 type VirQueryParams = {
   from?: string;
@@ -125,9 +127,6 @@ router.get("/top-services", async (req: AuthRequest, res: Response) => {
     const locationId = getScopedLocationId(req, res);
     if (locationId === undefined) return;
 
-    // A régi vir_top_services(limit) függvény nem kapott telephelyet, ezért
-    // nem admin felhasználónál hálózati összesítést szivárogtatott. A lekérdezés
-    // most közvetlenül a foglalások location_id mezőjével scope-ol.
     const { rows } = await pool.query(
       `SELECT
          s.id AS service_id,
