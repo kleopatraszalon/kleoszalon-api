@@ -20,13 +20,14 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-      - name: Patch runtime compatibility
+      - name: Patch production runtime compatibility
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          # 1) VIR customizer: node-postgres cannot execute a parameterized multi-command statement.
+          # 1) VIR customizer: a parameterized node-postgres query may not contain
+          # multiple SQL commands. Split bootstrap into individual statements.
           p = Path('src/routes/virCustomizer.ts')
           s = p.read_text()
           start = s.index("let ready:Promise<void>|null=null;async function ensure(){")
@@ -45,150 +46,263 @@ jobs:
           """.strip()
           p.write_text(s[:start] + new + s[end:])
 
-          # 2) Employees dashboard fast path: read legacy schemas via row JSON instead of direct optional columns.
-          p = Path('src/routes/employees.ts')
+          # 2) SaaS core: locations.tenant_id existed as text in some legacy DBs.
+          # Seed it according to the actual column type instead of assuming bigint.
+          p = Path('src/saas/ensureSaasCore.ts')
           s = p.read_text()
-          start = s.index('async function listEmployeesLegacyScoped')
-          end = s.index('function employeeFilterPlan', start)
-          new = r'''async function listEmployeesLegacyScoped(includeInactive:boolean,locationId:string|null){
-            const relationState=await pool.query(`SELECT to_regclass('public.locations') IS NOT NULL has_locations,to_regclass('public.hr_positions') IS NOT NULL has_positions`);
-            const hasLocations=Boolean(relationState.rows[0]?.has_locations),hasPositions=Boolean(relationState.rows[0]?.has_positions);
-            const activeExpr=`COALESCE(NULLIF(to_jsonb(e)->>'active','')::boolean,true)`;
-            const locationExpr=`NULLIF(to_jsonb(e)->>'location_id','')`;
-            const positionExpr=`NULLIF(to_jsonb(e)->>'position_id','')`;
-            const fullNameExpr=`COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(trim(concat_ws(' ',to_jsonb(e)->>'last_name',to_jsonb(e)->>'first_name')),''),'Munkatárs')`;
-            const joins=[hasLocations?`LEFT JOIN locations l ON l.id::text=${locationExpr}`:'',hasPositions?`LEFT JOIN hr_positions p ON p.id::text=${positionExpr}`:''].filter(Boolean).join(' ');
-            const locationName=hasLocations?`l.name`:`NULL::text`;
-            const positionName=hasPositions?`COALESCE(NULLIF(p.name,''),NULLIF(to_jsonb(e)->>'position_name',''),NULLIF(to_jsonb(e)->>'position',''),NULLIF(to_jsonb(e)->>'role',''))`:`COALESCE(NULLIF(to_jsonb(e)->>'position_name',''),NULLIF(to_jsonb(e)->>'position',''),NULLIF(to_jsonb(e)->>'role',''))`;
-            const values:any[]=[];const filters:string[]=[];
-            if(!includeInactive)filters.push(`${activeExpr}=true`);
-            if(locationId){values.push(locationId);filters.push(`${locationExpr}=$${values.length}::text`)}
-            const where=filters.length?`WHERE ${filters.join(' AND ')}`:'';
-            return pool.query(`SELECT
-              NULLIF(to_jsonb(e)->>'id','') AS id,
-              ${locationExpr} AS location_id,
-              ${locationName} AS location_name,
-              ${fullNameExpr} AS full_name,
-              NULLIF(to_jsonb(e)->>'first_name','') AS first_name,
-              NULLIF(to_jsonb(e)->>'last_name','') AS last_name,
-              NULLIF(to_jsonb(e)->>'email','') AS email,
-              NULLIF(to_jsonb(e)->>'phone','') AS phone,
-              NULLIF(to_jsonb(e)->>'birth_date','') AS birth_date,
-              NULLIF(to_jsonb(e)->>'qualification','') AS qualification,
-              NULLIF(to_jsonb(e)->>'employment_type','') AS employment_type,
-              ${positionExpr} AS position_id,
-              ${positionName} AS position_name,
-              NULLIF(to_jsonb(e)->>'monthly_wage','') AS monthly_wage,
-              NULLIF(to_jsonb(e)->>'hourly_wage','') AS hourly_wage,
-              NULLIF(to_jsonb(e)->>'commission_percent','') AS commission_percent,
-              NULLIF(to_jsonb(e)->>'photo_url','') AS photo_url,
-              ${activeExpr} AS active,
-              NULLIF(to_jsonb(e)->>'login_name','') AS login_name,
-              to_jsonb(e)->'role' AS role,
-              NULLIF(to_jsonb(e)->>'created_at','') AS created_at,
-              NULLIF(to_jsonb(e)->>'updated_at','') AS updated_at
-              FROM employees e ${joins} ${where}
-              ORDER BY ${activeExpr} DESC,${fullNameExpr}`,values)
+          old = '''      const locationTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='locations' LIMIT 1`);
+                if(locationTable.rowCount){
+                  await client.query(`ALTER TABLE locations ADD COLUMN IF NOT EXISTS tenant_id bigint`);
+                  await client.query(`UPDATE locations SET tenant_id=(SELECT id FROM tenants WHERE slug='kleopatra') WHERE tenant_id IS NULL`);
+                  await client.query(`CREATE INDEX IF NOT EXISTS locations_tenant_idx ON locations(tenant_id)`);
+                }
+
+                const userTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='users' LIMIT 1`);
+                if(userTable.rowCount){
+                  await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) SELECT (SELECT id FROM tenants WHERE slug='kleopatra'),u.id::text,CASE WHEN lower(COALESCE(u.role::text,''))='admin' THEN 'owner' ELSE 'member' END,true FROM users u ON CONFLICT(tenant_id,user_id) DO NOTHING`);
+                }
+'''
+          if old not in s:
+            raise SystemExit('ensureSaasCore legacy block not found')
+          new = '''      const locationTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='locations' LIMIT 1`);
+                if(locationTable.rowCount){
+                  await client.query(`ALTER TABLE locations ADD COLUMN IF NOT EXISTS tenant_id bigint`);
+                  const tenantRow=await client.query(`SELECT id::text id FROM tenants WHERE slug='kleopatra' LIMIT 1`);
+                  const tenantId=String(tenantRow.rows[0]?.id||'');
+                  const typeRow=await client.query(`SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='tenant_id' LIMIT 1`);
+                  const tenantType=String(typeRow.rows[0]?.data_type||'');
+                  if(tenantId){
+                    if(['bigint','integer','smallint','numeric'].includes(tenantType))await client.query(`UPDATE locations SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId]);
+                    else if(['text','character varying','character'].includes(tenantType))await client.query(`UPDATE locations SET tenant_id=$1::text WHERE tenant_id IS NULL`,[tenantId]);
+                    else console.warn(`[saas-core] locations.tenant_id legacy type not auto-seeded: ${tenantType||'unknown'}`);
+                  }
+                  await client.query(`CREATE INDEX IF NOT EXISTS locations_tenant_idx ON locations(tenant_id)`);
+                }
+
+                const userTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='users' LIMIT 1`);
+                if(userTable.rowCount){
+                  try{await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) SELECT (SELECT id FROM tenants WHERE slug='kleopatra'),u.id::text,CASE WHEN lower(COALESCE(u.role::text,''))='admin' THEN 'owner' ELSE 'member' END,true FROM users u ON CONFLICT(tenant_id,user_id) DO NOTHING`)}catch(error){console.warn('[saas-core] legacy tenant_users sync skipped:',(error as any)?.message||error)}
+                }
+'''
+          p.write_text(s.replace(old,new,1))
+
+          # 3) Tenant isolation: one optional legacy table must not abort the whole
+          # request/bootstrap. Also seed tenant_id according to its actual type.
+          p = Path('src/saas/ensureTenantIsolation.ts')
+          s = p.read_text()
+          old = '''async function addTenantColumn(client:PoolClient,table:string){await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id bigint`);await client.query(`CREATE INDEX IF NOT EXISTS ${table}_tenant_idx ON ${table}(tenant_id)`)}
+          async function fallbackLegacy(client:PoolClient,table:string,tenantId:any){await client.query(`UPDATE ${table} SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId])}
+'''
+          if old not in s:
+            raise SystemExit('tenant isolation helper block not found')
+          new = '''function bootstrapWarning(label:string,error:unknown){console.warn(`[tenant-isolation] ${label} skipped:`,(error as any)?.message||error)}
+          async function bestEffort(label:string,run:()=>Promise<void>){try{await run()}catch(error){bootstrapWarning(label,error)}}
+          async function addTenantColumn(client:PoolClient,table:string){
+            await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id bigint`);
+            await bestEffort(`${table}:tenant-index`,()=>client.query(`CREATE INDEX IF NOT EXISTS ${table}_tenant_idx ON ${table}(tenant_id)`).then(()=>undefined));
           }
-          async function listEmployeesLegacy(includeInactive:boolean){return listEmployeesLegacyScoped(includeInactive,null)}
-          '''
-          p.write_text(s[:start] + new + s[end:])
+          async function fallbackLegacy(client:PoolClient,table:string,tenantId:any){
+            const r=await client.query(`SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name='tenant_id' LIMIT 1`,[table]);
+            const type=String(r.rows[0]?.data_type||'');
+            if(['bigint','integer','smallint','numeric'].includes(type))await client.query(`UPDATE ${table} SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId]);
+            else if(['text','character varying','character'].includes(type))await client.query(`UPDATE ${table} SET tenant_id=$1::text WHERE tenant_id IS NULL`,[String(tenantId)]);
+            else bootstrapWarning(`${table}:tenant-seed-type-${type||'unknown'}`,new Error('unsupported tenant_id type'));
+          }
+'''
+          s=s.replace(old,new,1)
 
-          # 3) Timetable: optional booking tables/columns are schema-version tolerant.
-          p = Path('src/routes/timetable.ts')
+          old = '''      for(const table of LOCATION_SCOPED_TABLES){
+                if(!(await tableExists(client,table)))continue;
+                await addTenantColumn(client,table);
+                if(await columnExists(client,table,"location_id")){
+                  await client.query(`UPDATE ${table} e SET tenant_id=l.tenant_id FROM locations l WHERE e.tenant_id IS NULL AND e.location_id IS NOT NULL AND e.location_id::text=l.id::text AND l.tenant_id IS NOT NULL`);
+                }
+                await fallbackLegacy(client,table,kleopatraTenantId);
+              }
+
+              for(const table of EMPLOYEE_SCOPED_TABLES){
+                if(!(await tableExists(client,table)))continue;
+                await addTenantColumn(client,table);
+                if(await columnExists(client,table,"employee_id")&&await tableExists(client,"employees")){
+                  await client.query(`UPDATE ${table} c SET tenant_id=e.tenant_id FROM employees e WHERE c.tenant_id IS NULL AND c.employee_id::text=e.id::text AND e.tenant_id IS NOT NULL`);
+                }
+                await fallbackLegacy(client,table,kleopatraTenantId);
+              }
+
+              for(const child of PARENT_SCOPED_TABLES){
+                if(!(await tableExists(client,child.table))||!(await tableExists(client,child.parent))||!(await columnExists(client,child.table,child.fk)))continue;
+                await addTenantColumn(client,child.table);
+                await client.query(`UPDATE ${child.table} c SET tenant_id=p.tenant_id FROM ${child.parent} p WHERE c.tenant_id IS NULL AND c.${child.fk}::text=p.id::text AND p.tenant_id IS NOT NULL`);
+                await fallbackLegacy(client,child.table,kleopatraTenantId);
+              }
+
+              for(const table of TENANT_MASTER_TABLES){
+                if(!(await tableExists(client,table)))continue;
+                await addTenantColumn(client,table);
+                await fallbackLegacy(client,table,kleopatraTenantId);
+              }
+'''
+          if old not in s:
+            raise SystemExit('tenant isolation loop block not found')
+          new = '''      for(const table of LOCATION_SCOPED_TABLES){
+                await bestEffort(`location:${table}`,async()=>{
+                  if(!(await tableExists(client,table)))return;
+                  await addTenantColumn(client,table);
+                  if(await columnExists(client,table,"location_id")){
+                    await bestEffort(`${table}:location-backfill`,()=>client.query(`UPDATE ${table} e SET tenant_id=l.tenant_id FROM locations l WHERE e.tenant_id IS NULL AND e.location_id IS NOT NULL AND e.location_id::text=l.id::text AND l.tenant_id IS NOT NULL`).then(()=>undefined));
+                  }
+                  await fallbackLegacy(client,table,kleopatraTenantId);
+                });
+              }
+
+              for(const table of EMPLOYEE_SCOPED_TABLES){
+                await bestEffort(`employee:${table}`,async()=>{
+                  if(!(await tableExists(client,table)))return;
+                  await addTenantColumn(client,table);
+                  if(await columnExists(client,table,"employee_id")&&await tableExists(client,"employees")){
+                    await bestEffort(`${table}:employee-backfill`,()=>client.query(`UPDATE ${table} c SET tenant_id=e.tenant_id FROM employees e WHERE c.tenant_id IS NULL AND c.employee_id::text=e.id::text AND e.tenant_id IS NOT NULL`).then(()=>undefined));
+                  }
+                  await fallbackLegacy(client,table,kleopatraTenantId);
+                });
+              }
+
+              for(const child of PARENT_SCOPED_TABLES){
+                await bestEffort(`parent:${child.table}`,async()=>{
+                  if(!(await tableExists(client,child.table))||!(await tableExists(client,child.parent))||!(await columnExists(client,child.table,child.fk)))return;
+                  await addTenantColumn(client,child.table);
+                  await bestEffort(`${child.table}:parent-backfill`,()=>client.query(`UPDATE ${child.table} c SET tenant_id=p.tenant_id FROM ${child.parent} p WHERE c.tenant_id IS NULL AND c.${child.fk}::text=p.id::text AND p.tenant_id IS NOT NULL`).then(()=>undefined));
+                  await fallbackLegacy(client,child.table,kleopatraTenantId);
+                });
+              }
+
+              for(const table of TENANT_MASTER_TABLES){
+                await bestEffort(`master:${table}`,async()=>{
+                  if(!(await tableExists(client,table)))return;
+                  await addTenantColumn(client,table);
+                  await fallbackLegacy(client,table,kleopatraTenantId);
+                });
+              }
+'''
+          s=s.replace(old,new,1)
+
+          old = '''      if(await tableExists(client,"crm_tags")){
+                await client.query(`DROP INDEX IF EXISTS crm_tags_name_uq`);
+                await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_tenant_name_uq ON crm_tags(tenant_id,(lower(name)))`);
+              }
+              if(await tableExists(client,"crm_forms")){
+                await client.query(`DROP INDEX IF EXISTS crm_forms_title_uq`);
+                await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_forms_tenant_title_uq ON crm_forms(tenant_id,(lower(title)))`);
+              }
+              if(await tableExists(client,"compensation_plans")&&await columnExists(client,"compensation_plans","name")){
+                await client.query(`CREATE INDEX IF NOT EXISTS compensation_plans_tenant_name_idx ON compensation_plans(tenant_id,(lower(name)))`);
+              }
+'''
+          if old not in s:
+            raise SystemExit('tenant isolation index block not found')
+          new = '''      await bestEffort('crm_tags:indexes',async()=>{if(await tableExists(client,"crm_tags")){await client.query(`DROP INDEX IF EXISTS crm_tags_name_uq`);await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_tenant_name_uq ON crm_tags(tenant_id,(lower(name)))`)}});
+              await bestEffort('crm_forms:indexes',async()=>{if(await tableExists(client,"crm_forms")){await client.query(`DROP INDEX IF EXISTS crm_forms_title_uq`);await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_forms_tenant_title_uq ON crm_forms(tenant_id,(lower(title)))`)}});
+              await bestEffort('compensation_plans:indexes',async()=>{if(await tableExists(client,"compensation_plans")&&await columnExists(client,"compensation_plans","name")){await client.query(`CREATE INDEX IF NOT EXISTS compensation_plans_tenant_name_idx ON compensation_plans(tenant_id,(lower(name)))`)}});
+'''
+          p.write_text(s.replace(old,new,1))
+
+          # 4) Runtime tenant comparisons are type-neutral. This supports legacy
+          # text tenant_id columns as well as the canonical bigint schema.
+          p = Path('src/saas/tenantAccess.ts')
           s = p.read_text()
-          start = s.index('    const relationState=await pool.query', s.index('router.get("/"'))
-          end = s.index('\n    const apRes = await pool.query', start)
-          new = r'''    const relationState=await pool.query(`SELECT
-              to_regclass('public.appointment_services') IS NOT NULL has_services,
-              to_regclass('public.appointment_products') IS NOT NULL has_products,
-              to_regclass('public.services') IS NOT NULL has_service_catalog,
-              to_regclass('public.clients') IS NOT NULL has_clients,
-              to_regclass('public.work_orders') IS NOT NULL has_work_orders`);
-            const state=relationState.rows[0]||{};
-            const hasServices=Boolean(state.has_services),hasProducts=Boolean(state.has_products),hasServiceCatalog=Boolean(state.has_service_catalog),hasClients=Boolean(state.has_clients),hasWorkOrders=Boolean(state.has_work_orders);
-            const serviceLabelSql=hasServiceCatalog
-              ? `COALESCE(NULLIF(to_jsonb(s)->>'name',''),NULLIF(to_jsonb(aps)->>'service_name',''),NULLIF(to_jsonb(aps)->>'service_id',''),'')`
-              : `COALESCE(NULLIF(to_jsonb(aps)->>'service_name',''),NULLIF(to_jsonb(aps)->>'service_id',''),'')`;
-            const serviceJoinSql=hasServiceCatalog?`LEFT JOIN services s ON s.id::text=NULLIF(to_jsonb(aps)->>'service_id','')`:``;
-            const serviceNamesSql=hasServices
-              ? `COALESCE((SELECT array_agg(${serviceLabelSql}) FROM appointment_services aps ${serviceJoinSql} WHERE NULLIF(to_jsonb(aps)->>'appointment_id','')=a.id::text),ARRAY[]::text[])`
-              : `ARRAY[]::text[]`;
-            const serviceTotalSql=hasServices
-              ? `COALESCE((SELECT SUM(CASE WHEN COALESCE(NULLIF(to_jsonb(aps)->>'price',''),NULLIF(to_jsonb(aps)->>'unit_price',''),'') ~ '^-?[0-9]+([.][0-9]+)?$' THEN COALESCE(NULLIF(to_jsonb(aps)->>'price',''),NULLIF(to_jsonb(aps)->>'unit_price',''))::numeric ELSE 0 END) FROM appointment_services aps WHERE NULLIF(to_jsonb(aps)->>'appointment_id','')=a.id::text),0)`
-              : `0`;
-            const productTotalSql=hasProducts
-              ? `COALESCE((SELECT SUM((CASE WHEN COALESCE(NULLIF(to_jsonb(ap)->>'qty',''),NULLIF(to_jsonb(ap)->>'quantity',''),'') ~ '^-?[0-9]+([.][0-9]+)?$' THEN COALESCE(NULLIF(to_jsonb(ap)->>'qty',''),NULLIF(to_jsonb(ap)->>'quantity',''))::numeric ELSE 1 END)*(CASE WHEN COALESCE(NULLIF(to_jsonb(ap)->>'price',''),NULLIF(to_jsonb(ap)->>'unit_price',''),'') ~ '^-?[0-9]+([.][0-9]+)?$' THEN COALESCE(NULLIF(to_jsonb(ap)->>'price',''),NULLIF(to_jsonb(ap)->>'unit_price',''))::numeric ELSE 0 END)) FROM appointment_products ap WHERE NULLIF(to_jsonb(ap)->>'appointment_id','')=a.id::text),0)`
-              : `0`;
-            const clientJoinSql=hasClients?`LEFT JOIN clients c ON c.id::text=a.client_id::text`:``;
-            const clientNameSql=hasClients?`COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'')`:`''::text`;
-            const workOrderClosedSql=hasWorkOrders?`OR EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=NULLIF(to_jsonb(a)->>'work_order_id','') AND (lower(COALESCE(to_jsonb(w)->>'status',''))='completed' OR NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL OR NULLIF(to_jsonb(w)->>'archived_at','') IS NOT NULL))`:``;
-            const workOrderProgressSql=hasWorkOrders?`OR EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=NULLIF(to_jsonb(a)->>'work_order_id','') AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress')`:``;
-            const workOrderArrivedSql=hasWorkOrders?`OR EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=NULLIF(to_jsonb(a)->>'work_order_id','') AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived')`:``;
-          '''
-          s = s[:start] + new + s[end:]
+          replacements = {
+            "SELECT id::text id FROM locations WHERE tenant_id=$1::bigint":"SELECT id::text id FROM locations WHERE tenant_id::text=$1::text",
+            "SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id=$2::bigint LIMIT 1":"SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id::text=$2::text LIMIT 1",
+            "(e.tenant_id=$2::bigint OR l.tenant_id=$2::bigint)":"(e.tenant_id::text=$2::text OR l.tenant_id::text=$2::text)",
+            "e.tenant_id=$2::bigint LIMIT 1":"e.tenant_id::text=$2::text LIMIT 1",
+          }
+          for old,new in replacements.items():
+            if old not in s: raise SystemExit(f'tenantAccess pattern missing: {old}')
+            s=s.replace(old,new)
+          p.write_text(s)
 
-          # Replace only the appointment query block so optional clients/workorders are dynamic too.
-          start = s.index('    const apRes = await pool.query', s.index('router.get("/"'))
-          end = s.index('\n\n    return res.json', start)
-          new = r'''    const apRes = await pool.query(
-              `
-              SELECT
-                a.id::text,
-                a.employee_id::text,
-                a.client_id::text AS client_id,
-                ${clientNameSql} AS client_name,
-                a.location_id::text,
-                NULL::text AS location_name,
-                a.title,
-                a.start_time,
-                a.end_time,
-                a.status,
-                CASE
-                  WHEN lower(COALESCE(a.status,'')) IN ('completed','paid') ${workOrderClosedSql} THEN 'work_order_closed'
-                  WHEN lower(COALESCE(a.status,''))='in_progress' ${workOrderProgressSql} THEN 'in_progress'
-                  WHEN lower(COALESCE(a.status,''))='arrived' ${workOrderArrivedSql} THEN 'arrived'
-                  ELSE COALESCE(NULLIF(lower(a.status),''),'waiting')
-                END AS operational_status,
-                a.notes,
-                ${serviceNamesSql} AS service_names,
-                (${serviceTotalSql}+${productTotalSql})::numeric AS total
-              FROM appointments a
-              ${clientJoinSql}
-              WHERE a.start_time >= ($1::date)::timestamp
-                AND a.start_time < (($2::date + INTERVAL '1 day')::timestamp)
-                AND ($3::text IS NULL OR a.location_id::text=$3::text)
-              ORDER BY a.start_time ASC
-              `,
-              [from,to,locationId]
-            );'''
-          p.write_text(s[:start] + new + s[end:])
+          # 5) Two startup contract tests still described the pre-degraded startup
+          # order. The current server intentionally listens first, gates DB traffic
+          # with 503, and initializes dependencies in the background. Align tests.
+          p = Path('tests/startup-resilience.contract.test.js')
+          s = p.read_text()
+          old = '''  assert.match(server, /error:"db_unreachable"/);
+            assert.match(server, /else setTimeout\\(\\(\\)=>initDbDependentThings\\(\\)\\.catch\\(\\(\\)=>\\{\\}\\),15000\\)/);
+            assert.match(server, /await initDbDependentThings\\(\\);await ensureSpecParityDependencies\\(\\);startComplaintMailboxWorker\\(\\);app\\.listen/);'''
+          if old not in s: raise SystemExit('startup resilience assertion block missing')
+          new = '''  assert.match(server, /error:"db_unreachable"/);
+            assert.match(server, /else setTimeout\\(\\(\\)=>initDbDependentThings\\(\\)\\.catch\\(\\(\\)=>\\{\\}\\),15000\\)/);
+            const listenAt=server.indexOf("app.listen(PORT");
+            const initAt=server.indexOf("await initDbDependentThings()");
+            const parityAt=server.indexOf("await ensureSpecParityDependencies()");
+            assert.ok(listenAt>=0 && initAt>listenAt && parityAt>initAt);
+            assert.match(server,/void\\(async\\(\\)=>\\{try\\{await initDbDependentThings\\(\\);await ensureSpecParityDependencies\\(\\);startComplaintMailboxWorker\\(\\)/);'''
+          p.write_text(s.replace(old,new,1))
 
-          # Permanent regression guard for the runtime failure modes seen in production.
+          p = Path('tests/vir-spec-parity.contract.test.js')
+          s = p.read_text()
+          old = '''test('server initializes parity schema before listening and exposes readiness', () => {
+            const src = read('src/server.ts');
+            const ensureAt = src.indexOf('await ensureSpecParityDependencies()');
+            const listenAt = src.indexOf('app.listen(PORT');
+            assert.ok(ensureAt >= 0 && listenAt > ensureAt);
+            assert.ok(src.includes('/api/health/ready'));
+            assert.ok(src.includes('startComplaintMailboxWorker()'));
+          });'''
+          if old not in s: raise SystemExit('vir spec startup contract block missing')
+          new = '''test('server exposes readiness and initializes parity schema after opening the degraded-mode listener', () => {
+            const src = read('src/server.ts');
+            const ensureAt = src.indexOf('await ensureSpecParityDependencies()');
+            const listenAt = src.indexOf('app.listen(PORT');
+            assert.ok(listenAt >= 0 && ensureAt > listenAt);
+            assert.ok(src.includes('/api/health/ready'));
+            assert.ok(src.includes('error:"db_unreachable"'));
+            assert.ok(src.includes('startComplaintMailboxWorker()'));
+          });'''
+          p.write_text(s.replace(old,new,1))
+
+          # 6) Permanent regression guard for the three production failures.
           Path('tests/dashboard-runtime-v2.contract.test.js').write_text(r'''const test=require('node:test');
           const assert=require('node:assert/strict');
           const fs=require('node:fs');
-          test('VIR customizer bootstrap does not parameterize multiple SQL commands',()=>{
+
+          test('VIR customizer uses separate bootstrap queries',()=>{
             const s=fs.readFileSync('src/routes/virCustomizer.ts','utf8');
-            assert.doesNotMatch(s,/CREATE TABLE IF NOT EXISTS vir_customization[\s\S]*INSERT INTO vir_customization[\s\S]*\`,\[JSON\.stringify\(DEFAULTS\)\]/);
-            assert.match(s,/await db\.query\(`INSERT INTO vir_customization/);
+            const block=s.slice(s.indexOf('async function ensure()'),s.indexOf('function merge'));
+            assert.ok((block.match(/await db\.query\(/g)||[]).length>=3);
+            assert.match(block,/await db\.query\(`INSERT INTO vir_customization/);
+            assert.doesNotMatch(block,/CREATE TABLE IF NOT EXISTS vir_customization[\s\S]*;\s*INSERT INTO vir_customization/);
           });
-          test('employee dashboard fast path tolerates legacy optional columns',()=>{
-            const s=fs.readFileSync('src/routes/employees.ts','utf8');
-            assert.match(s,/to_jsonb\(e\)->>'location_id'/);
-            assert.match(s,/async function listEmployeesLegacy\(includeInactive:boolean\)/);
+
+          test('tenant runtime comparisons tolerate text and bigint legacy ids',()=>{
+            const s=fs.readFileSync('src/saas/tenantAccess.ts','utf8');
+            assert.match(s,/locations WHERE tenant_id::text=\$1::text/);
+            assert.match(s,/tenant_id::text=\$2::text/);
+            assert.match(s,/e\.tenant_id::text=\$2::text OR l\.tenant_id::text=\$2::text/);
           });
-          test('timetable optional booking details do not directly reference versioned columns',()=>{
-            const s=fs.readFileSync('src/routes/timetable.ts','utf8');
-            assert.doesNotMatch(s,/aps\.sort_order|aps\.created_at|COALESCE\(aps\.price|COALESCE\(ap\.qty|COALESCE\(ap\.price/);
-            assert.match(s,/to_jsonb\(aps\)->>'unit_price'/);
-            assert.match(s,/to_jsonb\(ap\)->>'quantity'/);
+
+          test('tenant bootstrap isolates optional legacy table failures',()=>{
+            const s=fs.readFileSync('src/saas/ensureTenantIsolation.ts','utf8');
+            assert.match(s,/async function bestEffort/);
+            assert.match(s,/await bestEffort\(`location:\$\{table\}`/);
+            assert.match(s,/await bestEffort\(`parent:\$\{child\.table\}`/);
+          });
+
+          test('schema-tolerant hotfix routes intercept employees and timetable before standard routers',()=>{
+            const hotfix=fs.readFileSync('src/routes/api500Hotfix.ts','utf8');
+            assert.match(hotfix,/router\.get\(\s*"\/employees"/);
+            assert.match(hotfix,/SELECT to_jsonb\(e\) AS data/);
+            assert.match(hotfix,/router\.get\(\s*"\/timetable"/);
+            const server=fs.readFileSync('src/server.ts','utf8');
+            const h=server.indexOf('app.use("/api",api500HotfixRouter)');
+            const e=server.indexOf('app.use("/api/employees"');
+            const t=server.indexOf('app.use("/api/timetable"');
+            assert.ok(h>=0 && e>h && t>h);
           });
           ''')
           PY
       - name: Install dependencies
         run: npm ci --include=dev
-      - name: Regression tests
+      - name: Full regression suite
         run: npm test
       - name: TypeScript build
         run: npx tsc -p tsconfig.server.json
@@ -196,6 +310,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/routes/virCustomizer.ts src/routes/employees.ts src/routes/timetable.ts tests/dashboard-runtime-v2.contract.test.js
-          git commit -m "Fix production dashboard schema compatibility v2"
+          git add src/routes/virCustomizer.ts src/saas/ensureSaasCore.ts src/saas/ensureTenantIsolation.ts src/saas/tenantAccess.ts tests/startup-resilience.contract.test.js tests/vir-spec-parity.contract.test.js tests/dashboard-runtime-v2.contract.test.js
+          git commit -m "Fix production dashboard tenant runtime 500s"
           git push origin HEAD:agent/fix-dashboard-runtime-500s-v2
