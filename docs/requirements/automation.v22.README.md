@@ -1,0 +1,1 @@
+V22 automates `KLEO-FUN-PROMO-001-AC-01` and `KLEO-FUN-PROMO-001-AC-02`. Evidence is provided by `tests/requirements-critical-automation-v22.contract.test.js` and is executed by the critical requirements CI suite.
