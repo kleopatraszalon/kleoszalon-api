@@ -34,8 +34,6 @@ jobs:
     needs: automated-quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Configure this GitHub Environment with required reviewers. GitHub then
-    # blocks this job until a human explicitly approves the production release.
     environment: production-manual-approval
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
@@ -45,7 +43,7 @@ jobs:
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         run: curl -fsS --retry 3 --max-time 30 -X POST "$RENDER_DEPLOY_HOOK_URL"
 
-      - name: Wait for deployed API, readiness and WallBoard feed
+      - name: Wait for the actual new Render release
         if: env.RENDER_DEPLOY_HOOK_URL != ''
         shell: bash
         run: |
@@ -55,30 +53,40 @@ jobs:
             health="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health" 2>/dev/null || true)"
             ready="$(curl -fsS --max-time 20 "$API_BASE_URL/api/health/ready" 2>/dev/null || true)"
             wallboard="$(curl -fsS --max-time 20 "$API_BASE_URL/api/signage/wallboard/daily-action.json" 2>/dev/null || true)"
+            rm -f /tmp/daily-headers.txt /tmp/daily-body.txt
+            daily_code="$(curl -sS --max-time 20 -D /tmp/daily-headers.txt -o /tmp/daily-body.txt -w '%{http_code}' "$API_BASE_URL/api/public/marketing/daily-actions" || true)"
+            daily_marker="$(tr -d '\r' < /tmp/daily-headers.txt 2>/dev/null | awk -F': ' 'tolower($1)=="x-kleo-hotfix"{print $2}' | tail -1)"
 
-            if HEALTH="$health" READY="$ready" WALLBOARD="$wallboard" node - <<'NODE'
+            if HEALTH="$health" READY="$ready" WALLBOARD="$wallboard" DAILY_CODE="$daily_code" DAILY_MARKER="$daily_marker" node - <<'NODE'
           const health = JSON.parse(process.env.HEALTH || '{}');
           const ready = JSON.parse(process.env.READY || '{}');
           const wallboard = JSON.parse(process.env.WALLBOARD || '{}');
+          const dailyCode = process.env.DAILY_CODE || '';
+          const dailyMarker = process.env.DAILY_MARKER || '';
           const ok = health.ok === true && health.db?.ok === true
             && ready.ok === true
             && wallboard.version === '1.0'
-            && Object.prototype.hasOwnProperty.call(wallboard, 'action');
+            && Object.prototype.hasOwnProperty.call(wallboard, 'action')
+            && dailyCode === '200'
+            && /^api500-daily-actions-(?:v1|empty-v1)$/.test(dailyMarker);
           process.exit(ok ? 0 : 1);
           NODE
             then
               live=1
               printf '%s\n' "$ready" > /tmp/ready.json
               printf '%s\n' "$wallboard" > /tmp/wallboard.json
+              echo "Render release marker PASS: $daily_marker"
               break
             fi
 
-            echo "Waiting for new Render release markers ($attempt/60)..."
+            echo "Waiting for actual new Render release ($attempt/60): daily=$daily_code marker=${daily_marker:-missing}"
             sleep 10
           done
 
           if [ "$live" -ne 1 ]; then
-            echo "New Render API release did not expose health/readiness/WallBoard markers."
+            echo "New Render API release did not expose the expected hotfix marker."
+            echo "Last daily-actions status/body:"
+            cat /tmp/daily-body.txt 2>/dev/null || true
             exit 1
           fi
 
