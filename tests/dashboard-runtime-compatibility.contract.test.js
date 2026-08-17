@@ -13,6 +13,7 @@ test('dashboard employee list keeps legacy identifier joins and location scope t
   assert.match(employees,/l\.id::text=e\.location_id::text/);
   assert.match(employees,/p\.id::text=e\.position_id::text/);
   assert.match(employees,/e\.location_id::text=\$\$\{values\.length\}::text/);
+  assert.doesNotMatch(employees,/e\.location_id::text=\$\{values\.length\}::text/);
   assert.match(employees,/listEmployeesLegacyScoped\(includeInactive,locationId\)/);
   assert.match(employees,/listEmployeesLegacy\(includeInactive\)/);
 });
