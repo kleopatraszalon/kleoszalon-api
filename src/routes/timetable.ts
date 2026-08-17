@@ -53,14 +53,17 @@ function legalWarnings(shifts: any[], profiles: Map<string, any>, holidays: Set<
 type ColSet = Set<string>;
 let employeesCols: ColSet | null = null;
 
+async function loadTableCols(tableName: string): Promise<ColSet> {
+  const r = await pool.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
+    [tableName]
+  );
+  return new Set(r.rows.map((x: any) => String(x.column_name)));
+}
+
 async function loadEmployeesCols(): Promise<ColSet> {
   if (employeesCols) return employeesCols;
-  const r = await pool.query(
-    `SELECT column_name
-     FROM information_schema.columns
-     WHERE table_schema='public' AND table_name='employees'`
-  );
-  employeesCols = new Set(r.rows.map((x: any) => String(x.column_name)));
+  employeesCols = await loadTableCols("employees");
   return employeesCols;
 }
 
@@ -69,7 +72,7 @@ function pick(cols: ColSet, names: string[]): string | null {
   return null;
 }
 
-function buildEmployeesSelect(cols: ColSet) {
+function buildEmployeesSelect(cols: ColSet, locationId: string | null = null) {
   const fullNameCol = pick(cols, ["full_name", "fullname", "name", "display_name"]);
   const shortNameCol = pick(cols, ["short_name", "shortname", "nick", "nickname", "initials"]);
   const firstNameCol = pick(cols, ["first_name", "firstname", "given_name"]);
@@ -78,35 +81,28 @@ function buildEmployeesSelect(cols: ColSet) {
   const roleCol = pick(cols, ["role", "position", "job_title"]);
   const locationCol = pick(cols, ["location_id", "salon_id", "branch_id"]);
 
-  const fullNameExpr =
-    fullNameCol
-      ? `e.${fullNameCol}::text`
-      : (firstNameCol || lastNameCol)
-        ? `trim(concat_ws(' ', ${firstNameCol ? `e.${firstNameCol}::text` : "''"}, ${lastNameCol ? `e.${lastNameCol}::text` : "''"}))`
-        : `'Munkatárs'`;
-
-  const shortNameExpr =
-    shortNameCol
-      ? `e.${shortNameCol}::text`
-      : (firstNameCol || lastNameCol)
-        ? `trim(concat_ws(' ', ${firstNameCol ? `e.${firstNameCol}::text` : "''"}, ${lastNameCol ? `left(e.${lastNameCol}::text, 1) || '.'` : "''"}))`
-        : `NULL::text`;
-
+  const fullNameExpr = fullNameCol
+    ? `e.${fullNameCol}::text`
+    : (firstNameCol || lastNameCol)
+      ? `trim(concat_ws(' ', ${firstNameCol ? `e.${firstNameCol}::text` : "''"}, ${lastNameCol ? `e.${lastNameCol}::text` : "''"}))`
+      : `'Munkatárs'`;
+  const shortNameExpr = shortNameCol
+    ? `e.${shortNameCol}::text`
+    : (firstNameCol || lastNameCol)
+      ? `trim(concat_ws(' ', ${firstNameCol ? `e.${firstNameCol}::text` : "''"}, ${lastNameCol ? `left(e.${lastNameCol}::text, 1) || '.'` : "''"}))`
+      : `NULL::text`;
   const photoExpr = photoCol ? `e.${photoCol}::text` : `NULL::text`;
   const roleExpr = roleCol ? `e.${roleCol}::text` : `NULL::text`;
-  const locExpr = locationCol ? `e.${locationCol}::uuid` : `NULL::uuid`;
+  const locExpr = locationCol ? `e.${locationCol}::text` : `NULL::text`;
+  const where = locationCol && locationId ? `WHERE e.${locationCol}::text = $1` : "";
 
-  return `
-    SELECT
-      e.id::text AS id,
-      ${fullNameExpr} AS full_name,
-      ${shortNameExpr} AS short_name,
-      ${photoExpr} AS photo_url,
-      ${roleExpr} AS role,
-      ${locExpr} AS location_id
-    FROM employees e
-    ORDER BY COALESCE(${shortNameExpr}, ${fullNameExpr}) ASC
-  `;
+  return {
+    sql: `SELECT e.id::text AS id, ${fullNameExpr} AS full_name, ${shortNameExpr} AS short_name,
+                 ${photoExpr} AS photo_url, ${roleExpr} AS role, ${locExpr} AS location_id
+          FROM employees e ${where}
+          ORDER BY COALESCE(${shortNameExpr}, ${fullNameExpr}) ASC`,
+    params: locationCol && locationId ? [locationId] : [] as any[],
+  };
 }
 
 router.get("/schedule", asyncRoute(async (req, res) => {
@@ -195,118 +191,98 @@ router.post("/publish", asyncRoute(async (req,res)=>{
 
 /**
  * GET /api/timetable?from=YYYY-MM-DD&to=YYYY-MM-DD
- * Robust: employees tábla eltérő sémáját automatikusan kezeli (short_name hiány -> nem dől el).
+ * Schema-tolerant runtime query. Optional tables/legacy columns are only referenced when they exist.
  */
 router.get("/", async (req: AuthRequest, res) => {
-  const { from, to } = req.query as any;
-
-  if (!from || !to) {
-    return res.status(400).json({ error: "from és to query param kötelező (YYYY-MM-DD)" });
+  const from=String(req.query.from||"");
+  const to=String(req.query.to||"");
+  const locationId=String(req.query.location_id||"").trim()||null;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(from)||!/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return res.status(400).json({ error: "Érvényes from és to query param kötelező (YYYY-MM-DD)" });
   }
 
   try {
-    const cols = await loadEmployeesCols();
-    const employeesSql = buildEmployeesSelect(cols);
-    const employeesRes = await pool.query(employeesSql);
+    const [employeeCols, appointmentCols, clientCols, serviceLinkCols, productLinkCols, workOrderCols, locationCols] = await Promise.all([
+      loadEmployeesCols(), loadTableCols("appointments"), loadTableCols("clients"), loadTableCols("appointment_services"),
+      loadTableCols("appointment_products"), loadTableCols("work_orders"), loadTableCols("locations")
+    ]);
 
-    const apRes = await pool.query(
-      `
-      WITH has_aps AS (
-        SELECT to_regclass('public.appointment_services') IS NOT NULL AS ok
-      ),
-      has_app_prod AS (
-        SELECT to_regclass('public.appointment_products') IS NOT NULL AS ok
-      )
-      SELECT
-        a.id::text,
-        a.employee_id::text,
-        a.client_id::text AS client_id,
-        COALESCE(c.full_name, c.name, '') AS client_name,
-        a.location_id::text,
-        NULL::text AS location_name,
-        a.title,
-        a.start_time,
-        a.end_time,
-        a.status,
-        CASE
-          WHEN lower(COALESCE(a.status,'')) IN ('completed','paid')
-            OR EXISTS(
-              SELECT 1 FROM work_orders w
-              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
-                AND (
-                  lower(COALESCE(to_jsonb(w)->>'status',''))='completed'
-                  OR NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL
-                  OR NULLIF(to_jsonb(w)->>'archived_at','') IS NOT NULL
-                )
-            ) THEN 'work_order_closed'
-          WHEN lower(COALESCE(a.status,''))='in_progress'
-            OR EXISTS(
-              SELECT 1 FROM work_orders w
-              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
-                AND lower(COALESCE(to_jsonb(w)->>'status',''))='in_progress'
-            ) THEN 'in_progress'
-          WHEN lower(COALESCE(a.status,''))='arrived'
-            OR EXISTS(
-              SELECT 1 FROM work_orders w
-              WHERE w.id::text = NULLIF(to_jsonb(a)->>'work_order_id','')
-                AND lower(COALESCE(to_jsonb(w)->>'status',''))='arrived'
-            ) THEN 'arrived'
-          ELSE COALESCE(NULLIF(lower(a.status),''),'waiting')
-        END AS operational_status,
-        a.notes,
-        (
-          CASE
-            WHEN (SELECT ok FROM has_aps) THEN
-              COALESCE((
-                SELECT array_agg(COALESCE(s.name, '') ORDER BY aps.sort_order, aps.created_at)
-                FROM appointment_services aps
-                LEFT JOIN services s ON s.id = aps.service_id
-                WHERE aps.appointment_id = a.id
-              ), ARRAY[]::text[])
-            ELSE ARRAY[]::text[]
-          END
-        ) AS service_names,
-        (
-          CASE
-            WHEN (SELECT ok FROM has_aps) THEN
-              COALESCE((
-                SELECT COALESCE(SUM(COALESCE(aps.price, 0)), 0)
-                FROM appointment_services aps
-                WHERE aps.appointment_id = a.id
-              ), 0)
-            ELSE 0
-          END
-          +
-          CASE
-            WHEN (SELECT ok FROM has_app_prod) THEN
-              COALESCE((
-                SELECT COALESCE(SUM(COALESCE(ap.qty,1) * COALESCE(ap.price,0)), 0)
-                FROM appointment_products ap
-                WHERE ap.appointment_id = a.id
-              ), 0)
-            ELSE 0
-          END
-        )::numeric AS total
-      FROM appointments a
-      LEFT JOIN clients c ON c.id = a.client_id
-      WHERE a.start_time >= ($1::date)::timestamp
-        AND a.start_time <  (($2::date + INTERVAL '1 day')::timestamp)
-      ORDER BY a.start_time ASC
-      `,
-      [from, to]
-    );
+    const employeeQuery=buildEmployeesSelect(employeeCols,locationId);
+    const employeesRes=await pool.query(employeeQuery.sql,employeeQuery.params);
 
-    return res.json({
-      employees: employeesRes.rows,
-      appointments: apRes.rows,
-    });
+    if(!appointmentCols.size) return res.json({employees:employeesRes.rows,appointments:[]});
+    const required=["id","employee_id","start_time","end_time"];
+    const missing=required.filter(c=>!appointmentCols.has(c));
+    if(missing.length) throw new Error(`appointments séma hiányos: ${missing.join(", ")}`);
+
+    const aClient=appointmentCols.has("client_id");
+    const aLocation=appointmentCols.has("location_id");
+    const statusExpr=appointmentCols.has("status") ? `COALESCE(NULLIF(lower(a.status::text),''),'waiting')` : `'waiting'`;
+    const titleExpr=appointmentCols.has("title") ? `a.title::text` : `NULL::text`;
+    const notesExpr=appointmentCols.has("notes") ? `a.notes::text` : `NULL::text`;
+    const clientIdExpr=aClient ? `a.client_id::text` : `NULL::text`;
+    const locationIdExpr=aLocation ? `a.location_id::text` : `NULL::text`;
+
+    let clientJoin="";
+    let clientNameExpr=`''::text`;
+    if(aClient && clientCols.has("id")) {
+      clientJoin=`LEFT JOIN clients c ON c.id::text=a.client_id::text`;
+      const nameParts=["full_name","name","display_name"].filter(c=>clientCols.has(c)).map(c=>`NULLIF(c.${c}::text,'')`);
+      if(nameParts.length) clientNameExpr=`COALESCE(${nameParts.join(",")},'')`;
+    }
+
+    let locationJoin="";
+    let locationNameExpr=`NULL::text`;
+    if(aLocation && locationCols.has("id") && locationCols.has("name")) {
+      locationJoin=`LEFT JOIN locations loc ON loc.id::text=a.location_id::text`;
+      locationNameExpr=`loc.name::text`;
+    }
+
+    const hasWorkOrders=workOrderCols.has("id") && appointmentCols.has("work_order_id");
+    const woStatus=(hasWorkOrders && workOrderCols.has("status")) ? `lower(COALESCE(w.status::text,''))` : `''`;
+    const woClosedBits:string[]=[];
+    if(hasWorkOrders && workOrderCols.has("locked_at")) woClosedBits.push(`w.locked_at IS NOT NULL`);
+    if(hasWorkOrders && workOrderCols.has("archived_at")) woClosedBits.push(`w.archived_at IS NOT NULL`);
+    const woClosed = hasWorkOrders ? `EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=a.work_order_id::text AND (${woStatus}='completed'${woClosedBits.length?` OR ${woClosedBits.join(" OR ")}`:""}))` : `false`;
+    const woInProgress = hasWorkOrders && workOrderCols.has("status") ? `EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=a.work_order_id::text AND ${woStatus}='in_progress')` : `false`;
+    const woArrived = hasWorkOrders && workOrderCols.has("status") ? `EXISTS(SELECT 1 FROM work_orders w WHERE w.id::text=a.work_order_id::text AND ${woStatus}='arrived')` : `false`;
+    const operationalExpr=`CASE WHEN ${statusExpr} IN ('completed','paid') OR ${woClosed} THEN 'work_order_closed' WHEN ${statusExpr}='in_progress' OR ${woInProgress} THEN 'in_progress' WHEN ${statusExpr}='arrived' OR ${woArrived} THEN 'arrived' ELSE ${statusExpr} END`;
+
+    let serviceNamesExpr=`ARRAY[]::text[]`;
+    let serviceTotalExpr=`0::numeric`;
+    if(serviceLinkCols.has("appointment_id")) {
+      if(serviceLinkCols.has("service_id")) {
+        const servicesCols=await loadTableCols("services");
+        if(servicesCols.has("id") && servicesCols.has("name")) {
+          const orderParts=["sort_order","created_at"].filter(c=>serviceLinkCols.has(c)).map(c=>`aps.${c}`);
+          serviceNamesExpr=`COALESCE((SELECT array_agg(COALESCE(s.name::text,'')${orderParts.length?` ORDER BY ${orderParts.join(",")}`:""}) FROM appointment_services aps LEFT JOIN services s ON s.id::text=aps.service_id::text WHERE aps.appointment_id::text=a.id::text),ARRAY[]::text[])`;
+        }
+      }
+      if(serviceLinkCols.has("price")) serviceTotalExpr=`COALESCE((SELECT SUM(COALESCE(aps.price,0)) FROM appointment_services aps WHERE aps.appointment_id::text=a.id::text),0)::numeric`;
+    }
+
+    let productTotalExpr=`0::numeric`;
+    if(productLinkCols.has("appointment_id") && productLinkCols.has("price")) {
+      const qty=productLinkCols.has("qty")?`COALESCE(ap.qty,1)`:productLinkCols.has("quantity")?`COALESCE(ap.quantity,1)`:`1`;
+      productTotalExpr=`COALESCE((SELECT SUM(${qty}*COALESCE(ap.price,0)) FROM appointment_products ap WHERE ap.appointment_id::text=a.id::text),0)::numeric`;
+    }
+
+    const params:any[]=[from,to];
+    let locationFilter="";
+    if(locationId && aLocation){params.push(locationId);locationFilter=`AND a.location_id::text=$3`;}
+    const apSql=`SELECT a.id::text,a.employee_id::text,${clientIdExpr} AS client_id,${clientNameExpr} AS client_name,
+      ${locationIdExpr} AS location_id,${locationNameExpr} AS location_name,${titleExpr} AS title,a.start_time,a.end_time,
+      ${appointmentCols.has("status")?`a.status::text`:`NULL::text`} AS status,${operationalExpr} AS operational_status,${notesExpr} AS notes,
+      ${serviceNamesExpr} AS service_names,(${serviceTotalExpr}+${productTotalExpr})::numeric AS total
+      FROM appointments a ${clientJoin} ${locationJoin}
+      WHERE a.start_time>=($1::date)::timestamp AND a.start_time<(($2::date+INTERVAL '1 day')::timestamp) ${locationFilter}
+      ORDER BY a.start_time ASC`;
+    const apRes=await pool.query(apSql,params);
+
+    return res.json({employees:employeesRes.rows,appointments:apRes.rows});
   } catch (err: any) {
     console.error("[/api/timetable] error:", err);
-    return res.status(500).json({
-      error: "Szerver hiba a timetable lekérésnél",
-      detail: err?.message || String(err),
-      code: err?.code || null,
-    });
+    return res.status(500).json({error:"Szerver hiba a timetable lekérésnél",detail:err?.message||String(err),code:err?.code||null});
   }
 });
 
