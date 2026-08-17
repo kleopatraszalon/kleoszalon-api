@@ -6,14 +6,17 @@ import receiptComplianceRouter from "./receiptCompliance";
 import deviceControlRouter from "./deviceControl";
 import deviceBridgeResultRouter from "./deviceBridgeResult";
 import fitnessRouter, { fitnessOticBridgeRouter } from "./fitness";
+import fitnessLockerRouter, { fitnessLockerBridgeRouter } from "./fitnessLockers";
 
 const router = Router();
-// Az OTIC helyi bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
+// A helyi OTIC és locker bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
 router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
+router.use("/fitness/locker-bridge", fitnessLockerBridgeRouter);
 router.use(requireAuth);
 router.use("/receipt-compliance", receiptComplianceRouter);
 router.use("/device-control", deviceBridgeResultRouter);
 router.use("/device-control", deviceControlRouter);
+router.use("/fitness/lockers", fitnessLockerRouter);
 router.use("/fitness", fitnessRouter);
 
 type VirQueryParams = {
