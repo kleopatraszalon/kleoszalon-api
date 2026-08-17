@@ -11,14 +11,14 @@ const STATUSES=new Set(['APPROVED','DECLINED','CANCELLED','ERROR']);
 const money=(v:unknown)=>{const n=Number(v??0);return Number.isFinite(n)?Math.round(n*100)/100:0};
 const roles=(req:AuthRequest)=>parseRoleKeys(req.user?.role);
 const allowed=(req:AuthRequest)=>roles(req).some(r=>OP_ROLES.has(r));
+function canAccess(req:AuthRequest,locationId:unknown){const rs=roles(req);if(rs.some(r=>GLOBAL_ROLES.has(r)))return true;const own=String(req.user?.location_id??'').trim();return Boolean(own&&own===String(locationId??''))}
 
 router.post('/payments/:id/bridge-result',async(req:AuthRequest,res:Response,next)=>{
  try{
   if(!allowed(req))return res.status(403).json({message:'Ehhez a művelethez recepciós vagy vezetői jogosultság szükséges.'});
   const q=await db.query(`SELECT x.*,d.secret_env_key,d.adapter_type FROM vir_payment_terminal_transactions x JOIN vir_payment_terminal_devices d ON d.id=x.terminal_id WHERE x.id=$1::uuid`,[req.params.id]);
   const tx=q.rows[0];if(!tx)return res.status(404).json({message:'A tranzakció nem található.'});
-  const roleKeys=roles(req),own=String(req.user?.location_id??'').trim();
-  if(!roleKeys.some(r=>GLOBAL_ROLES.has(r))&&(!own||own!==String(tx.location_id)))return res.status(403).json({message:'Másik telephely tranzakciója nem kezelhető.'});
+  if(!canAccess(req,tx.location_id))return res.status(403).json({message:'Másik telephely tranzakciója nem kezelhető.'});
   if(tx.adapter_type==='SIMULATOR')return res.status(409).json({message:'Teszt terminálhoz a simulate végpont használható.'});
   if(!['CREATED','SENT'].includes(String(tx.status)))return res.json(tx);
   const result=req.body?.result||{};const signature=String(req.body?.signature||'').trim().toLowerCase();
@@ -31,6 +31,20 @@ router.post('/payments/:id/bridge-result',async(req:AuthRequest,res:Response,nex
   if(!STATUSES.has(status))return res.status(400).json({message:'Érvénytelen terminál státusz.'});
   if(money(result.amount)!==money(tx.amount)||String(result.currency||'').toUpperCase()!==String(tx.currency).toUpperCase())return res.status(409).json({message:'A terminál eredményének összege vagy pénzneme eltér a VIR tranzakciótól.'});
   const row=(await db.query(`UPDATE vir_payment_terminal_transactions SET status=$2,sent_at=COALESCE(sent_at,now()),completed_at=now(),external_transaction_id=$3,approval_code=$4,receipt_reference=$5,error_message=$6 WHERE id=$1::uuid RETURNING *`,[req.params.id,status,String(result.external_transaction_id||'')||null,String(result.approval_code||'')||null,String(result.receipt_reference||'')||null,String(result.error_message||'')||null])).rows[0];
+  return res.json(row);
+ }catch(e){next(e)}
+});
+
+router.post('/payments/:id/consume',async(req:AuthRequest,res:Response,next)=>{
+ try{
+  if(!allowed(req))return res.status(403).json({message:'Ehhez a művelethez recepciós vagy vezetői jogosultság szükséges.'});
+  const tx=(await db.query(`SELECT * FROM vir_payment_terminal_transactions WHERE id=$1::uuid`,[req.params.id])).rows[0];
+  if(!tx)return res.status(404).json({message:'A termináltranzakció nem található.'});
+  if(!canAccess(req,tx.location_id))return res.status(403).json({message:'Másik telephely tranzakciója nem kezelhető.'});
+  if(String(tx.status)!=='APPROVED')return res.status(409).json({message:'Csak jóváhagyott termináltranzakció kapcsolható végleges pénzügyi tételhez.'});
+  const finalSourceId=String(req.body?.final_source_id||'').trim();if(!finalSourceId)return res.status(400).json({message:'A végleges pénzügyi forrás azonosítója kötelező.'});
+  if(tx.consumed_at)return res.json(tx);
+  const row=(await db.query(`UPDATE vir_payment_terminal_transactions SET consumed_at=now(),source_snapshot=COALESCE(source_snapshot,'{}'::jsonb)||jsonb_build_object('final_source_id',$2::text,'final_source_type',$3::text) WHERE id=$1::uuid AND consumed_at IS NULL RETURNING *`,[req.params.id,finalSourceId,String(req.body?.final_source_type||tx.source_type)])).rows[0]||tx;
   return res.json(row);
  }catch(e){next(e)}
 });
