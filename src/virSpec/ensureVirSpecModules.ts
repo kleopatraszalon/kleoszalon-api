@@ -3,6 +3,7 @@ import path from "path";
 import pool from "../db";
 import { ensureHrV2 } from "../hr/ensureHrV2";
 import { ensureMasterDataMenuHealth } from "../menu/ensureMasterDataMenuHealth";
+import { startProductPricingWorker } from "../products/productPricingRuntime";
 
 let migrationPromise: Promise<void> | null = null;
 
@@ -19,6 +20,7 @@ const migrationFiles = [
   "20260808_CHECKLIST_MENU_V1.sql",
   "20260808_EMPLOYEE_SELF_MENU_V1.sql",
   "20260810_BOOKING_VOICE_STATS_V1.sql",
+  "20260817_PRODUCT_PRICE_HISTORY_V1.sql",
 ];
 
 async function runSqlFile(fileName: string) {
@@ -75,6 +77,8 @@ export function ensureVirSpecModules() {
       if (failures.length) {
         throw new Error(`A VIR bootstrap ${failures.length} reszlepese hibazott: ${failures.join(" | ")}`);
       }
+
+      startProductPricingWorker();
     })().catch((error) => {
       migrationPromise = null;
       throw error;
