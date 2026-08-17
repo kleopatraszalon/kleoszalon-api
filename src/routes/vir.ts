@@ -4,10 +4,12 @@ import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
 import receiptComplianceRouter from "./receiptCompliance";
 import deviceControlRouter from "./deviceControl";
+import deviceBridgeResultRouter from "./deviceBridgeResult";
 
 const router = Router();
 router.use(requireAuth);
 router.use("/receipt-compliance", receiptComplianceRouter);
+router.use("/device-control", deviceBridgeResultRouter);
 router.use("/device-control", deviceControlRouter);
 
 type VirQueryParams = {
