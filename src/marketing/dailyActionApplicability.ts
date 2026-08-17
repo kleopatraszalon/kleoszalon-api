@@ -12,12 +12,12 @@ export function ensureDailyActionApplicabilitySchema(q:Queryable=db):Promise<voi
  return schemaReady;
 }
 async function ensureSchema(q:Queryable){
- await q.query(`
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS location_id uuid REFERENCES locations(id);
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS service_id uuid;
-  ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_percent numeric(5,2);
-  CREATE INDEX IF NOT EXISTS daily_action_campaigns_applicability_idx ON daily_action_campaigns(status,location_id,valid_from,valid_until);
- `);
+ // Runtime GET-ek alatt nem erőltetünk UUID/FK konverziót. A régi production DB-kben
+ // location_id/service_id text típusú is lehet; az olvasási logika mindenhol ::text-et használ.
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS location_id text`);
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS service_id text`);
+ await q.query(`ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS discount_percent numeric(5,2)`);
+ await q.query(`CREATE INDEX IF NOT EXISTS daily_action_campaigns_applicability_idx ON daily_action_campaigns(status,location_id,valid_from,valid_until)`);
 }
 const text=(v:any)=>String(v??'').trim();
 const number=(v:any,fallback=0)=>{const n=Number(v);return Number.isFinite(n)?n:fallback};
