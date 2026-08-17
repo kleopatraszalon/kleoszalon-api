@@ -62,7 +62,7 @@ const employeeSelect = `SELECT e.id,e.location_id,l.name AS location_name,e.full
   e.monthly_wage,e.hourly_wage,e.commission_percent,e.photo_url,e.active,e.login_name,e.role,e.created_at,e.updated_at
   FROM employees e LEFT JOIN locations l ON l.id::text=e.location_id::text LEFT JOIN hr_positions p ON p.id::text=e.position_id::text`;
 
-async function listEmployeesLegacy(includeInactive:boolean,locationId:string|null=null){const filters:string[]=[];const values:any[]=[];if(!includeInactive)filters.push("COALESCE(e.active,true)=true");if(locationId){values.push(locationId);filters.push(`e.location_id::text=${values.length}::text`)}const where=filters.length?`WHERE ${filters.join(" AND ")}`:"";return pool.query(`${employeeSelect} ${where} ORDER BY e.active DESC,e.full_name NULLS LAST,e.last_name,e.first_name`,values)}
+async function listEmployeesLegacy(includeInactive:boolean,locationId:string|null=null){const filters:string[]=[];const values:any[]=[];if(!includeInactive)filters.push("COALESCE(e.active,true)=true");if(locationId){values.push(locationId);filters.push(`e.location_id::text=$${values.length}::text`)}const where=filters.length?`WHERE ${filters.join(" AND ")}`:"";return pool.query(`${employeeSelect} ${where} ORDER BY e.active DESC,e.full_name NULLS LAST,e.last_name,e.first_name`,values)}
 function employeeFilterPlan(req:Request){
   const values:any[]=[];const filters:string[]=[];const add=(v:any,cast:string)=>{values.push(v);return `$${values.length}::${cast}`};
   const includeInactive=String(req.query.include_inactive||"")==="1",q=String(req.query.q||"").trim().slice(0,120);
