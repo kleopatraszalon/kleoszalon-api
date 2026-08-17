@@ -7,6 +7,7 @@ const router = Router();
 const BUDAPEST_TZ = "Europe/Budapest";
 const HISTORY_DAYS = 28;
 const RECENT_CAMPAIGN_DAYS = 14;
+export const DAILY_ACTION_MIN_FREE_CAPACITY_PCT = 50;
 
 type Candidate = {
   serviceId: string;
@@ -19,6 +20,7 @@ type Candidate = {
   avgDailyBookedMinutes28d: number;
   demandGapPct: number;
   locationOccupancyPct: number;
+  freeCapacityPct: number;
   recentCampaigns: number;
   score: number;
   suggestedDiscountPct: number;
@@ -128,6 +130,7 @@ async function aiCopy(req: AuthRequest, candidate: Candidate) {
       bookings_today: candidate.bookingsToday,
       avg_daily_bookings_28d: candidate.avgDailyBookings28d,
       location_occupancy_pct: candidate.locationOccupancyPct,
+      free_capacity_pct: candidate.freeCapacityPct,
       score: candidate.score,
       deterministic_reason: candidate.reason,
     };
@@ -182,6 +185,28 @@ async function buildRecommendation(req: AuthRequest, date: string, locationId: s
   const scheduledMinutes = n(shiftStats.rows[0]?.scheduled_minutes);
   const bookedMinutes = n(bookingStats.rows[0]?.booked_minutes);
   const locationOccupancyPct = scheduledMinutes > 0 ? round(clamp(bookedMinutes / scheduledMinutes * 100, 0, 100), 1) : 0;
+  const freeCapacityPct = scheduledMinutes > 0 ? round(clamp(100 - locationOccupancyPct, 0, 100), 1) : 0;
+  const capacityEligible = scheduledMinutes > 0 && freeCapacityPct >= DAILY_ACTION_MIN_FREE_CAPACITY_PCT;
+
+  if (!capacityEligible) {
+    return {
+      date,
+      locationId,
+      locationOccupancyPct,
+      freeCapacityPct,
+      minFreeCapacityPct: DAILY_ACTION_MIN_FREE_CAPACITY_PCT,
+      scheduledMinutes: round(scheduledMinutes, 1),
+      bookedMinutes: round(bookedMinutes, 1),
+      capacityEligible: false,
+      capacityReason: scheduledMinutes <= 0
+        ? "Nincs igazolt munkaidő-kapacitás, ezért a PDF szabály szerint nem generálható napi akció."
+        : `A szabad kapacitás ${freeCapacityPct}%, ami nem éri el az előírt ${DAILY_ACTION_MIN_FREE_CAPACITY_PCT}%-ot.`,
+      aiMode: "not-run",
+      recommended: null,
+      candidates: [],
+    };
+  }
+
   const today = new Map(todayStats.rows.map((r: any) => [String(r.service_id), r]));
   const history = new Map(historyStats.rows.map((r: any) => [String(r.service_id), r]));
   const recent = new Map(recentStats.rows.map((r: any) => [String(r.service_id), n(r.cnt)]));
@@ -197,15 +222,14 @@ async function buildRecommendation(req: AuthRequest, date: string, locationId: s
     const bookingShortfall = avgDailyBookings28d > 0 ? clamp((1 - bookingsToday / avgDailyBookings28d) * 100, 0, 100) : (bookingsToday === 0 ? 45 : 0);
     const minuteShortfall = avgDailyBookedMinutes28d > 0 ? clamp((1 - bookedMinutesToday / avgDailyBookedMinutes28d) * 100, 0, 100) : (bookedMinutesToday === 0 ? 45 : 0);
     const demandGapPct = round(bookingShortfall * 0.65 + minuteShortfall * 0.35, 1);
-    const vacancyPct = clamp(100 - locationOccupancyPct, 0, 100);
     const recentCampaigns = recent.get(id) || 0;
     const recentPenalty = Math.min(36, recentCampaigns * 12);
     const zeroBookingBoost = bookingsToday === 0 ? 8 : 0;
-    const score = round(clamp(demandGapPct * 0.65 + vacancyPct * 0.25 + zeroBookingBoost - recentPenalty, 0, 100), 1);
-    const suggestedDiscountPct = n(service.price) <= 0 ? 0 : score >= 80 && locationOccupancyPct < 55 ? 20 : score >= 62 ? 15 : 10;
+    const score = round(clamp(demandGapPct * 0.65 + freeCapacityPct * 0.25 + zeroBookingBoost - recentPenalty, 0, 100), 1);
+    const suggestedDiscountPct = n(service.price) <= 0 ? 0 : score >= 80 ? 20 : score >= 62 ? 15 : 10;
     const reasonParts = [
       avgDailyBookings28d > 0 ? `ma ${bookingsToday} foglalás, a 28 napos napi átlag ${avgDailyBookings28d}` : `ma ${bookingsToday} foglalás; még nincs stabil 28 napos bázis`,
-      scheduledMinutes > 0 ? `a telephely foglaltsága ${locationOccupancyPct}%` : "munkaidő-kapacitás nem áll rendelkezésre, ezért a foglalási trend kap nagyobb súlyt",
+      `a telephely foglaltsága ${locationOccupancyPct}%, szabad kapacitása ${freeCapacityPct}%`,
       recentCampaigns > 0 ? `${recentCampaigns} alkalommal szerepelt az elmúlt ${RECENT_CAMPAIGN_DAYS} napban` : `nem szerepelt az elmúlt ${RECENT_CAMPAIGN_DAYS} nap napi akcióiban`,
     ];
     const reason = reasonParts.join("; ") + ".";
@@ -221,6 +245,7 @@ async function buildRecommendation(req: AuthRequest, date: string, locationId: s
       avgDailyBookedMinutes28d,
       demandGapPct,
       locationOccupancyPct,
+      freeCapacityPct,
       recentCampaigns,
       score,
       suggestedDiscountPct,
@@ -231,15 +256,18 @@ async function buildRecommendation(req: AuthRequest, date: string, locationId: s
   }).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, "hu"));
 
   const top = candidates[0] || null;
-  if (!top) return { date, locationId, locationOccupancyPct, scheduledMinutes: round(scheduledMinutes, 1), bookedMinutes: round(bookedMinutes, 1), aiMode: "fallback", recommended: null, candidates: [] };
+  if (!top) return { date, locationId, locationOccupancyPct, freeCapacityPct, minFreeCapacityPct: DAILY_ACTION_MIN_FREE_CAPACITY_PCT, scheduledMinutes: round(scheduledMinutes, 1), bookedMinutes: round(bookedMinutes, 1), capacityEligible: true, aiMode: "fallback", recommended: null, candidates: [] };
   const copy = await aiCopy(req, top);
   const recommended = { ...top, headline: copy.headline, description: copy.description, reason: copy.rationale };
   return {
     date,
     locationId,
     locationOccupancyPct,
+    freeCapacityPct,
+    minFreeCapacityPct: DAILY_ACTION_MIN_FREE_CAPACITY_PCT,
     scheduledMinutes: round(scheduledMinutes, 1),
     bookedMinutes: round(bookedMinutes, 1),
+    capacityEligible: true,
     aiMode: copy.aiMode,
     recommended,
     candidates: [recommended, ...candidates.slice(1)].slice(0, 8),
@@ -276,6 +304,15 @@ router.post("/create-draft", async (req: AuthRequest, res, next) => {
     if (!isDate(date)) return res.status(400).json({ message: "Érvényes YYYY-MM-DD dátum szükséges." });
     if (date < budapestDate()) return res.status(400).json({ message: "Múltbeli napra nem hozható létre napi akció." });
     const result: any = await buildRecommendation(req, date, locationId);
+    if (!result.capacityEligible) {
+      return res.status(409).json({
+        code: "DAILY_ACTION_CAPACITY_RULE",
+        message: `Napi akció csak legalább ${DAILY_ACTION_MIN_FREE_CAPACITY_PCT}% szabad kapacitás esetén generálható.`,
+        free_capacity_pct: result.freeCapacityPct,
+        required_free_capacity_pct: DAILY_ACTION_MIN_FREE_CAPACITY_PCT,
+        reason: result.capacityReason,
+      });
+    }
     const requestedId = String(req.body?.service_id || "").trim();
     const selected: Candidate | undefined = requestedId ? result.candidates.find((x: Candidate) => x.serviceId === requestedId) : result.recommended;
     if (!selected) return res.status(409).json({ message: "Nincs napi akcióra engedélyezett aktív szolgáltatás." });
@@ -284,7 +321,7 @@ router.post("/create-draft", async (req: AuthRequest, res, next) => {
     const selectedCopy = selected.serviceId === result.recommended?.serviceId ? selected : { ...selected, ...await aiCopy(req, selected) };
     const meta = {
       source: "auto-selector",
-      algorithm: "occupancy-service-demand-v1",
+      algorithm: "pdf-2018-free-capacity-50-v2",
       date,
       location_id: locationId,
       score: selected.score,
@@ -293,6 +330,9 @@ router.post("/create-draft", async (req: AuthRequest, res, next) => {
       bookings_today: selected.bookingsToday,
       avg_daily_bookings_28d: selected.avgDailyBookings28d,
       location_occupancy_pct: selected.locationOccupancyPct,
+      free_capacity_pct: selected.freeCapacityPct,
+      required_free_capacity_pct: DAILY_ACTION_MIN_FREE_CAPACITY_PCT,
+      capacity_rule_passed: true,
       reason: selectedCopy.reason,
       ai_mode: result.aiMode,
       created_by: actorKey(req),
