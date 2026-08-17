@@ -22,6 +22,7 @@ const migrationFiles = [
   "20260810_BOOKING_VOICE_STATS_V1.sql",
   "20260817_PRODUCT_PRICE_HISTORY_PREP.sql",
   "20260817_PRODUCT_PRICE_HISTORY_V1.sql",
+  "20260817_PRODUCT_REPRICING_USABILITY_V2.sql",
 ];
 
 async function runSqlFile(fileName: string) {
