@@ -1,0 +1,1 @@
+Acceptance evidence for `KLEO-FUN-PROMO-001` is executable in `tests/requirements-critical-automation-v22.contract.test.js`; this note is descriptive only and is not used as a substitute for CI evidence.
