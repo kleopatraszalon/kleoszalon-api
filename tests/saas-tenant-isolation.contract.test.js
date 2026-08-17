@@ -64,7 +64,7 @@ test('tenant access helper only permits an allowlisted business table set', () =
   const source = read('src/saas/tenantAccess.ts');
   assert.match(source, /const allowed = new Set/);
   assert.match(source, /if \(!allowed\.has\(table\)\) return false/);
-  assert.match(source, /e\.tenant_id=\$2::bigint OR l\.tenant_id=\$2::bigint/);
+  assert.match(source, /e\.tenant_id::text=\$2::text OR l\.tenant_id::text=\$2::text/);
 });
 
 test('subscription feature resolver supports plan features, all_modules and tenant overrides', () => {

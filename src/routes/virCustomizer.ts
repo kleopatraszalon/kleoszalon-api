@@ -1,7 +1,17 @@
 import{Router}from'express';import db from'../db';import{requireAuth,type AuthRequest}from'../middleware/auth';import{requireManagement}from'../middleware/requireRoles';
 const router=Router();
 const DEFAULTS={brand:{name:'Kleopátra VIR',short_name:'KLEO',logo_url:'',accent:'#9b6b7a',radius:14},appearance:{theme:'light',density:'comfortable',sidebar:'expanded',dashboard_welcome:'Üdvözlünk a Kleopátra VIR-ben!'},features:{knowledge_base:true,quiz:true,loyalty:true,voice_booking:true,wallboard:true,webshop:true},labels:{dashboard:'Vezérlőpult',employees:'Munkatársak',clients:'Vendégek',knowledge:'Tudástár'},menu_visibility:{},login:{headline:'Kleopátra vállalatirányítás',subheadline:'Szalonok, munkatársak és vendégélmény egy rendszerben.'}};
-let ready:Promise<void>|null=null;async function ensure(){if(!ready)ready=db.query(`CREATE TABLE IF NOT EXISTS vir_customization(id int PRIMARY KEY DEFAULT 1 CHECK(id=1),config jsonb NOT NULL DEFAULT '{}'::jsonb,updated_by text,updated_at timestamptz NOT NULL DEFAULT now());INSERT INTO vir_customization(id,config)VALUES(1,$1::jsonb)ON CONFLICT(id)DO NOTHING;CREATE TABLE IF NOT EXISTS vir_customization_audit(id bigserial PRIMARY KEY,changed_at timestamptz NOT NULL DEFAULT now(),changed_by text,before_config jsonb,after_config jsonb);`,[JSON.stringify(DEFAULTS)]).then(()=>undefined);return ready}
+let ready:Promise<void>|null=null;
+async function ensure(){
+  if(!ready){
+    ready=(async()=>{
+      await db.query(`CREATE TABLE IF NOT EXISTS vir_customization(id int PRIMARY KEY DEFAULT 1 CHECK(id=1),config jsonb NOT NULL DEFAULT '{}'::jsonb,updated_by text,updated_at timestamptz NOT NULL DEFAULT now())`);
+      await db.query(`INSERT INTO vir_customization(id,config) VALUES(1,$1::jsonb) ON CONFLICT(id) DO NOTHING`,[JSON.stringify(DEFAULTS)]);
+      await db.query(`CREATE TABLE IF NOT EXISTS vir_customization_audit(id bigserial PRIMARY KEY,changed_at timestamptz NOT NULL DEFAULT now(),changed_by text,before_config jsonb,after_config jsonb)`);
+    })().catch(err=>{ready=null;throw err});
+  }
+  return ready;
+}
 function merge(base:any,next:any):any{if(Array.isArray(base)||Array.isArray(next))return next??base;if(base&&typeof base==='object'&&next&&typeof next==='object'){const out={...base};for(const[k,v]of Object.entries(next))out[k]=merge((base as any)[k],v);return out}return next===undefined?base:next}
 function cleanConfig(raw:any){const c=merge(DEFAULTS,raw&&typeof raw==='object'?raw:{});const accent=String(c.brand?.accent||'');if(!/^#[0-9a-f]{6}$/i.test(accent))throw Object.assign(new Error('Az accent szín #RRGGBB formátumú legyen.'),{status:400});if(!['light','dark','system'].includes(String(c.appearance?.theme)))throw Object.assign(new Error('Érvénytelen téma.'),{status:400});if(!['compact','comfortable'].includes(String(c.appearance?.density)))throw Object.assign(new Error('Érvénytelen sűrűség.'),{status:400});if(!['expanded','compact'].includes(String(c.appearance?.sidebar)))throw Object.assign(new Error('Érvénytelen oldalsáv mód.'),{status:400});return c}
 router.get('/',requireAuth,async(_req,res,next)=>{try{await ensure();const row=(await db.query(`SELECT config,updated_by,updated_at FROM vir_customization WHERE id=1`)).rows[0];const config=merge(DEFAULTS,row?.config||{});res.json({config,content:JSON.stringify(config),updated_by:row?.updated_by,updated_at:row?.updated_at})}catch(e){next(e)}});

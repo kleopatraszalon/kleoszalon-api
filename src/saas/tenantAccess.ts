@@ -29,13 +29,13 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   if(feature && !(await tenantFeatureEnabled(tenantId, feature))){authUser.tenant_feature_denied = feature;return null;}
   return{id:tenantId,slug:String(row.slug),role:String(row.tenant_role||"member")};
 }
-export async function tenantLocationIds(tenantId:string):Promise<string[]>{const{rows}=await db.query(`SELECT id::text id FROM locations WHERE tenant_id=$1::bigint`,[tenantId]);return rows.map((r:any)=>String(r.id));}
-export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id=$2::bigint LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
+export async function tenantLocationIds(tenantId:string):Promise<string[]>{const{rows}=await db.query(`SELECT id::text id FROM locations WHERE tenant_id::text=$1::text`,[tenantId]);return rows.map((r:any)=>String(r.id));}
+export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id::text=$2::text LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
 export async function entityBelongsToTenant(table:string,id:string,tenantId:string):Promise<boolean>{
   const allowed = new Set(["employees","clients","appointments","work_orders","product_stock_balances","purchase_orders","payroll_runs","financial_transactions","finance_transactions","invoices"]);
   if (!allowed.has(table)) return false;
   const hasLocation=await db.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name='location_id' LIMIT 1`,[table]);
-  const sql=hasLocation.rowCount?`SELECT 1 FROM ${table} e LEFT JOIN locations l ON l.id::text=e.location_id::text WHERE e.id::text=$1 AND (e.tenant_id=$2::bigint OR l.tenant_id=$2::bigint) LIMIT 1`:`SELECT 1 FROM ${table} e WHERE e.id::text=$1 AND e.tenant_id=$2::bigint LIMIT 1`;
+  const sql=hasLocation.rowCount?`SELECT 1 FROM ${table} e LEFT JOIN locations l ON l.id::text=e.location_id::text WHERE e.id::text=$1 AND (e.tenant_id::text=$2::text OR l.tenant_id::text=$2::text) LIMIT 1`:`SELECT 1 FROM ${table} e WHERE e.id::text=$1 AND e.tenant_id::text=$2::text LIMIT 1`;
   const{rows}=await db.query(sql,[id,tenantId]);return Boolean(rows[0]);
 }
 export async function tenantFeatureEnabled(tenantId:string,featureKey:string):Promise<boolean>{const{rows}=await db.query(`SELECT COALESCE(tf.enabled,CASE WHEN COALESCE((sp.features->>'all_modules')::boolean,false) THEN true WHEN sp.features ? $2 THEN COALESCE((sp.features->>$2)::boolean,false) ELSE false END) AS enabled FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id=t.id AND s.status IN ('trial','active','past_due','suspended') LEFT JOIN subscription_plans sp ON sp.id=s.plan_id LEFT JOIN tenant_features tf ON tf.tenant_id=t.id AND tf.feature_key=$2 WHERE t.id=$1::bigint LIMIT 1`,[tenantId,featureKey]);return rows[0]?.enabled===true;}
