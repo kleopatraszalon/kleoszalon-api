@@ -23,10 +23,9 @@ const text=(v:any)=>String(v??'').trim();
 const number=(v:any,fallback=0)=>{const n=Number(v);return Number.isFinite(n)?n:fallback};
 function atValue(at:DailyActionContext['at']){const d=at instanceof Date?at:new Date(at||Date.now());return Number.isNaN(d.getTime())?new Date():d}
 function legacyPercent(row:any){
- const normalized=number(row.discount_percent,NaN);
- if(Number.isFinite(normalized))return normalized;
- const meta=number(row.auto_selector_meta?.applied_discount_pct,NaN);
- if(Number.isFinite(meta))return meta;
+ if(row.discount_percent!==null&&row.discount_percent!==undefined&&text(row.discount_percent)!=='')return number(row.discount_percent,0);
+ const rawMeta=row.auto_selector_meta?.applied_discount_pct;
+ if(rawMeta!==null&&rawMeta!==undefined&&text(rawMeta)!=='')return number(rawMeta,0);
  const match=text(row.discount_text).match(/(\d+(?:[.,]\d+)?)\s*%/);
  return match?number(match[1].replace(',','.'),0):0;
 }
