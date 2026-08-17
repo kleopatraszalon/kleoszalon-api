@@ -139,6 +139,73 @@ async function appointmentStats(from: string, to: string, locationId: string | n
   return { total:Number(rows[0]?.total||0), completed:Number(rows[0]?.completed||0), cancelled:Number(rows[0]?.cancelled||0), noShow:Number(rows[0]?.no_show||0) };
 }
 
+function dailyActionPercent(row: JsonRow): number {
+  const direct = numberOrNull(row.discount_percent);
+  if (direct !== null) return Math.max(0, Math.min(100, direct));
+  const meta = numberOrNull(jsonObject(row.auto_selector_meta).applied_discount_pct);
+  if (meta !== null) return Math.max(0, Math.min(100, meta));
+  const match = text(row.discount_text).match(/(\d+(?:[.,]\d+)?)\s*%/);
+  if (!match) return 0;
+  return Math.max(0, Math.min(100, Number(match[1].replace(",", ".")) || 0));
+}
+
+// DDL-mentes production fallback. Az eredeti dailyActions router request közben migrál;
+// legacy Render DB-n ez 500-at okozhat. Ez a korai route csak meglévő adatot olvas.
+router.get("/public/marketing/daily-actions", async (req, res) => {
+  try {
+    const now = Date.now();
+    const requestedLocation = nullableText(req.query.location_id);
+    const clientId = nullableText(req.query.client_id);
+    const rows = await loadJsonTable("daily_action_campaigns");
+    const actions = rows.filter((row) => {
+      if (text(row.status).toLowerCase() !== "published") return false;
+      const from = new Date(row.valid_from ?? 0).getTime();
+      const until = new Date(row.valid_until ?? 0).getTime();
+      if (!Number.isFinite(from) || !Number.isFinite(until) || from > now || until < now) return false;
+      const meta = jsonObject(row.auto_selector_meta);
+      const location = nullableText(row.location_id) || nullableText(meta.location_id);
+      if (requestedLocation && location && location !== requestedLocation) return false;
+      const audience = jsonObject(row.audience);
+      const audienceType = text(audience.type || "all").toLowerCase();
+      if (audienceType !== "all" && !clientId) return false;
+      // A személyre szabott audience-eket a legacy fallback nem találgatja: csak all-t adunk vissza.
+      if (audienceType !== "all") return false;
+      return true;
+    }).sort((a,b)=>new Date(a.valid_until??0).getTime()-new Date(b.valid_until??0).getTime()).map((row) => ({
+      id:text(row.id),
+      headline:text(row.headline),
+      description_html:text(row.description_html),
+      image_url:nullableText(row.image_url),
+      cta_label:nullableText(row.cta_label),
+      cta_url:nullableText(row.cta_url),
+      discount_text:nullableText(row.discount_text),
+      discount_percent:dailyActionPercent(row),
+      valid_from:row.valid_from ?? null,
+      valid_until:row.valid_until ?? null,
+      location_id:nullableText(row.location_id) || nullableText(jsonObject(row.auto_selector_meta).location_id),
+      service_id:nullableText(row.service_id),
+      audience:row.audience ?? {type:"all"},
+    }));
+    let app_config: JsonRow = {};
+    let app_config_updated_at: any = null;
+    try {
+      const settings = await loadJsonTable("mobile_app_settings", ["1"]);
+      if (settings[0]) {
+        app_config = jsonObject(settings[0].config);
+        app_config_updated_at = settings[0].updated_at ?? null;
+      }
+    } catch (error) {
+      console.warn("[api500-hotfix] mobile_app_settings fallback:", error);
+    }
+    res.setHeader("X-Kleo-Hotfix", "api500-daily-actions-v1");
+    return res.json({actions,vapid_public_key:text(process.env.VAPID_PUBLIC_KEY),app_config,app_config_updated_at});
+  } catch (error) {
+    console.error("[api500-hotfix] public daily actions fallback:", error);
+    res.setHeader("X-Kleo-Hotfix", "api500-daily-actions-empty-v1");
+    return res.status(200).json({actions:[],vapid_public_key:text(process.env.VAPID_PUBLIC_KEY),app_config:{},app_config_updated_at:null});
+  }
+});
+
 router.get("/employees", requireAuth, asyncRoute(async (req, res) => {
   const locationId = readLocationScope(req);
   if (!elevated(req) && !locationId) return res.status(403).json({ error: "A felhasználói fiókhoz nincs telephely rendelve." });
