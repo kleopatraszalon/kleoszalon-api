@@ -1,10 +1,27 @@
-import { Response, Router } from "express";
+import { NextFunction, Response, Router } from "express";
 import db from "../db";
 import { TenantAuthRequest } from "../middleware/tenantContext";
 
 const router=Router({mergeParams:true});
 const TRIAL_WARNING_DAYS=3;
 const TRIAL_GRACE_DAYS=3;
+const SYSTEM_ADMIN_ROLES=new Set(["admin","administrator","rendszergazda","superadmin","super_admin","platform_admin"]);
+
+function parseRoles(raw:any):string[]{
+  if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());
+  try{const parsed=JSON.parse(String(raw||""));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase());}catch{}
+  return String(raw||"").replace(/[\[\]\"]/g,"").split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);
+}
+
+function requirePlatformAdmin(req:TenantAuthRequest,res:Response,next:NextFunction){
+  const roles=parseRoles(req.user?.role);
+  const isSystemAdmin=roles.some(role=>SYSTEM_ADMIN_ROLES.has(role));
+  const isRootTenant=String(req.tenant?.slug||"").toLowerCase()==="kleopatra";
+  if(!isSystemAdmin||!isRootTenant)return res.status(403).json({ok:false,code:"PLATFORM_ADMIN_FORBIDDEN",error:"A lifecycle policy csak a központi platform admin számára érhető el."});
+  return next();
+}
+
+router.use(requirePlatformAdmin);
 
 async function policyRows(){
   const {rows}=await db.query(`
