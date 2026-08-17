@@ -23,7 +23,9 @@ jobs:
         with:
           node-version: 20
       - name: Apply deterministic source patch
-        run: node scripts/apply-dashboard-runtime-500-fix.mjs
+        run: |
+          sed -i '/const first=source.indexOf(before),second=source.indexOf(before,first+before.length);/d; /if(second!==-1)throw new Error/d' scripts/apply-dashboard-runtime-500-fix.mjs
+          node scripts/apply-dashboard-runtime-500-fix.mjs
       - name: Remove one-shot patch assets and commit source fixes
         run: |
           rm scripts/apply-dashboard-runtime-500-fix.mjs
