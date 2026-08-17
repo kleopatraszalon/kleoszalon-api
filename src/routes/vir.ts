@@ -5,12 +5,16 @@ import { parseRoleKeys } from "../security/roles";
 import receiptComplianceRouter from "./receiptCompliance";
 import deviceControlRouter from "./deviceControl";
 import deviceBridgeResultRouter from "./deviceBridgeResult";
+import fitnessRouter, { fitnessOticBridgeRouter } from "./fitness";
 
 const router = Router();
+// Az OTIC helyi bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
+router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
 router.use(requireAuth);
 router.use("/receipt-compliance", receiptComplianceRouter);
 router.use("/device-control", deviceBridgeResultRouter);
 router.use("/device-control", deviceControlRouter);
+router.use("/fitness", fitnessRouter);
 
 type VirQueryParams = {
   from?: string;
