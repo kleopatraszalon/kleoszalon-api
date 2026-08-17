@@ -19,8 +19,9 @@ const XMLLINT_INTEGRITY='sha512-GVMuR3ViU8R7sakcVm/4GClMtCV8p7xgjXZlc6GmvPpInIz4
 const DOWNLOAD_ATTEMPTS=4;
 const RETRYABLE_STATUS=new Set([408,425,429,500,502,503,504]);
 
-function githubSources(repo,commit,filePath){
+function githubSources(repo,commit,filePath,gitBlob){
   return [
+    `https://api.github.com/repos/${repo}/git/blobs/${gitBlob}`,
     `https://raw.githubusercontent.com/${repo}/${commit}/${filePath}`,
     `https://cdn.jsdelivr.net/gh/${repo}@${commit}/${filePath}`
   ];
@@ -29,20 +30,26 @@ function githubSources(repo,commit,filePath){
 const sources=[
   {
     name:'invoiceData.xsd',
-    urls:githubSources('nav-gov-hu/Online-Invoice',NAV_COMMIT,'src/schemas/nav/gov/hu/OSA/invoiceData.xsd'),
-    gitBlob:'c644a7112e02e4be53ec151feb00c472ef1c769f'
+    gitBlob:'c644a7112e02e4be53ec151feb00c472ef1c769f',
+    repo:'nav-gov-hu/Online-Invoice',
+    commit:NAV_COMMIT,
+    filePath:'src/schemas/nav/gov/hu/OSA/invoiceData.xsd'
   },
   {
     name:'invoiceBase.xsd',
-    urls:githubSources('nav-gov-hu/Online-Invoice',NAV_COMMIT,'src/schemas/nav/gov/hu/OSA/invoiceBase.xsd'),
-    gitBlob:'f3484ffe0ad8a85104fc77bacde669eaf47248bb'
+    gitBlob:'f3484ffe0ad8a85104fc77bacde669eaf47248bb',
+    repo:'nav-gov-hu/Online-Invoice',
+    commit:NAV_COMMIT,
+    filePath:'src/schemas/nav/gov/hu/OSA/invoiceBase.xsd'
   },
   {
     name:'common.xsd',
-    urls:githubSources('nav-gov-hu/Common',COMMON_COMMIT,'src/schemas/nav/gov/hu/NTCA/common.xsd'),
-    gitBlob:'ece06647ae0d454353f347e3d5d4ae9fb96a27f4'
+    gitBlob:'ece06647ae0d454353f347e3d5d4ae9fb96a27f4',
+    repo:'nav-gov-hu/Common',
+    commit:COMMON_COMMIT,
+    filePath:'src/schemas/nav/gov/hu/NTCA/common.xsd'
   }
-];
+].map(source=>({...source,urls:githubSources(source.repo,source.commit,source.filePath,source.gitBlob)}));
 
 function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 
@@ -53,10 +60,17 @@ async function download(urls,label='asset'){
   for(const url of candidates){
     for(let attempt=1;attempt<=DOWNLOAD_ATTEMPTS;attempt++){
       try{
+        const isGithubApi=url.startsWith('https://api.github.com/');
         const response=await fetch(url,{
           redirect:'follow',
-          headers:{'user-agent':'kleoszalon-nav-xsd-build/1.1'},
-          signal:AbortSignal.timeout(20000)
+          headers:{
+            'user-agent':'kleoszalon-nav-xsd-build/1.2',
+            ...(isGithubApi?{
+              accept:'application/vnd.github.raw+json',
+              'x-github-api-version':'2022-11-28'
+            }:{})
+          },
+          signal:AbortSignal.timeout(isGithubApi?12000:20000)
         });
         if(response.ok){
           if(attempt>1||url!==candidates[0])console.log(`[NAV XSD] ${label} letöltve fallback/retry forrásból: ${url}`);
@@ -179,7 +193,7 @@ async function main(){
     commonCommit:COMMON_COMMIT,
     generatedAt:new Date().toISOString(),
     runtimeNetworkRequired:false,
-    buildDownloadResilience:{attemptsPerSource:DOWNLOAD_ATTEMPTS,githubMirror:'jsDelivr'},
+    buildDownloadResilience:{attemptsPerSource:DOWNLOAD_ATTEMPTS,githubPrimary:'git-blob-api',githubFallback:'raw',githubMirror:'jsDelivr'},
     sources:manifestSources,
     validator:{name:'xmllint-wasm',...validator}
   };
