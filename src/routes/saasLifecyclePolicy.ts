@@ -3,6 +3,8 @@ import db from "../db";
 import { TenantAuthRequest } from "../middleware/tenantContext";
 
 const router=Router({mergeParams:true});
+const TRIAL_WARNING_DAYS=3;
+const TRIAL_GRACE_DAYS=3;
 const SYSTEM_ADMIN_ROLES=new Set(["admin","administrator","rendszergazda","superadmin","super_admin","platform_admin"]);
 
 type PolicyConfig={enabled:boolean;trial_warning_days:number;trial_grace_days:number;notify_on_warning:boolean;notify_on_grace:boolean;notify_on_suspend:boolean;auto_apply_suspend:boolean};
@@ -22,7 +24,7 @@ router.use(requirePlatformAdmin);
 
 async function getConfig(client:any=db):Promise<PolicyConfig>{
   const {rows}=await client.query(`SELECT enabled,trial_warning_days,trial_grace_days,notify_on_warning,notify_on_grace,notify_on_suspend,auto_apply_suspend FROM saas_lifecycle_policy_config WHERE id=1`);
-  return rows[0]||{enabled:false,trial_warning_days:3,trial_grace_days:3,notify_on_warning:true,notify_on_grace:true,notify_on_suspend:true,auto_apply_suspend:false};
+  return rows[0]||{enabled:false,trial_warning_days:TRIAL_WARNING_DAYS,trial_grace_days:TRIAL_GRACE_DAYS,notify_on_warning:true,notify_on_grace:true,notify_on_suspend:true,auto_apply_suspend:false};
 }
 
 async function policyRows(config?:PolicyConfig){
