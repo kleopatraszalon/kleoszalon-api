@@ -33,5 +33,9 @@ test('server retains degraded 503 mode while dependency initialization recovers'
 
   assert.match(server, /error:"db_unreachable"/);
   assert.match(server, /else setTimeout\(\(\)=>initDbDependentThings\(\)\.catch\(\(\)=>\{\}\),15000\)/);
-  assert.match(server, /await initDbDependentThings\(\);await ensureSpecParityDependencies\(\);startComplaintMailboxWorker\(\);app\.listen/);
+  const listenAt=server.indexOf("app.listen(PORT");
+  const initAt=server.indexOf("await initDbDependentThings()");
+  const parityAt=server.indexOf("await ensureSpecParityDependencies()");
+  assert.ok(listenAt>=0 && initAt>listenAt && parityAt>initAt);
+  assert.match(server,/void\(async\(\)=>\{try\{await initDbDependentThings\(\);await ensureSpecParityDependencies\(\);startComplaintMailboxWorker\(\)/);
 });

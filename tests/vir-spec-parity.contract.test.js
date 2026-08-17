@@ -51,11 +51,12 @@ test('guest reviews cannot publish to Facebook before moderation approval', () =
   assert.equal(src.slice(publicReview, approve).includes('INSERT INTO social_campaigns'), false);
 });
 
-test('server initializes parity schema before listening and exposes readiness', () => {
+test('server exposes readiness and initializes parity schema after opening the degraded-mode listener', () => {
   const src = read('src/server.ts');
   const ensureAt = src.indexOf('await ensureSpecParityDependencies()');
   const listenAt = src.indexOf('app.listen(PORT');
-  assert.ok(ensureAt >= 0 && listenAt > ensureAt);
+  assert.ok(listenAt >= 0 && ensureAt > listenAt);
   assert.ok(src.includes('/api/health/ready'));
+  assert.ok(src.includes('error:"db_unreachable"'));
   assert.ok(src.includes('startComplaintMailboxWorker()'));
 });

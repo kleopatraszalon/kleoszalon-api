@@ -85,13 +85,21 @@ export function ensureSaasCore(): Promise<void> {
       const locationTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='locations' LIMIT 1`);
       if(locationTable.rowCount){
         await client.query(`ALTER TABLE locations ADD COLUMN IF NOT EXISTS tenant_id bigint`);
-        await client.query(`UPDATE locations SET tenant_id=(SELECT id FROM tenants WHERE slug='kleopatra') WHERE tenant_id IS NULL`);
+        const tenantRow=await client.query(`SELECT id::text id FROM tenants WHERE slug='kleopatra' LIMIT 1`);
+        const tenantId=String(tenantRow.rows[0]?.id||'');
+        const typeRow=await client.query(`SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='locations' AND column_name='tenant_id' LIMIT 1`);
+        const tenantType=String(typeRow.rows[0]?.data_type||'');
+        if(tenantId){
+          if(['bigint','integer','smallint','numeric'].includes(tenantType))await client.query(`UPDATE locations SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId]);
+          else if(['text','character varying','character'].includes(tenantType))await client.query(`UPDATE locations SET tenant_id=$1::text WHERE tenant_id IS NULL`,[tenantId]);
+          else console.warn(`[saas-core] locations.tenant_id legacy type not auto-seeded: ${tenantType||'unknown'}`);
+        }
         await client.query(`CREATE INDEX IF NOT EXISTS locations_tenant_idx ON locations(tenant_id)`);
       }
 
       const userTable=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='users' LIMIT 1`);
       if(userTable.rowCount){
-        await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) SELECT (SELECT id FROM tenants WHERE slug='kleopatra'),u.id::text,CASE WHEN lower(COALESCE(u.role::text,''))='admin' THEN 'owner' ELSE 'member' END,true FROM users u ON CONFLICT(tenant_id,user_id) DO NOTHING`);
+        try{await client.query(`INSERT INTO tenant_users(tenant_id,user_id,tenant_role,active) SELECT (SELECT id FROM tenants WHERE slug='kleopatra'),u.id::text,CASE WHEN lower(COALESCE(u.role::text,''))='admin' THEN 'owner' ELSE 'member' END,true FROM users u ON CONFLICT(tenant_id,user_id) DO NOTHING`)}catch(error){console.warn('[saas-core] legacy tenant_users sync skipped:',(error as any)?.message||error)}
       }
 
       await client.query(`INSERT INTO subscriptions(tenant_id,plan_id,status) SELECT t.id,p.id,'active' FROM tenants t JOIN subscription_plans p ON p.code='internal' WHERE t.slug='kleopatra' AND NOT EXISTS(SELECT 1 FROM subscriptions s WHERE s.tenant_id=t.id AND s.status IN('trial','active','past_due','suspended'))`);

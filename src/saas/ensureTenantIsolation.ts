@@ -43,8 +43,19 @@ async function restoreNormalSession(client:PoolClient){
 }
 async function tableExists(client:PoolClient,table:string){const r=await client.query(`SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1`,[table]);return Boolean(r.rowCount)}
 async function columnExists(client:PoolClient,table:string,column:string){const r=await client.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2 LIMIT 1`,[table,column]);return Boolean(r.rowCount)}
-async function addTenantColumn(client:PoolClient,table:string){await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id bigint`);await client.query(`CREATE INDEX IF NOT EXISTS ${table}_tenant_idx ON ${table}(tenant_id)`)}
-async function fallbackLegacy(client:PoolClient,table:string,tenantId:any){await client.query(`UPDATE ${table} SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId])}
+function bootstrapWarning(label:string,error:unknown){console.warn(`[tenant-isolation] ${label} skipped:`,(error as any)?.message||error)}
+async function bestEffort(label:string,run:()=>Promise<void>){try{await run()}catch(error){bootstrapWarning(label,error)}}
+async function addTenantColumn(client:PoolClient,table:string){
+  await client.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id bigint`);
+  await bestEffort(`${table}:tenant-index`,()=>client.query(`CREATE INDEX IF NOT EXISTS ${table}_tenant_idx ON ${table}(tenant_id)`).then(()=>undefined));
+}
+async function fallbackLegacy(client:PoolClient,table:string,tenantId:any){
+  const r=await client.query(`SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name='tenant_id' LIMIT 1`,[table]);
+  const type=String(r.rows[0]?.data_type||'');
+  if(['bigint','integer','smallint','numeric'].includes(type))await client.query(`UPDATE ${table} SET tenant_id=$1::bigint WHERE tenant_id IS NULL`,[tenantId]);
+  else if(['text','character varying','character'].includes(type))await client.query(`UPDATE ${table} SET tenant_id=$1::text WHERE tenant_id IS NULL`,[String(tenantId)]);
+  else bootstrapWarning(`${table}:tenant-seed-type-${type||'unknown'}`,new Error('unsupported tenant_id type'));
+}
 
 /**
  * Makes legacy Kleopátra records tenant-aware exactly once per process.
@@ -69,47 +80,47 @@ export function ensureTenantIsolation():Promise<void>{
       if(!kleopatraTenantId)throw new Error("Kleopátra tenant bootstrap hiányzik.");
 
       for(const table of LOCATION_SCOPED_TABLES){
-        if(!(await tableExists(client,table)))continue;
-        await addTenantColumn(client,table);
-        if(await columnExists(client,table,"location_id")){
-          await client.query(`UPDATE ${table} e SET tenant_id=l.tenant_id FROM locations l WHERE e.tenant_id IS NULL AND e.location_id IS NOT NULL AND e.location_id::text=l.id::text AND l.tenant_id IS NOT NULL`);
-        }
-        await fallbackLegacy(client,table,kleopatraTenantId);
+        await bestEffort(`location:${table}`,async()=>{
+          if(!(await tableExists(client,table)))return;
+          await addTenantColumn(client,table);
+          if(await columnExists(client,table,"location_id")){
+            await bestEffort(`${table}:location-backfill`,()=>client.query(`UPDATE ${table} e SET tenant_id=l.tenant_id FROM locations l WHERE e.tenant_id IS NULL AND e.location_id IS NOT NULL AND e.location_id::text=l.id::text AND l.tenant_id IS NOT NULL`).then(()=>undefined));
+          }
+          await fallbackLegacy(client,table,kleopatraTenantId);
+        });
       }
 
       for(const table of EMPLOYEE_SCOPED_TABLES){
-        if(!(await tableExists(client,table)))continue;
-        await addTenantColumn(client,table);
-        if(await columnExists(client,table,"employee_id")&&await tableExists(client,"employees")){
-          await client.query(`UPDATE ${table} c SET tenant_id=e.tenant_id FROM employees e WHERE c.tenant_id IS NULL AND c.employee_id::text=e.id::text AND e.tenant_id IS NOT NULL`);
-        }
-        await fallbackLegacy(client,table,kleopatraTenantId);
+        await bestEffort(`employee:${table}`,async()=>{
+          if(!(await tableExists(client,table)))return;
+          await addTenantColumn(client,table);
+          if(await columnExists(client,table,"employee_id")&&await tableExists(client,"employees")){
+            await bestEffort(`${table}:employee-backfill`,()=>client.query(`UPDATE ${table} c SET tenant_id=e.tenant_id FROM employees e WHERE c.tenant_id IS NULL AND c.employee_id::text=e.id::text AND e.tenant_id IS NOT NULL`).then(()=>undefined));
+          }
+          await fallbackLegacy(client,table,kleopatraTenantId);
+        });
       }
 
       for(const child of PARENT_SCOPED_TABLES){
-        if(!(await tableExists(client,child.table))||!(await tableExists(client,child.parent))||!(await columnExists(client,child.table,child.fk)))continue;
-        await addTenantColumn(client,child.table);
-        await client.query(`UPDATE ${child.table} c SET tenant_id=p.tenant_id FROM ${child.parent} p WHERE c.tenant_id IS NULL AND c.${child.fk}::text=p.id::text AND p.tenant_id IS NOT NULL`);
-        await fallbackLegacy(client,child.table,kleopatraTenantId);
+        await bestEffort(`parent:${child.table}`,async()=>{
+          if(!(await tableExists(client,child.table))||!(await tableExists(client,child.parent))||!(await columnExists(client,child.table,child.fk)))return;
+          await addTenantColumn(client,child.table);
+          await bestEffort(`${child.table}:parent-backfill`,()=>client.query(`UPDATE ${child.table} c SET tenant_id=p.tenant_id FROM ${child.parent} p WHERE c.tenant_id IS NULL AND c.${child.fk}::text=p.id::text AND p.tenant_id IS NOT NULL`).then(()=>undefined));
+          await fallbackLegacy(client,child.table,kleopatraTenantId);
+        });
       }
 
       for(const table of TENANT_MASTER_TABLES){
-        if(!(await tableExists(client,table)))continue;
-        await addTenantColumn(client,table);
-        await fallbackLegacy(client,table,kleopatraTenantId);
+        await bestEffort(`master:${table}`,async()=>{
+          if(!(await tableExists(client,table)))return;
+          await addTenantColumn(client,table);
+          await fallbackLegacy(client,table,kleopatraTenantId);
+        });
       }
 
-      if(await tableExists(client,"crm_tags")){
-        await client.query(`DROP INDEX IF EXISTS crm_tags_name_uq`);
-        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_tenant_name_uq ON crm_tags(tenant_id,(lower(name)))`);
-      }
-      if(await tableExists(client,"crm_forms")){
-        await client.query(`DROP INDEX IF EXISTS crm_forms_title_uq`);
-        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_forms_tenant_title_uq ON crm_forms(tenant_id,(lower(title)))`);
-      }
-      if(await tableExists(client,"compensation_plans")&&await columnExists(client,"compensation_plans","name")){
-        await client.query(`CREATE INDEX IF NOT EXISTS compensation_plans_tenant_name_idx ON compensation_plans(tenant_id,(lower(name)))`);
-      }
+      await bestEffort('crm_tags:indexes',async()=>{if(await tableExists(client,"crm_tags")){await client.query(`DROP INDEX IF EXISTS crm_tags_name_uq`);await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_tags_tenant_name_uq ON crm_tags(tenant_id,(lower(name)))`)}});
+      await bestEffort('crm_forms:indexes',async()=>{if(await tableExists(client,"crm_forms")){await client.query(`DROP INDEX IF EXISTS crm_forms_title_uq`);await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS crm_forms_tenant_title_uq ON crm_forms(tenant_id,(lower(title)))`)}});
+      await bestEffort('compensation_plans:indexes',async()=>{if(await tableExists(client,"compensation_plans")&&await columnExists(client,"compensation_plans","name")){await client.query(`CREATE INDEX IF NOT EXISTS compensation_plans_tenant_name_idx ON compensation_plans(tenant_id,(lower(name)))`)}});
     }finally{
       if(advisoryLocked)await client.query("SELECT pg_advisory_unlock($1,$2)",[20260816,2]).catch(()=>{});
       await restoreNormalSession(client);
