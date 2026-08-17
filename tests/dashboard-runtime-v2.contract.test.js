@@ -34,3 +34,11 @@ test('schema-tolerant hotfix routes intercept employees and timetable before sta
   const t=server.indexOf('app.use("/api/timetable"');
   assert.ok(h>=0 && e>h && t>h);
 });
+
+test('public daily actions repairs legacy auto selector schema without cross-type location FK',()=>{
+  const s=fs.readFileSync('src/marketing/dailyActionApplicability.ts','utf8');
+  assert.match(s,/ADD COLUMN IF NOT EXISTS auto_selector_meta jsonb/);
+  assert.match(s,/ADD COLUMN IF NOT EXISTS location_id uuid/);
+  assert.doesNotMatch(s,/location_id uuid REFERENCES locations\(id\)/);
+  assert.match(s,/to_jsonb\(d\)->'auto_selector_meta'/);
+});
