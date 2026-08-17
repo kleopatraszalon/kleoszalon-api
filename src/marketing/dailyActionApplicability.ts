@@ -22,6 +22,15 @@ async function ensureSchema(q:Queryable){
 const text=(v:any)=>String(v??'').trim();
 const number=(v:any,fallback=0)=>{const n=Number(v);return Number.isFinite(n)?n:fallback};
 function atValue(at:DailyActionContext['at']){const d=at instanceof Date?at:new Date(at||Date.now());return Number.isNaN(d.getTime())?new Date():d}
+function legacyPercent(row:any){
+ const normalized=number(row.discount_percent,NaN);
+ if(Number.isFinite(normalized))return normalized;
+ const meta=number(row.auto_selector_meta?.applied_discount_pct,NaN);
+ if(Number.isFinite(meta))return meta;
+ const match=text(row.discount_text).match(/(\d+(?:[.,]\d+)?)\s*%/);
+ return match?number(match[1].replace(',','.'),0):0;
+}
+function normalizedLocation(row:any){return text(row.location_id||row.auto_selector_meta?.location_id)||null}
 
 async function audienceEligible(q:Queryable,audience:any,clientId:string|null,at:Date){
  const type=text(audience?.type||'all').toLowerCase();
@@ -55,22 +64,28 @@ export async function applicableDailyActions(q:Queryable,context:DailyActionCont
  const locationId=text(context.locationId)||null,clientId=text(context.clientId)||null,at=atValue(context.at);
  const {rows}=await q.query(`
   SELECT id::text,headline,description_html,image_url,cta_label,cta_url,discount_text,
-         COALESCE(discount_percent,0)::numeric discount_percent,valid_from,valid_until,
-         location_id::text,service_id::text,audience
+         discount_percent,valid_from,valid_until,location_id::text,service_id::text,audience,auto_selector_meta
     FROM daily_action_campaigns
    WHERE status='published'
      AND valid_from<=$1::timestamptz AND valid_until>=$1::timestamptz
-     AND (location_id IS NULL OR location_id::text=$2)
+     AND (
+       (location_id IS NULL AND COALESCE(auto_selector_meta->>'location_id','')='')
+       OR location_id::text=$2
+       OR auto_selector_meta->>'location_id'=$2
+     )
    ORDER BY valid_until,id
  `,[at.toISOString(),locationId]);
  const out:ApplicableDailyAction[]=[];
- for(const row of rows){if(await audienceEligible(q,row.audience,clientId,at))out.push({...row,discount_percent:Math.max(0,Math.min(100,number(row.discount_percent)))})}
+ for(const row of rows){
+  if(!(await audienceEligible(q,row.audience,clientId,at)))continue;
+  out.push({...row,location_id:normalizedLocation(row),discount_percent:Math.max(0,Math.min(100,legacyPercent(row)))})
+ }
  return out;
 }
 
 export async function dailyActionDiscountForWorkOrder(q:Queryable,workOrderId:string,gross:number){
  await ensureDailyActionApplicabilitySchema(q);
- const wo=(await q.query(`SELECT id::text,location_id::text,client_id::text,COALESCE(created_at,now()) created_at FROM work_orders WHERE id::text=$1 LIMIT 1`,[workOrderId])).rows[0];
+ const wo=(await q.query(`SELECT id::text,location_id::text,client_id::text FROM work_orders WHERE id::text=$1 LIMIT 1`,[workOrderId])).rows[0];
  if(!wo)return{amount:0,percent:0,campaign_id:null as string|null,service_id:null as string|null};
  const actions=await applicableDailyActions(q,{locationId:wo.location_id,clientId:wo.client_id,at:new Date()});
  let best={amount:0,percent:0,campaign_id:null as string|null,service_id:null as string|null};
