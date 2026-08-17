@@ -1,0 +1,116 @@
+name: Database HA failover runtime evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      failover_trigger_url:
+        description: Protected endpoint that forces the active database primary to fail over
+        required: true
+        type: string
+      approved_rto_seconds:
+        description: Approved database recovery-time objective
+        required: true
+        default: '120'
+        type: string
+      approved_rpo_seconds:
+        description: Approved recovery-point objective
+        required: true
+        default: '30'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  database-ha-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.HA_DATABASE_URL }}
+      FAILOVER_TRIGGER_TOKEN: ${{ secrets.HA_DATABASE_FAILOVER_TRIGGER_TOKEN }}
+    steps:
+      - name: Fail closed when database HA harness is not configured
+        run: |
+          test -n "$DATABASE_URL" || { echo 'HA_DATABASE_URL is required'; exit 1; }
+          test -n "$FAILOVER_TRIGGER_TOKEN" || { echo 'HA_DATABASE_FAILOVER_TRIGGER_TOKEN is required'; exit 1; }
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update -qq && sudo apt-get install -y postgresql-client
+
+      - name: Prepare continuous-write probe table
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE IF NOT EXISTS database_failover_evidence_probes(
+            probe_id text PRIMARY KEY,
+            sequence_no bigint NOT NULL,
+            accepted_at timestamptz NOT NULL DEFAULT now()
+          );
+          SQL
+
+      - name: Seed pre-failover acknowledged write
+        id: seed
+        run: |
+          PREFIX="dbha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO database_failover_evidence_probes(probe_id,sequence_no) VALUES ('${PREFIX}-0',0) ON CONFLICT DO NOTHING"
+
+      - name: Trigger database failover and measure reconnect/RPO
+        env:
+          TRIGGER_URL: ${{ inputs.failover_trigger_url }}
+          PREFIX: ${{ steps.seed.outputs.prefix }}
+          RTO: ${{ inputs.approved_rto_seconds }}
+          RPO: ${{ inputs.approved_rpo_seconds }}
+        run: |
+          case "$RTO" in ''|*[!0-9]*) echo 'approved_rto_seconds must be numeric'; exit 1;; esac
+          case "$RPO" in ''|*[!0-9]*) echo 'approved_rpo_seconds must be numeric'; exit 1;; esac
+          START=$(date +%s)
+          date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/dbha-started-at
+          curl --fail --silent --show-error -X POST "$TRIGGER_URL" \
+            -H "Authorization: Bearer $FAILOVER_TRIGGER_TOKEN" \
+            -H 'Content-Type: application/json' \
+            --data "{\"source\":\"github-actions\",\"run_id\":\"$GITHUB_RUN_ID\",\"action\":\"failover-primary\"}"
+          : > /tmp/dbha-accepted.tsv
+          SEQ=1; RECOVERED_AT=''
+          while [ $(( $(date +%s)-START )) -le "$RTO" ]; do
+            TS=$(date +%s)
+            if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "INSERT INTO database_failover_evidence_probes(probe_id,sequence_no) VALUES ('${PREFIX}-${SEQ}',${SEQ}) ON CONFLICT DO NOTHING RETURNING probe_id" >/tmp/dbha-last-write 2>/dev/null; then
+              echo -e "${SEQ}\t${TS}" >> /tmp/dbha-accepted.tsv
+              if [ -z "$RECOVERED_AT" ]; then RECOVERED_AT="$TS"; echo $((RECOVERED_AT-START)) > /tmp/dbha-rto-seconds; fi
+              SEQ=$((SEQ+1))
+            fi
+            sleep 1
+          done
+          test -s /tmp/dbha-rto-seconds || { echo 'Database did not recover within approved RTO'; exit 1; }
+          LAST_ACK_TS=$(tail -n1 /tmp/dbha-accepted.tsv | cut -f2)
+          NOW=$(date +%s)
+          OBSERVED_RPO=$((NOW-LAST_ACK_TS))
+          echo "$OBSERVED_RPO" > /tmp/dbha-rpo-seconds
+          if [ "$OBSERVED_RPO" -gt "$RPO" ]; then echo "Observed RPO ${OBSERVED_RPO}s exceeds ${RPO}s"; exit 1; fi
+
+      - name: Verify every acknowledged probe write survived failover
+        env:
+          PREFIX: ${{ steps.seed.outputs.prefix }}
+        run: |
+          ACKED=$(( $(wc -l < /tmp/dbha-accepted.tsv) + 1 ))
+          STORED=$(psql "$DATABASE_URL" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM database_failover_evidence_probes WHERE probe_id LIKE '${PREFIX}-%'")
+          echo "acknowledged=$ACKED stored=$STORED"
+          test "$STORED" -ge "$ACKED" || { echo 'One or more acknowledged writes were lost'; exit 1; }
+
+      - name: Build database HA evidence artifact
+        env:
+          PREFIX: ${{ steps.seed.outputs.prefix }}
+          APPROVED_RTO: ${{ inputs.approved_rto_seconds }}
+          APPROVED_RPO: ${{ inputs.approved_rpo_seconds }}
+        run: |
+          mkdir -p artifacts
+          node - <<'NODE'
+          const fs=require('fs');const out={criterion_id:'KLEO-NFR-HA-001-AC-02',result:'passed',run_id:process.env.GITHUB_RUN_ID,started_at:fs.readFileSync('/tmp/dbha-started-at','utf8').trim(),probe_prefix:process.env.PREFIX,measured_rto_seconds:Number(fs.readFileSync('/tmp/dbha-rto-seconds','utf8').trim()),approved_rto_seconds:Number(process.env.APPROVED_RTO),measured_rpo_seconds:Number(fs.readFileSync('/tmp/dbha-rpo-seconds','utf8').trim()),approved_rpo_seconds:Number(process.env.APPROVED_RPO),lost_acknowledged_writes:0,generated_at:new Date().toISOString()};fs.writeFileSync('artifacts/ha-database-evidence.json',JSON.stringify(out,null,2)+'\n');
+          NODE
+
+      - name: Upload database HA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ha-database-evidence-${{ github.run_id }}
+          path: artifacts/ha-database-evidence.json
+          retention-days: 180
+          if-no-files-found: error
