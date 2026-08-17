@@ -3,11 +3,16 @@ import db from "../db";
 import { requireFeature } from "../middleware/featureAccess";
 import { ensureProductTaxonomyReady } from "../inventory/ensureProductTaxonomy";
 import { hasAnyRole } from "../security/roles";
+import { productNegativeStockAllowed } from "../inventory/inventoryLedgerService";
 import inventoryOperationsRouter from "./inventoryOperations";
 import inventoryLotsRouter from "./inventoryLots";
+import inventoryStockPolicyOverridesRouter from "./inventoryStockPolicyOverrides";
 
 const router = Router();
 router.use(requireFeature("inventory"));
+// A kompatibilitási réteg csak azokat a régi műveleteket fogja meg, amelyeknél
+// a termékszintű negatívkészlet-engedély felülírja a telephelyi alaptiltást.
+router.use("/ops", inventoryStockPolicyOverridesRouter);
 router.use("/ops", inventoryLotsRouter);
 router.use("/ops", inventoryOperationsRouter);
 
@@ -59,7 +64,9 @@ router.get("/", async (req: any, res, next) => {
         p.product_group_id,g.name AS product_group_name,g.code AS product_group_code,
         g.product_type_code,g.product_type_name,
         p.product_category_id,c.name AS product_category_name,c.code AS product_category_code,
+        COALESCE(NULLIF(to_jsonb(p)->>'negative_stock_policy',''),'inherit') AS negative_stock_policy,
         b.location_id,b.quantity,COALESCE(b.min_quantity,0)::numeric AS min_quantity,
+        COALESCE(NULLIF(to_jsonb(b)->>'optimal_quantity','')::numeric,0)::numeric AS optimal_quantity,
         COALESCE(b.unit_cost,0)::numeric AS unit_cost,
         (COALESCE(b.quantity,0)*COALESCE(b.unit_cost,0))::numeric AS stock_value,
         CASE
@@ -85,18 +92,22 @@ router.patch("/balances/:id/settings", async (req: any, res, next) => {
   try {
     const minQuantity = parseFiniteNumber(req.body?.min_quantity);
     const unitCost = parseFiniteNumber(req.body?.unit_cost);
+    const optimalInput = req.body?.optimal_quantity === undefined || req.body?.optimal_quantity === "" ? null : parseFiniteNumber(req.body?.optimal_quantity);
     if (minQuantity === null || minQuantity < 0) return res.status(400).json({ message: "A minimum készlet nem lehet negatív." });
     if (unitCost === null || unitCost < 0) return res.status(400).json({ message: "A beszerzési ár nem lehet negatív." });
-    const current = await db.query(`SELECT id,location_id::text FROM product_stock_balances WHERE id=$1`, [req.params.id]);
+    if (optimalInput !== null && optimalInput < 0) return res.status(400).json({ message: "Az optimális készlet nem lehet negatív." });
+    const current = await db.query(`SELECT id,location_id::text,COALESCE(NULLIF(to_jsonb(product_stock_balances)->>'optimal_quantity','')::numeric,0)::numeric optimal_quantity FROM product_stock_balances WHERE id=$1`, [req.params.id]);
     if (!current.rows[0]) return res.status(404).json({ message: "A készletegyenleg nem található." });
     const currentLocation = current.rows[0].location_id == null ? null : String(current.rows[0].location_id);
     if (!canAccessLocation(req, currentLocation)) return res.status(403).json({ message: "Ehhez a telephelyi készlethez nincs jogosultsága." });
+    const optimalQuantity = optimalInput === null ? Number(current.rows[0].optimal_quantity || 0) : optimalInput;
+    if (optimalQuantity > 0 && optimalQuantity < minQuantity) return res.status(400).json({ message: "Az optimális készlet nem lehet kisebb a minimum készletnél." });
     const { rows } = await db.query(`
       UPDATE product_stock_balances
-      SET min_quantity=$2,unit_cost=$3,updated_at=now()
+      SET min_quantity=$2,unit_cost=$3,optimal_quantity=$4,updated_at=now()
       WHERE id=$1
-      RETURNING id,product_id,location_id,quantity,min_quantity,unit_cost,(quantity*unit_cost)::numeric AS stock_value,updated_at
-    `, [req.params.id, minQuantity, money(unitCost)]);
+      RETURNING id,product_id,location_id,quantity,min_quantity,optimal_quantity,unit_cost,(quantity*unit_cost)::numeric AS stock_value,updated_at
+    `, [req.params.id, minQuantity, money(unitCost), optimalQuantity]);
     res.json(rows[0]);
   } catch (err) {
     next(err);
@@ -166,7 +177,7 @@ router.post("/movements", async (req: any, res, next) => {
     if (incomingMinQuantity !== null && (incomingMinQuantity < 0 || !Number.isFinite(incomingMinQuantity))) return res.status(400).json({ message: "Érvénytelen minimum készlet." });
 
     await client.query("BEGIN");
-    const productCheck = await client.query(`SELECT id,name,COALESCE(lot_tracking_enabled,false) AS lot_tracking_enabled FROM products WHERE id=$1`, [productId]);
+    const productCheck = await client.query(`SELECT id,name,COALESCE(lot_tracking_enabled,false) AS lot_tracking_enabled,COALESCE(NULLIF(to_jsonb(products)->>'negative_stock_policy',''),'inherit') negative_stock_policy FROM products WHERE id=$1`, [productId]);
     if (!productCheck.rows[0]) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "A termék nem található." });
@@ -177,7 +188,8 @@ router.post("/movements", async (req: any, res, next) => {
     }
 
     const balanceResult = await client.query(`
-      SELECT id,quantity,COALESCE(unit_cost,0)::numeric AS unit_cost,COALESCE(min_quantity,0)::numeric AS min_quantity
+      SELECT id,quantity,COALESCE(unit_cost,0)::numeric AS unit_cost,COALESCE(min_quantity,0)::numeric AS min_quantity,
+             COALESCE(NULLIF(to_jsonb(product_stock_balances)->>'optimal_quantity','')::numeric,0)::numeric AS optimal_quantity
       FROM product_stock_balances
       WHERE product_id=$1 AND (($2::text IS NULL AND location_id IS NULL) OR location_id::text=$2::text)
       FOR UPDATE
@@ -195,9 +207,9 @@ router.post("/movements", async (req: any, res, next) => {
       movementQuantity = requestedQuantity;
       newBalance = currentBalance + movementQuantity;
     }
-    if (newBalance < 0) {
+    if (newBalance < 0 && !(await productNegativeStockAllowed(client, productId, locationId))) {
       await client.query("ROLLBACK");
-      return res.status(409).json({ message: "A készletkorrekció negatív készletet eredményezne.", current_balance: currentBalance, requested_change: movementQuantity });
+      return res.status(409).json({ message: "A termék készletszabálya nem engedi a negatív készletet.", code: "PRODUCT_NEGATIVE_STOCK_BLOCKED", current_balance: currentBalance, requested_change: movementQuantity });
     }
 
     let newUnitCost = currentUnitCost;
@@ -213,7 +225,7 @@ router.post("/movements", async (req: any, res, next) => {
     if (balanceResult.rows[0]) {
       await client.query(`UPDATE product_stock_balances SET quantity=$2,unit_cost=$3,min_quantity=$4,updated_at=now() WHERE id=$1`, [balanceResult.rows[0].id, newBalance, newUnitCost, newMinQuantity]);
     } else {
-      await client.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity,unit_cost,min_quantity,updated_at) VALUES($1,$2,$3,$4,$5,now())`, [productId, locationId, newBalance, newUnitCost, newMinQuantity]);
+      await client.query(`INSERT INTO product_stock_balances(product_id,location_id,quantity,unit_cost,min_quantity,optimal_quantity,updated_at) VALUES($1,$2,$3,$4,$5,0,now())`, [productId, locationId, newBalance, newUnitCost, newMinQuantity]);
     }
 
     const movement = await client.query(`
@@ -223,7 +235,7 @@ router.post("/movements", async (req: any, res, next) => {
     `, [productId, locationId, movementType, movementQuantity, newBalance, newUnitCost, stockValueAfter, note, createdBy]);
 
     await client.query("COMMIT");
-    res.status(201).json({ product: productCheck.rows[0], movement: movement.rows[0], balance: newBalance, unit_cost: newUnitCost, min_quantity: newMinQuantity, stock_value: stockValueAfter });
+    res.status(201).json({ product: productCheck.rows[0], movement: movement.rows[0], balance: newBalance, unit_cost: newUnitCost, min_quantity: newMinQuantity, optimal_quantity: Number(balanceResult.rows[0]?.optimal_quantity || 0), stock_value: stockValueAfter });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
     next(err);
