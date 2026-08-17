@@ -6,6 +6,7 @@ const path=require('node:path');
 const root=path.resolve(__dirname,'..');
 const read=(p)=>fs.readFileSync(path.join(root,p),'utf8');
 const sql=read('src/sql/20260817_PRODUCT_STOCK_POLICY_V3.sql');
+const routeSql=read('src/sql/20260817_PRODUCT_STOCK_POLICY_ROUTE_V4.sql');
 const ledger=read('src/inventory/inventoryLedgerService.ts');
 const inventory=read('src/routes/inventory.ts');
 const override=read('src/routes/inventoryStockPolicyOverrides.ts');
@@ -43,10 +44,11 @@ test('optimal stock target drives automatic replenishment before legacy trigger'
   assert.match(sql,/workorder_auto_optimal/);
 });
 
-test('stock policy has an audited VIR management surface and is bootstrapped',()=>{
+test('stock policy has an audited VIR management surface on a supported generic route',()=>{
   assert.match(sql,/product-stock-policy/);
-  assert.match(sql,/\/inventory\/product-policies/);
   assert.match(sql,/Termék ID \/ belső kód \/ vonalkód/);
   assert.match(sql,/Negatív készlet engedélyezve/);
+  assert.match(routeSql,/\/spec\/product-stock-policy/);
   assert.match(bootstrap,/20260817_PRODUCT_STOCK_POLICY_V3\.sql/);
+  assert.match(bootstrap,/20260817_PRODUCT_STOCK_POLICY_ROUTE_V4\.sql/);
 });
