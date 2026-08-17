@@ -28,10 +28,15 @@ test('VIR spec dependency retry is bounded and cannot create parallel retry time
   assert.match(src, /retryTimer\.unref\?\.\(\)/);
 });
 
-test('server retains degraded 503 mode while dependency initialization recovers', () => {
+test('server listens promptly and retains degraded 503 mode while dependency initialization recovers', () => {
   const server = read('src/server.ts');
 
   assert.match(server, /error:"db_unreachable"/);
   assert.match(server, /else setTimeout\(\(\)=>initDbDependentThings\(\)\.catch\(\(\)=>\{\}\),15000\)/);
-  assert.match(server, /await initDbDependentThings\(\);await ensureSpecParityDependencies\(\);startComplaintMailboxWorker\(\);app\.listen/);
+
+  const listenAt = server.indexOf('app.listen(PORT');
+  const dbInitAt = server.indexOf('await initDbDependentThings()');
+  const parityAt = server.indexOf('await ensureSpecParityDependencies()');
+  assert.ok(listenAt >= 0 && dbInitAt > listenAt && parityAt > dbInitAt);
+  assert.match(server, /tryDbPing\("background-init-error-recheck"\)/);
 });
