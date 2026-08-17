@@ -3,6 +3,54 @@ import { ensureRuntimeSettingsSchema, hydrateRuntimeSettings } from "../services
 import { ensureVirPerformanceIndexes } from "../performance/ensureVirPerformanceIndexes";
 
 let ensurePromise: Promise<void> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+const retryDelayMs = (() => {
+  const configured = Number(process.env.VIR_SPEC_DEPENDENCY_RETRY_MS || 15000);
+  return Number.isFinite(configured) ? Math.max(1000, configured) : 15000;
+})();
+
+const transientNetworkCodes = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+  "57P01",
+  "57P02",
+  "57P03",
+]);
+
+/**
+ * Only connectivity/outage failures are allowed to degrade startup. SQL/schema
+ * defects still fail fast so a broken migration cannot be hidden by retries.
+ */
+export function isTransientDatabaseError(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | null;
+  const code = String(candidate?.code || "").toUpperCase();
+  const message = String(candidate?.message || error || "");
+
+  if (transientNetworkCodes.has(code) || code.startsWith("08")) return true;
+
+  return /connection\s+(?:terminated|refused|reset)|connect\s+econnrefused|timeout|timed\s*out|could\s+not\s+connect|server\s+closed\s+the\s+connection|network\s+is\s+unreachable/i.test(
+    message,
+  );
+}
+
+function scheduleRetry(): void {
+  if (retryTimer) return;
+
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void ensureSpecParityDependencies().catch((error) => {
+      console.error("[startup] VIR spec dependency retry failed:", error);
+    });
+  }, retryDelayMs);
+
+  retryTimer.unref?.();
+}
 
 /**
  * Tables used across the legacy-spec parity modules that must exist even when
@@ -11,6 +59,11 @@ let ensurePromise: Promise<void> | null = null;
  *
  * Runtime infrastructure/mail settings are also hydrated here so the IMAP worker
  * receives the encrypted VIR-managed configuration before it starts.
+ *
+ * A temporary DB/network outage must not prevent the HTTP server from listening:
+ * server.ts already exposes degraded 503 behaviour while its DB ping loop recovers.
+ * Transient dependency failures therefore schedule a bounded retry. Programming,
+ * SQL and schema errors are still re-thrown and remain startup-fatal.
  */
 export function ensureSpecParityDependencies(): Promise<void> {
   if (!ensurePromise) {
@@ -112,6 +165,18 @@ export function ensureSpecParityDependencies(): Promise<void> {
       .then(() => undefined)
       .catch((error) => {
         ensurePromise = null;
+
+        if (isTransientDatabaseError(error)) {
+          const candidate = error as { code?: unknown; message?: unknown } | null;
+          console.error("[startup] VIR spec dependencies waiting for database; retry scheduled.", {
+            code: candidate?.code || "DB_UNAVAILABLE",
+            message: String(candidate?.message || error || "database unavailable"),
+            retry_ms: retryDelayMs,
+          });
+          scheduleRetry();
+          return;
+        }
+
         throw error;
       });
   }
