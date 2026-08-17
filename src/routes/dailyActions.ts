@@ -4,6 +4,7 @@ import { sendEmail } from "../mailer";
 import { sendSms } from "../sms";
 import webpush from "web-push";
 import axios from "axios";
+import { applicableDailyActions, ensureDailyActionApplicabilitySchema } from "../marketing/dailyActionApplicability";
 export const publicDailyActionsRouter = Router();
 const router = Router();
 const publicFrontendUrl = (process.env.FRONTEND_URL || "https://kleoszalon-frontend.onrender.com").replace(/\/$/, "");
@@ -38,7 +39,7 @@ ALTER TABLE daily_action_campaigns ADD COLUMN IF NOT EXISTS headline text;ALTER 
 ALTER TABLE daily_action_campaigns ALTER COLUMN image_url TYPE text USING image_url::text;ALTER TABLE daily_action_campaigns ALTER COLUMN description_html TYPE text USING description_html::text;ALTER TABLE daily_action_campaigns ALTER COLUMN headline TYPE text USING headline::text;
 ALTER TABLE daily_action_campaigns DROP CONSTRAINT IF EXISTS daily_action_campaign_name_uq;DROP INDEX IF EXISTS daily_action_campaign_name_uq;
 CREATE TABLE IF NOT EXISTS app_push_subscriptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),endpoint text UNIQUE NOT NULL,subscription jsonb NOT NULL,client_id uuid,active boolean DEFAULT true,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_seen_at timestamptz DEFAULT now();ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_reengagement_at timestamptz;ALTER TABLE app_push_subscriptions ADD COLUMN IF NOT EXISTS last_offer_notification_id uuid;
-CREATE TABLE IF NOT EXISTS mobile_app_settings(id integer PRIMARY KEY,config jsonb NOT NULL DEFAULT '{}'::jsonb,updated_at timestamptz DEFAULT now());`).then(()=>undefined).catch(error=>{ensurePromise=null;throw error});
+CREATE TABLE IF NOT EXISTS mobile_app_settings(id integer PRIMARY KEY,config jsonb NOT NULL DEFAULT '{}'::jsonb,updated_at timestamptz DEFAULT now());`).then(async()=>{await ensureDailyActionApplicabilitySchema();}).then(()=>undefined).catch(error=>{ensurePromise=null;throw error});
   return ensurePromise;
 }
 function campaignInput(body: any) {
@@ -128,7 +129,7 @@ router.post("/", async (req, res, n) => {
     if ("error" in input) return res.status(400).json({ message: input.error });
     const
       { rows } = await db.query(
-        `INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until,audience,channels,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'draft')RETURNING *`,
+        `INSERT INTO daily_action_campaigns(name,headline,description_html,image_url,cta_label,cta_url,discount_text,location_id,service_id,discount_percent,valid_from,valid_until,audience,channels,status)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,'draft')RETURNING *`,
         [
           input.name,
           input.headline,
@@ -137,6 +138,9 @@ router.post("/", async (req, res, n) => {
           b.cta_label || "Foglalok",
           b.cta_url || "/foglalas",
           b.discount_text || null,
+          b.location_id || null,
+          b.service_id || null,
+          b.discount_percent === undefined || b.discount_percent === null || b.discount_percent === "" ? null : Math.max(0,Math.min(100,Number(b.discount_percent)||0)),
           input.validFrom,
           input.validUntil,
           JSON.stringify(b.audience || { type: "all" }),
@@ -170,7 +174,7 @@ router.patch("/:id", async (req, res, n) => {
     if ("error" in input) return res.status(400).json({ message: input.error });
     const
       { rows } = await db.query(
-        `UPDATE daily_action_campaigns SET name=$2,headline=$3,description_html=$4,image_url=$5,cta_label=$6,cta_url=$7,discount_text=$8,valid_from=$9,valid_until=$10,audience=$11::jsonb,channels=$12::jsonb,updated_at=now() WHERE id=$1::uuid RETURNING *`,
+        `UPDATE daily_action_campaigns SET name=$2,headline=$3,description_html=$4,image_url=$5,cta_label=$6,cta_url=$7,discount_text=$8,location_id=$9,service_id=$10,discount_percent=$11,valid_from=$12,valid_until=$13,audience=$14::jsonb,channels=$15::jsonb,updated_at=now() WHERE id=$1::uuid RETURNING *`,
         [
           req.params.id,
           input.name,
@@ -180,6 +184,9 @@ router.patch("/:id", async (req, res, n) => {
           b.cta_label || "Foglalok",
           b.cta_url || "/foglalas",
           b.discount_text || null,
+          b.location_id || null,
+          b.service_id || null,
+          b.discount_percent === undefined || b.discount_percent === null || b.discount_percent === "" ? null : Math.max(0,Math.min(100,Number(b.discount_percent)||0)),
           input.validFrom,
           input.validUntil,
           JSON.stringify(b.audience || { type: "all" }),
@@ -251,8 +258,6 @@ router.post("/:id/publish", async (req, res, n) => {
           push++;
         } catch (pushError:any) {
           pushFailures++;
-          // Csak a végleg megszűnt böngésző-feliratkozást kapcsoljuk ki. Egy
-          // átmeneti hálózati/VAPID szolgáltatói hiba után a telefon aktív marad.
           if ([404,410].includes(Number(pushError?.statusCode||pushError?.status)))
             await db.query(
               `UPDATE app_push_subscriptions SET active=false WHERE id=$1`,
@@ -271,15 +276,13 @@ router.post("/:id/publish", async (req, res, n) => {
     n(e);
   }
 });
-publicDailyActionsRouter.get("/", async (_q, res, n) => {
+publicDailyActionsRouter.get("/", async (req, res, n) => {
   try {
     const vapid=await vapidConfig();
-    const { rows } = await db.query(
-      `SELECT id,headline,description_html,image_url,cta_label,cta_url,discount_text,valid_from,valid_until FROM daily_action_campaigns WHERE status='published' AND valid_from<=now() AND valid_until>=now() ORDER BY valid_until`,
-    );
+    const actions=await applicableDailyActions(db,{locationId:String(req.query.location_id||'').trim()||null,clientId:String(req.query.client_id||'').trim()||null,at:new Date()});
     const app=await loadAppConfig();
     res.json({
-      actions: rows,
+      actions,
       vapid_public_key: vapid.publicKey,
       app_config:app.config,
       app_config_updated_at:app.updated_at,
