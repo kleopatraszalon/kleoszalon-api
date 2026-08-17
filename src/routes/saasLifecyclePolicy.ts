@@ -1,6 +1,7 @@
 import { NextFunction, Response, Router } from "express";
 import db from "../db";
 import { TenantAuthRequest } from "../middleware/tenantContext";
+import { processLifecycleNotificationQueue } from "../services/saasLifecycleNotificationWorker";
 
 const router=Router({mergeParams:true});
 const TRIAL_WARNING_DAYS=3;
@@ -69,6 +70,11 @@ router.post("/lifecycle-policy/prepare-notifications",async(req:TenantAuthReques
     }
     return res.json({ok:true,prepared_count:prepared});
   }catch(error){console.error('[SAAS LIFECYCLE POLICY] prepare notifications:',error);return res.status(500).json({ok:false,error:'A lifecycle értesítések nem készíthetők elő.'});}
+});
+
+router.post("/lifecycle-policy/process-notifications",async(req:TenantAuthRequest,res:Response)=>{
+  const limit=Math.max(1,Math.min(25,Number(req.body?.limit)||10));
+  try{return res.json({ok:true,...await processLifecycleNotificationQueue(limit)});}catch(error){console.error('[SAAS LIFECYCLE POLICY] process notifications:',error);return res.status(500).json({ok:false,error:'A lifecycle értesítési queue nem dolgozható fel.'});}
 });
 
 router.post("/lifecycle-policy/apply",async(req:TenantAuthRequest,res:Response)=>{
