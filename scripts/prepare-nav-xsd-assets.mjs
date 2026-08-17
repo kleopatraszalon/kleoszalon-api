@@ -11,31 +11,74 @@ const VENDOR_OUT=path.join(OUT,'vendor','xmllint-wasm');
 const NAV_COMMIT='cc7a775d6dce361311e409abb9934eb755f2749c';
 const COMMON_COMMIT='1f37f991fd9fb606b29aac9d8e367d52616e3d69';
 const XMLLINT_VERSION='5.2.0';
-const XMLLINT_TARBALL='https://registry.npmjs.org/xmllint-wasm/-/xmllint-wasm-5.2.0.tgz';
+const XMLLINT_TARBALLS=[
+  'https://registry.npmjs.org/xmllint-wasm/-/xmllint-wasm-5.2.0.tgz',
+  'https://registry.yarnpkg.com/xmllint-wasm/-/xmllint-wasm-5.2.0.tgz'
+];
 const XMLLINT_INTEGRITY='sha512-GVMuR3ViU8R7sakcVm/4GClMtCV8p7xgjXZlc6GmvPpInIz4V41lmRnjSd4uKhVkf5MZj97wEZkPM4RMAhojuQ==';
+const DOWNLOAD_ATTEMPTS=4;
+const RETRYABLE_STATUS=new Set([408,425,429,500,502,503,504]);
+
+function githubSources(repo,commit,filePath){
+  return [
+    `https://raw.githubusercontent.com/${repo}/${commit}/${filePath}`,
+    `https://cdn.jsdelivr.net/gh/${repo}@${commit}/${filePath}`
+  ];
+}
 
 const sources=[
   {
     name:'invoiceData.xsd',
-    url:`https://raw.githubusercontent.com/nav-gov-hu/Online-Invoice/${NAV_COMMIT}/src/schemas/nav/gov/hu/OSA/invoiceData.xsd`,
+    urls:githubSources('nav-gov-hu/Online-Invoice',NAV_COMMIT,'src/schemas/nav/gov/hu/OSA/invoiceData.xsd'),
     gitBlob:'c644a7112e02e4be53ec151feb00c472ef1c769f'
   },
   {
     name:'invoiceBase.xsd',
-    url:`https://raw.githubusercontent.com/nav-gov-hu/Online-Invoice/${NAV_COMMIT}/src/schemas/nav/gov/hu/OSA/invoiceBase.xsd`,
+    urls:githubSources('nav-gov-hu/Online-Invoice',NAV_COMMIT,'src/schemas/nav/gov/hu/OSA/invoiceBase.xsd'),
     gitBlob:'f3484ffe0ad8a85104fc77bacde669eaf47248bb'
   },
   {
     name:'common.xsd',
-    url:`https://raw.githubusercontent.com/nav-gov-hu/Common/${COMMON_COMMIT}/src/schemas/nav/gov/hu/NTCA/common.xsd`,
+    urls:githubSources('nav-gov-hu/Common',COMMON_COMMIT,'src/schemas/nav/gov/hu/NTCA/common.xsd'),
     gitBlob:'ece06647ae0d454353f347e3d5d4ae9fb96a27f4'
   }
 ];
 
-async function download(url){
-  const response=await fetch(url,{redirect:'follow',headers:{'user-agent':'kleoszalon-nav-xsd-build/1.0'}});
-  if(!response.ok)throw new Error(`Letöltési hiba ${response.status}: ${url}`);
-  return Buffer.from(await response.arrayBuffer());
+function sleep(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+
+async function download(urls,label='asset'){
+  const candidates=Array.isArray(urls)?urls:[urls];
+  const errors=[];
+
+  for(const url of candidates){
+    for(let attempt=1;attempt<=DOWNLOAD_ATTEMPTS;attempt++){
+      try{
+        const response=await fetch(url,{
+          redirect:'follow',
+          headers:{'user-agent':'kleoszalon-nav-xsd-build/1.1'},
+          signal:AbortSignal.timeout(20000)
+        });
+        if(response.ok){
+          if(attempt>1||url!==candidates[0])console.log(`[NAV XSD] ${label} letöltve fallback/retry forrásból: ${url}`);
+          return Buffer.from(await response.arrayBuffer());
+        }
+
+        const message=`HTTP ${response.status} ${response.statusText}`.trim();
+        errors.push(`${url} [${attempt}/${DOWNLOAD_ATTEMPTS}]: ${message}`);
+        if(!RETRYABLE_STATUS.has(response.status))break;
+      }catch(error){
+        const message=error instanceof Error?error.message:String(error);
+        errors.push(`${url} [${attempt}/${DOWNLOAD_ATTEMPTS}]: ${message}`);
+      }
+
+      if(attempt<DOWNLOAD_ATTEMPTS){
+        const delay=500*(2**(attempt-1));
+        await sleep(delay);
+      }
+    }
+  }
+
+  throw new Error(`${label} letöltése minden forrásból sikertelen:\n- ${errors.join('\n- ')}`);
 }
 
 function gitBlobSha(buffer){
@@ -92,7 +135,7 @@ function tarFiles(tgz){
 }
 
 async function prepareXmllint(){
-  const tgz=await download(XMLLINT_TARBALL);
+  const tgz=await download(XMLLINT_TARBALLS,'xmllint-wasm');
   const expected=XMLLINT_INTEGRITY.replace(/^sha512-/, '');
   const actual=crypto.createHash('sha512').update(tgz).digest('base64');
   if(actual!==expected)throw new Error(`xmllint-wasm npm integritási hiba: várt=${expected}, kapott=${actual}`);
@@ -114,13 +157,14 @@ async function main(){
   await fs.mkdir(XSD_OUT,{recursive:true});
   const manifestSources=[];
   for(const source of sources){
-    const original=await download(source.url);
+    const original=await download(source.urls,source.name);
     verifyGitBlob(original,source.gitBlob,source.name);
     const patched=Buffer.from(patchSchemaLocations(source.name,original.toString('utf8')),'utf8');
     await fs.writeFile(path.join(XSD_OUT,source.name),patched);
     manifestSources.push({
       name:source.name,
-      sourceUrl:source.url,
+      sourceUrl:source.urls[0],
+      fallbackUrls:source.urls.slice(1),
       sourceGitBlob:source.gitBlob,
       originalSha256:sha256(original),
       runtimeSha256:sha256(patched),
@@ -135,6 +179,7 @@ async function main(){
     commonCommit:COMMON_COMMIT,
     generatedAt:new Date().toISOString(),
     runtimeNetworkRequired:false,
+    buildDownloadResilience:{attemptsPerSource:DOWNLOAD_ATTEMPTS,githubMirror:'jsDelivr'},
     sources:manifestSources,
     validator:{name:'xmllint-wasm',...validator}
   };
