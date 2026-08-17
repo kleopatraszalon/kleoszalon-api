@@ -1,8 +1,12 @@
+import cron from 'node-cron';
 import db from '../db';
 import {sendEmail} from '../mailer';
 
 type AlertInput={alertKey:string;alertType:string;severity:'warning'|'critical';title:string;message:string;details?:any};
 const ALERT_RECIPIENTS=String(process.env.SAAS_LIFECYCLE_OPS_ALERT_EMAILS||'').split(',').map(x=>x.trim()).filter(Boolean);
+const WATCHDOG_CRON=String(process.env.SAAS_LIFECYCLE_OPS_CRON||'12 * * * *').trim();
+const WATCHDOG_TIMEZONE=String(process.env.SAAS_LIFECYCLE_TIMEZONE||'Europe/Budapest').trim();
+const WATCHDOG_LOCK='kleoszalon_saas_lifecycle_ops_watchdog_v1';
 
 async function upsertAlert(input:AlertInput){
   const {rows}=await db.query(`INSERT INTO saas_lifecycle_ops_alerts(alert_key,alert_type,severity,title,message,status,details)
@@ -40,3 +44,13 @@ export async function reconcileLifecycleOpsAlerts(){
   if(Number(q.failed)>0)await upsertAlert({alertKey:'queue:failed',alertType:'queue_failed',severity:'critical',title:'Lifecycle dead-letter queue nem üres',message:`${Number(q.failed)} értesítés véglegesen failed állapotú.`,details:q});else await resolveAlert('queue:failed');
   if(Number(q.pending)>=25)await upsertAlert({alertKey:'queue:backlog',alertType:'queue_backlog',severity:'warning',title:'Lifecycle értesítési backlog magas',message:`${Number(q.pending)} értesítés vár feldolgozásra.`,details:q});else await resolveAlert('queue:backlog');
 }
+
+export async function runLifecycleOpsWatchdog(){
+  const client=await db.connect();let locked=false;
+  try{const result=await client.query(`SELECT pg_try_advisory_lock(hashtext($1)) locked`,[WATCHDOG_LOCK]);locked=Boolean(result.rows[0]?.locked);if(!locked)return{ok:true,skipped:true,reason:'watchdog_locked'};await reconcileLifecycleOpsAlerts();return{ok:true,skipped:false};}
+  finally{if(locked)await client.query(`SELECT pg_advisory_unlock(hashtext($1))`,[WATCHDOG_LOCK]).catch(()=>{});client.release();}
+}
+
+let started=false;export function startLifecycleOpsWatchdog(){if(started)return;started=true;if(process.env.SAAS_LIFECYCLE_OPS_WATCHDOG_DISABLED==='1')return;if(!cron.validate(WATCHDOG_CRON))throw new Error(`Invalid SAAS_LIFECYCLE_OPS_CRON: ${WATCHDOG_CRON}`);cron.schedule(WATCHDOG_CRON,()=>{runLifecycleOpsWatchdog().catch(error=>console.error('[SAAS LIFECYCLE OPS WATCHDOG]',error));},{timezone:WATCHDOG_TIMEZONE});console.log(`[SAAS LIFECYCLE OPS WATCHDOG] scheduled ${WATCHDOG_CRON} (${WATCHDOG_TIMEZONE})`);}
+
+startLifecycleOpsWatchdog();
