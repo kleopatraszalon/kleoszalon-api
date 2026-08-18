@@ -9,6 +9,7 @@ import {
 import { ensureBusinessProcessIntegritySchema, runBusinessProcessIntegrity } from "../services/businessProcessIntegrity";
 import { ensureTransactionTraceabilitySchema } from "../services/transactionTraceability";
 import { backfillTraces, recentTraces, searchTraces, startTraceMaintenance, traceDetail } from "../services/transactionTraceRuntime";
+import { ensureTransactionTraceSigningSchema, signTraceProof, startTraceProofSigningMaintenance, verifyTraceProofSignature } from "../services/transactionTraceSigning";
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 import { ensureBusinessControlMenu } from "../services/businessControlMenu";
@@ -17,6 +18,7 @@ import { ensureExecutiveAiMenu } from "../services/executiveAiMenu";
 const router=Router();
 startBusinessReconciliationSchedulerV2();
 startTraceMaintenance();
+startTraceProofSigningMaintenance();
 
 async function ensureCriticalMenus(){
   const results=await Promise.allSettled([ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);
@@ -34,7 +36,7 @@ const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0
 const loc=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
 
-router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureTransactionTraceabilitySchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureTransactionTraceabilitySchema(),ensureTransactionTraceSigningSchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
 
 router.get("/finance",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runFinancialReconciliation(date,loc(req,req.query),{persist:false,notify:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
@@ -56,10 +58,13 @@ router.post("/trace/backfill",async(req:AuthRequest,res,next)=>{
   try{res.json(await backfillTraces(Number(req.body?.days||30),Number(req.body?.limit||500)))}catch(error){next(error)}
 });
 router.get("/trace/:root_type/:root_id",async(req:AuthRequest,res,next)=>{
-  try{res.json(await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));res.json({...data,signature})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
 router.post("/trace/:root_type/:root_id/verify",async(req:AuthRequest,res,next)=>{
-  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json({trace:data.trace,proof:data.proof,stages:data.stages,verified_at:new Date().toISOString()})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));res.json({trace:data.trace,proof:data.proof,signature,stages:data.stages,verified_at:new Date().toISOString()})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
+router.get("/trace/:root_type/:root_id/signature",async(req:AuthRequest,res,next)=>{
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json(await verifyTraceProofSignature(String(data.trace.trace_id)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
 
 router.post("/run",async(req:AuthRequest,res,next)=>{
