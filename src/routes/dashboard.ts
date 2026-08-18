@@ -24,13 +24,29 @@ const roleKeys = (role: unknown): string[] => {
   return String(role || "").split(",").map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase()).filter(Boolean);
 };
 
+async function optionalRows(label: string, sql: string, params: any[]): Promise<any[]> {
+  try {
+    const result = await pool.query(sql, params);
+    return result.rows;
+  } catch (error: any) {
+    console.warn(`[dashboard] opcionális lekérdezés kihagyva (${label}):`, error?.message || String(error));
+    return [];
+  }
+}
+
 async function loadDashboard(from: string, to: string, locationId: any, isAdmin: boolean, tenantId: string, now: Date) {
   await ensureDashboardAnalytics();
   const params = [from, to, locationId, tenantId];
-  const tenantFact = `EXISTS (SELECT 1 FROM locations tl WHERE tl.id=f.location_id AND tl.tenant_id=$4::bigint)`;
-  const filter = `f.fact_date BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR f.location_id=$3::uuid) AND ${tenantFact}`;
+  const tenantFact = `EXISTS (
+    SELECT 1 FROM locations tl
+    WHERE tl.id::text=f.location_id::text
+      AND COALESCE(to_jsonb(tl)->>'tenant_id','')=$4::text
+  )`;
+  const filter = `f.fact_date BETWEEN $1::date AND $2::date
+    AND ($3::text IS NULL OR f.location_id::text=$3::text)
+    AND ${tenantFact}`;
 
-  const [summaryRes, trendRes, locationRes, positionRes] = await Promise.all([
+  const [summaryRes, trendRes] = await Promise.all([
     pool.query(`
       SELECT
         COALESCE(SUM(service_revenue+product_revenue),0)::numeric total_revenue,
@@ -60,10 +76,17 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         COALESCE(SUM(f.completed_count),0)::int completed
       FROM days d LEFT JOIN management_daily_facts f
         ON f.fact_date=d.fact_day
-       AND ($3::uuid IS NULL OR f.location_id=$3::uuid)
-       AND EXISTS (SELECT 1 FROM locations tl WHERE tl.id=f.location_id AND tl.tenant_id=$4::bigint)
+       AND ($3::text IS NULL OR f.location_id::text=$3::text)
+       AND EXISTS (
+         SELECT 1 FROM locations tl
+         WHERE tl.id::text=f.location_id::text
+           AND COALESCE(to_jsonb(tl)->>'tenant_id','')=$4::text
+       )
       GROUP BY d.fact_day ORDER BY d.fact_day`, params),
-    pool.query(`
+  ]);
+
+  const [locationRows, positionRows, staffRows, absenceRows, clientRows, availableLocationRows] = await Promise.all([
+    optionalRows("location", `
       SELECT l.id,l.name,
         SUM(f.service_revenue+f.product_revenue)::numeric revenue,
         SUM(f.service_revenue)::numeric service_revenue,
@@ -71,10 +94,10 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         SUM(f.completed_count)::int completed,
         ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity,
         ROUND(100.0*SUM(f.no_show_count)/NULLIF(SUM(f.appointment_count),0),1)::numeric no_show_rate
-      FROM management_daily_facts f JOIN locations l ON l.id=f.location_id
-      WHERE ${filter} AND l.tenant_id=$4::bigint
+      FROM management_daily_facts f JOIN locations l ON l.id::text=f.location_id::text
+      WHERE ${filter} AND COALESCE(to_jsonb(l)->>'tenant_id','')=$4::text
       GROUP BY l.id,l.name ORDER BY revenue DESC`, params),
-    pool.query(`
+    optionalRows("position", `
       SELECT COALESCE(p.name,'Nincs munkakör') position_name,
         SUM(f.service_revenue+f.product_revenue)::numeric revenue,
         SUM(f.service_revenue)::numeric service_revenue,
@@ -82,33 +105,37 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         SUM(f.completed_count)::int completed,
         ROUND(SUM(f.service_revenue+f.product_revenue)/NULLIF(SUM(f.productive_minutes)/60.0,0),0)::numeric revenue_per_hour,
         ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
-      FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
+      FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id::text=f.position_id::text
       WHERE ${filter} GROUP BY p.id,p.name ORDER BY revenue DESC`, params),
-  ]);
-
-  const [staffRes, absenceRes, clientsRes, availableLocationsRes] = await Promise.all([
-    pool.query(`
+    optionalRows("staff", `
       SELECT e.id,e.full_name,COALESCE(p.name,'Nincs munkakör') position_name,l.name location_name,
         SUM(f.service_revenue+f.product_revenue)::numeric revenue,
         SUM(f.completed_count)::int completed,
         ROUND(100.0*SUM(f.productive_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric capacity
-      FROM management_daily_facts f JOIN employees e ON e.id=f.employee_id
-      JOIN locations l ON l.id=f.location_id LEFT JOIN hr_positions p ON p.id=f.position_id
-      WHERE ${filter} AND l.tenant_id=$4::bigint
+      FROM management_daily_facts f JOIN employees e ON e.id::text=f.employee_id::text
+      JOIN locations l ON l.id::text=f.location_id::text LEFT JOIN hr_positions p ON p.id::text=f.position_id::text
+      WHERE ${filter} AND COALESCE(to_jsonb(l)->>'tenant_id','')=$4::text
       GROUP BY e.id,e.full_name,p.name,l.name ORDER BY revenue DESC LIMIT 10`, params),
-    pool.query(`
+    optionalRows("absence", `
       SELECT COALESCE(p.name,'Nincs munkakör') position_name,
         ROUND(SUM(f.sick_minutes)/480.0,1)::numeric sick_days,
         ROUND(SUM(f.paid_leave_minutes)/480.0,1)::numeric paid_leave_days,
         ROUND(SUM(f.unpaid_leave_minutes)/480.0,1)::numeric unpaid_leave_days,
         ROUND(SUM(f.unexcused_minutes)/480.0,1)::numeric unexcused_days,
         ROUND(100.0*SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)/NULLIF(SUM(f.available_minutes),0),1)::numeric absence_rate
-      FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id=f.position_id
+      FROM management_daily_facts f LEFT JOIN hr_positions p ON p.id::text=f.position_id::text
       WHERE ${filter} GROUP BY p.id,p.name
       HAVING SUM(f.sick_minutes+f.paid_leave_minutes+f.unpaid_leave_minutes+f.unexcused_minutes)>0
       ORDER BY absence_rate DESC`, params),
-    pool.query(`SELECT COUNT(*)::int total_clients FROM clients WHERE tenant_id=$1::bigint`, [tenantId]),
-    pool.query(`SELECT id,name FROM locations WHERE tenant_id=$1::bigint AND ($2::boolean OR id=$3::uuid) ORDER BY name`, [tenantId, isAdmin, locationId]),
+    optionalRows("clients", `
+      SELECT COUNT(*)::int total_clients
+      FROM clients c
+      WHERE COALESCE(to_jsonb(c)->>'tenant_id','')=$1::text`, [tenantId]),
+    optionalRows("locations", `
+      SELECT l.id,l.name FROM locations l
+      WHERE COALESCE(to_jsonb(l)->>'tenant_id','')=$1::text
+        AND ($2::boolean OR l.id::text=$3::text)
+      ORDER BY l.name`, [tenantId, isAdmin, locationId]),
   ]);
 
   const summary = summaryRes.rows[0] || {};
@@ -124,7 +151,7 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
       dailyRevenue:Number(todayRevenue), monthlyRevenue:Number(summary.total_revenue||0), totalRevenue:Number(summary.total_revenue||0),
       serviceRevenue:Number(summary.service_revenue||0), productRevenue:Number(summary.product_revenue||0),
       averageInvoice:Number(summary.average_invoice||0), averageServiceInvoice:Number(summary.average_service_invoice||0),
-      averageCapacity:Number(summary.average_capacity||0), totalClients:Number(clientsRes.rows[0]?.total_clients||0),
+      averageCapacity:Number(summary.average_capacity||0), totalClients:Number(clientRows[0]?.total_clients||0),
       newClients:Number(summary.new_clients||0), activeAppointments:Number(summary.appointment_count||0),
       completedAppointments:Number(summary.completed_count||0), cancelledAppointments:Number(summary.cancelled_count||0),
       noShowCount:Number(summary.no_show_count||0), completionRate:Number(summary.completion_rate||0),
@@ -132,11 +159,11 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
       leaveDays:Number(summary.leave_days||0), unexcusedDays:Number(summary.unexcused_days||0), lowStockCount:0
     },
     chartData:trendRes.rows,
-    revenueByLocation:locationRes.rows,
-    revenueByPosition:positionRes.rows,
-    topEmployees:staffRes.rows,
-    absenceByPosition:absenceRes.rows,
-    locations:availableLocationsRes.rows,
+    revenueByLocation:locationRows,
+    revenueByPosition:positionRows,
+    topEmployees:staffRows,
+    absenceByPosition:absenceRows,
+    locations:availableLocationRows,
     alerts
   };
 }
