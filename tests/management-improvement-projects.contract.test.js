@@ -10,6 +10,13 @@ test('operations quality mounts database improvement project API',()=>{
   contains(p,['managementImprovementRouter','router.use("/improvement",managementImprovementRouter)']);
 });
 
+test('management improvement menu is self healing and management only',()=>{
+  const route=read('src/routes/operationsQuality.ts');
+  const menu=read('src/menu/ensureManagementImprovementMenu.ts');
+  contains(route,['ensureManagementImprovementMenu','5_000','20_000','60_000']);
+  contains(menu,['Vállalatirányítási eszközök','operations.improvement','Fejlesztési projektek és CAPA','/operations/improvement',"VALUES('admin'),('manager')",'can_approve=true','clearShortCache("menu:")']);
+});
+
 test('improvement schema persists project CAPA KPI approval and append-only audit records',()=>{
   const p=read('src/management/ensureManagementImprovement.ts');
   contains(p,['management_improvement_projects','management_improvement_actions','management_improvement_kpis','management_improvement_approvals','management_improvement_audit','analysis_data jsonb','approval_state','management_improvement_one_pending_approval_idx','management_improvement_audit_immutable']);
