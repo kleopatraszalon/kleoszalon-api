@@ -10,7 +10,8 @@ import { ensureBusinessProcessIntegritySchema, runBusinessProcessIntegrity } fro
 import { ensureTransactionTraceabilitySchema } from "../services/transactionTraceability";
 import { backfillTraces, recentTraces, searchTraces, startTraceMaintenance, traceDetail } from "../services/transactionTraceRuntime";
 import { ensureTransactionTraceSigningSchema, signTraceProof, startTraceProofSigningMaintenance, verifyTraceProofSignature } from "../services/transactionTraceSigning";
-import { assessTraceForensics, buildProofPackage, buildTraceGraph, ensureTransactionTraceForensicsSchema, runTraceWatchdog, startTraceForensicWatchdog, traceHealthSummary } from "../services/transactionTraceForensics";
+import { assessTraceForensics, buildProofPackage, buildTraceGraph, ensureTransactionTraceForensicsSchema, traceHealthSummary } from "../services/transactionTraceForensics";
+import { runSafeTraceWatchdog, startSafeTraceWatchdog } from "../services/transactionTraceWatchdog";
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 import { ensureBusinessControlMenu } from "../services/businessControlMenu";
@@ -20,7 +21,7 @@ const router=Router();
 startBusinessReconciliationSchedulerV2();
 startTraceMaintenance();
 startTraceProofSigningMaintenance();
-startTraceForensicWatchdog();
+startSafeTraceWatchdog();
 
 async function ensureCriticalMenus(){
   const results=await Promise.allSettled([ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);
@@ -54,7 +55,7 @@ router.get("/trace/health",async(req:AuthRequest,res,next)=>{
   try{res.json(await traceHealthSummary(Number(req.query.days||30),loc(req,req.query)))}catch(error){next(error)}
 });
 router.post("/trace/watchdog",async(_req:AuthRequest,res,next)=>{
-  try{res.json(await runTraceWatchdog(1000))}catch(error){next(error)}
+  try{res.json(await runSafeTraceWatchdog(1000))}catch(error){next(error)}
 });
 router.get("/trace/recent",async(req:AuthRequest,res,next)=>{
   try{res.json({items:await recentTraces(Number(req.query.limit||60),loc(req,req.query))})}catch(error){next(error)}
