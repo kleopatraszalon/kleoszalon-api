@@ -1,0 +1,36 @@
+name: Close backup P0 on successful evidence
+
+on:
+  workflow_run:
+    workflows: ['Backup restore requirement evidence']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  close-backup-p0:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close backup/restore P0 with run evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = 270;
+            const run = context.payload.workflow_run;
+            const issue = await github.rest.issues.get({ owner, repo, issue_number });
+            const evidence = [
+              'KLEO-NFR-BCK-001 production backup/restore evidence PASS.',
+              `Workflow: ${run.html_url}`,
+              `Head SHA: ${run.head_sha}`,
+              `Event: ${run.event}`,
+              'The P0 is closed automatically only after a successful non-PR restore-evidence run.'
+            ].join('\n');
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: evidence });
+            if (issue.data.state !== 'closed') {
+              await github.rest.issues.update({ owner, repo, issue_number, state: 'closed', state_reason: 'completed' });
+            }

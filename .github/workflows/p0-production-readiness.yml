@@ -1,0 +1,107 @@
+name: P0 production readiness
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'docs/P0_PRODUCTION_CLOSURE_RUNBOOK.md'
+  schedule:
+    - cron: '45 2 * * *'
+
+permissions:
+  contents: read
+  issues: read
+  statuses: write
+
+jobs:
+  p0-production-readiness:
+    name: p0-production-readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify all four P0 controls are closed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.payload.pull_request?.head?.sha || context.sha;
+            const failures = [];
+            const details = [];
+
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha,
+              state: 'pending',
+              context: 'p0/production-readiness',
+              description: 'Checking backup, credential rotation, NAV TEST and main protection'
+            });
+
+            try {
+              const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+              if (!branch.data.protected) {
+                failures.push('P0/4: main branch is not protected');
+              } else {
+                details.push('P0/4 main branch reports protected=true');
+              }
+
+              const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
+              if (!protection.data.required_pull_request_reviews) {
+                failures.push('P0/4: pull-request review is not required on main');
+              }
+              if (!protection.data.required_status_checks) {
+                failures.push('P0/4: required status checks are not configured on main');
+              }
+              if (protection.data.allow_force_pushes?.enabled) {
+                failures.push('P0/4: force pushes are enabled on main');
+              }
+            } catch (error) {
+              failures.push(`P0/4: branch protection cannot be proven (${error.status || error.message})`);
+            }
+
+            const requiredIssues = [
+              { number: 270, label: 'P0/1 backup/restore evidence' },
+              { number: 62, label: 'P0/2 credential rotation' },
+              { number: 212, label: 'P0/3 NAV TEST configuration/UAT' },
+            ];
+
+            for (const item of requiredIssues) {
+              try {
+                const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
+                if (issue.data.state !== 'closed') {
+                  failures.push(`${item.label}: issue #${item.number} is still open`);
+                } else {
+                  details.push(`${item.label}: issue #${item.number} closed`);
+                }
+              } catch (error) {
+                failures.push(`${item.label}: issue #${item.number} cannot be verified`);
+              }
+            }
+
+            const state = failures.length ? 'failure' : 'success';
+            const description = failures.length
+              ? `${failures.length} P0 production blocker(s) remain`
+              : 'All four P0 production controls are closed';
+
+            await github.rest.repos.createCommitStatus({
+              owner, repo, sha, state,
+              context: 'p0/production-readiness',
+              description: description.slice(0, 140),
+              target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+            });
+
+            core.summary.addHeading('VIR P0 production readiness');
+            if (details.length) {
+              core.summary.addList(details);
+            }
+            if (failures.length) {
+              core.summary.addHeading('Blocking controls', 2).addList(failures);
+              await core.summary.write();
+              core.setFailed(failures.join(' | '));
+            } else {
+              core.summary.addRaw('All four P0 controls are proven closed.\n');
+              await core.summary.write();
+            }
