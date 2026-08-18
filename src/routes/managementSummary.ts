@@ -48,6 +48,17 @@ async function safeQuery(sql:string, params:any[], fallback:any, source:string, 
     throw err;
   }
 }
+async function safeRows(sql:string,params:any[],source:string,warnings:string[]) {
+  try { return (await db.query(sql,params)).rows as any[]; }
+  catch(err:any) {
+    if(["42P01","42703","42883","42804"].includes(String(err?.code||""))) {
+      console.warn(`management BI ${source} unavailable:`,err.message);
+      warnings.push(`${source}: ${err.message}`);
+      return [];
+    }
+    throw err;
+  }
+}
 
 async function loadStock(financialVisible:boolean, locationId:string|null, warnings:string[]) {
   try {
@@ -71,8 +82,6 @@ async function buildSummary(from:string,to:string,locationId:string|null,financi
   const params:any[] = [from,to,locationId];
   const loc = `($3::text IS NULL OR wo.location_id::text=$3::text)`;
   const warnings:string[] = [];
-
-  // A korábbi soros végrehajtás helyett az öt független vezetői blokk párhuzamosan fut.
   const [revenueRes, stockRes, crmRes, guestSegmentsRes, staffRes] = await Promise.all([
     financialVisible ? safeQuery(`WITH closed AS (
       SELECT wo.id,wo.employee_id,wo.location_id,COALESCE(wo.discount_amount,0) discount_amount,COALESCE(wo.tip_amount,0) tip_amount,
@@ -117,6 +126,111 @@ async function buildSummary(from:string,to:string,locationId:string|null,financi
     source_status:{ ok:warnings.length===0, warnings }
   };
 }
+
+const avg=(rows:any[],key:string)=>rows.length?rows.reduce((s,r)=>s+n(r[key]),0)/rows.length:0;
+function percentile(rows:any[],key:string,p:number){const a=rows.map(r=>n(r[key])).filter(Number.isFinite).sort((x,y)=>x-y);if(!a.length)return 0;const pos=(a.length-1)*p,lo=Math.floor(pos),hi=Math.ceil(pos);return lo===hi?a[lo]:a[lo]+(a[hi]-a[lo])*(pos-lo)}
+
+async function buildDecisionSupport(from:string,to:string,locationId:string|null,financialVisible:boolean,isAdmin:boolean){
+  const warnings:string[]=[];
+  const params=[from,to,locationId];
+  const [heatmapRows,rebookingRows,staffRows,benchmarkRows]=await Promise.all([
+    safeRows(`SELECT EXTRACT(ISODOW FROM a.start_time)::int weekday,EXTRACT(HOUR FROM a.start_time)::int hour,
+      COUNT(*)::int appointments,COUNT(*) FILTER(WHERE a.status IN ('completed','paid'))::int completed,
+      COUNT(*) FILTER(WHERE a.status='no_show')::int no_show
+      FROM appointments a WHERE a.start_time::date BETWEEN $1::date AND $2::date
+      AND ($3::text IS NULL OR a.location_id::text=$3::text) AND COALESCE(a.status,'') NOT IN ('cancelled','canceled')
+      GROUP BY 1,2 ORDER BY 1,2`,params,"foglalási heatmap",warnings),
+    safeRows(`WITH base AS (
+      SELECT DISTINCT a.id,a.client_id,a.end_time,a.location_id FROM appointments a
+      JOIN work_orders wo ON wo.appointment_id=a.id
+      WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND a.client_id IS NOT NULL
+      AND ($3::text IS NULL OR a.location_id::text=$3::text)), scored AS (
+      SELECT b.*,EXISTS(SELECT 1 FROM appointments nx WHERE nx.client_id=b.client_id AND nx.start_time>b.end_time
+        AND nx.start_time<=b.end_time+INTERVAL '90 days' AND COALESCE(nx.status,'') NOT IN ('cancelled','canceled','no_show')) rebooked,
+        EXISTS(SELECT 1 FROM appointments nx WHERE nx.client_id=b.client_id AND nx.start_time>b.end_time
+        AND nx.start_time<=b.end_time+INTERVAL '90 days' AND nx.created_at<=b.end_time+INTERVAL '24 hours'
+        AND COALESCE(nx.status,'') NOT IN ('cancelled','canceled','no_show')) immediate_rebooked FROM base b)
+      SELECT COUNT(*)::int eligible_visits,COUNT(*) FILTER(WHERE rebooked)::int rebooked_visits,
+        COUNT(*) FILTER(WHERE immediate_rebooked)::int immediate_rebooked_visits,
+        COALESCE(100.0*COUNT(*) FILTER(WHERE rebooked)/NULLIF(COUNT(*),0),0)::numeric rebooking_rate_percent,
+        COALESCE(100.0*COUNT(*) FILTER(WHERE immediate_rebooked)/NULLIF(COUNT(*),0),0)::numeric immediate_rebooking_rate_percent FROM scored`,params,"rebooking",warnings),
+    safeRows(`WITH rev AS (
+      SELECT wo.employee_id,${financialVisible?"COALESCE(SUM(wi.line_total),0)::numeric":"0::numeric"} revenue,COUNT(DISTINCT wo.id)::int workorders
+      FROM work_orders wo LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
+      WHERE wo.employee_id IS NOT NULL AND wo.financial_closed_at::date BETWEEN $1::date AND $2::date
+      AND ($3::text IS NULL OR wo.location_id::text=$3::text) GROUP BY wo.employee_id), ts AS (
+      SELECT t.employee_id,COALESCE(SUM(CASE WHEN COALESCE(t.regular_minutes,0)+COALESCE(t.overtime_minutes,0)>0
+        THEN COALESCE(t.regular_minutes,0)+COALESCE(t.overtime_minutes,0)
+        WHEN t.clock_in IS NOT NULL AND t.clock_out IS NOT NULL THEN GREATEST(EXTRACT(EPOCH FROM(t.clock_out-t.clock_in))/60-COALESCE(t.break_minutes,0),0) ELSE 0 END),0)::numeric paid_minutes
+      FROM timesheets t WHERE t.work_date BETWEEN $1::date AND $2::date AND COALESCE(t.status,'') NOT IN ('cancelled','rejected')
+      AND ($3::text IS NULL OR t.location_id::text=$3::text) GROUP BY t.employee_id), svc AS (
+      SELECT a.employee_id,COALESCE(SUM(GREATEST(EXTRACT(EPOCH FROM(a.end_time-a.start_time))/60,0)),0)::numeric service_minutes,COUNT(*)::int appointments
+      FROM appointments a WHERE a.employee_id IS NOT NULL AND a.start_time::date BETWEEN $1::date AND $2::date
+      AND ($3::text IS NULL OR a.location_id::text=$3::text) AND a.end_time<=now()
+      AND COALESCE(a.status,'') NOT IN ('cancelled','canceled','no_show') GROUP BY a.employee_id), ids AS (
+      SELECT employee_id FROM rev UNION SELECT employee_id FROM ts UNION SELECT employee_id FROM svc)
+      SELECT ids.employee_id::text,COALESCE(e.full_name,e.email,'Nincs név') employee_name,COALESCE(rev.revenue,0)::numeric revenue,
+        COALESCE(rev.workorders,0)::int workorders,COALESCE(ts.paid_minutes,0)::numeric paid_minutes,COALESCE(svc.service_minutes,0)::numeric service_minutes,
+        COALESCE(svc.appointments,0)::int appointments,
+        CASE WHEN COALESCE(ts.paid_minutes,0)>0 THEN COALESCE(rev.revenue,0)/(ts.paid_minutes/60.0)
+             WHEN COALESCE(svc.service_minutes,0)>0 THEN COALESCE(rev.revenue,0)/(svc.service_minutes/60.0) ELSE 0 END::numeric revenue_per_hour,
+        CASE WHEN COALESCE(ts.paid_minutes,0)>0 THEN 100.0*COALESCE(svc.service_minutes,0)/ts.paid_minutes ELSE NULL END::numeric utilization_percent,
+        CASE WHEN COALESCE(ts.paid_minutes,0)>0 THEN 'timesheet' WHEN COALESCE(svc.service_minutes,0)>0 THEN 'appointment_duration' ELSE 'none' END hour_source
+      FROM ids LEFT JOIN employees e ON e.id=ids.employee_id LEFT JOIN rev ON rev.employee_id=ids.employee_id
+      LEFT JOIN ts ON ts.employee_id=ids.employee_id LEFT JOIN svc ON svc.employee_id=ids.employee_id
+      ORDER BY revenue_per_hour DESC,revenue DESC LIMIT 50`,params,"munkatársi Revenue/Hour",warnings),
+    safeRows(`WITH ap AS (
+      SELECT a.location_id,COUNT(*) FILTER(WHERE COALESCE(a.status,'') NOT IN ('cancelled','canceled'))::int appointments,
+        COUNT(*) FILTER(WHERE a.status IN ('completed','paid'))::int completed,
+        COUNT(*) FILTER(WHERE a.status='no_show')::int no_show
+      FROM appointments a WHERE a.start_time::date BETWEEN $1::date AND $2::date AND a.location_id IS NOT NULL GROUP BY a.location_id), rev AS (
+      SELECT wo.location_id,${financialVisible?"COALESCE(SUM(wi.line_total),0)::numeric":"0::numeric"} revenue,COUNT(DISTINCT wo.id)::int workorders
+      FROM work_orders wo LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
+      WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND wo.location_id IS NOT NULL GROUP BY wo.location_id), base AS (
+      SELECT DISTINCT a.id,a.client_id,a.end_time,a.location_id FROM appointments a JOIN work_orders wo ON wo.appointment_id=a.id
+      WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND a.client_id IS NOT NULL AND a.location_id IS NOT NULL), rb AS (
+      SELECT b.location_id,COUNT(*)::int eligible,COUNT(*) FILTER(WHERE EXISTS(SELECT 1 FROM appointments nx WHERE nx.client_id=b.client_id
+        AND nx.start_time>b.end_time AND nx.start_time<=b.end_time+INTERVAL '90 days' AND COALESCE(nx.status,'') NOT IN ('cancelled','canceled','no_show')))::int rebooked
+      FROM base b GROUP BY b.location_id)
+      SELECT l.id::text location_id,l.name,COALESCE(ap.appointments,0)::int appointments,COALESCE(ap.completed,0)::int completed,
+        COALESCE(ap.no_show,0)::int no_show,COALESCE(rev.revenue,0)::numeric revenue,COALESCE(rev.workorders,0)::int workorders,
+        COALESCE(100.0*ap.completed/NULLIF(ap.appointments,0),0)::numeric completion_rate_percent,
+        COALESCE(100.0*ap.no_show/NULLIF(ap.appointments,0),0)::numeric no_show_rate_percent,
+        COALESCE(100.0*rb.rebooked/NULLIF(rb.eligible,0),0)::numeric rebooking_rate_percent,
+        COALESCE(rev.revenue/NULLIF(rev.workorders,0),0)::numeric avg_ticket
+      FROM locations l LEFT JOIN ap ON ap.location_id=l.id LEFT JOIN rev ON rev.location_id=l.id LEFT JOIN rb ON rb.location_id=l.id
+      WHERE COALESCE(l.active,true)=true ORDER BY revenue DESC,appointments DESC`,[from,to],"hálózati benchmark",warnings)
+  ]);
+
+  const r=rebookingRows[0]||{};
+  const normalizedStaff=staffRows.map(x=>({employee_id:String(x.employee_id||''),employee_name:String(x.employee_name||'Nincs név'),revenue:n(x.revenue),workorders:n(x.workorders),paid_hours:n(x.paid_minutes)/60,service_hours:n(x.service_minutes)/60,appointments:n(x.appointments),revenue_per_hour:n(x.revenue_per_hour),utilization_percent:x.utilization_percent==null?null:n(x.utilization_percent),hour_source:String(x.hour_source||'none')}));
+  const normalizedBench=benchmarkRows.map(x=>({location_id:String(x.location_id||''),name:String(x.name||''),appointments:n(x.appointments),completed:n(x.completed),no_show:n(x.no_show),revenue:n(x.revenue),workorders:n(x.workorders),completion_rate_percent:n(x.completion_rate_percent),no_show_rate_percent:n(x.no_show_rate_percent),rebooking_rate_percent:n(x.rebooking_rate_percent),avg_ticket:n(x.avg_ticket)}));
+  const metricKeys=["revenue","appointments","completion_rate_percent","no_show_rate_percent","rebooking_rate_percent","avg_ticket"];
+  const network:any={};
+  for(const key of metricKeys) network[key]={average:avg(normalizedBench,key),top_quartile:percentile(normalizedBench,key,key==="no_show_rate_percent"?.25:.75)};
+  const current=locationId?normalizedBench.find(x=>x.location_id===locationId)||null:null;
+  return {period:{from,to},location_id:locationId,financial_visible:financialVisible,
+    heatmap:heatmapRows.map(x=>({weekday:n(x.weekday),hour:n(x.hour),appointments:n(x.appointments),completed:n(x.completed),no_show:n(x.no_show)})),
+    rebooking:{eligible_visits:n(r.eligible_visits),rebooked_visits:n(r.rebooked_visits),immediate_rebooked_visits:n(r.immediate_rebooked_visits),rebooking_rate_percent:n(r.rebooking_rate_percent),immediate_rebooking_rate_percent:n(r.immediate_rebooking_rate_percent),horizon_days:90,immediate_window_hours:24},
+    staff_revenue_hour:normalizedStaff,
+    benchmark:{current,network,locations:isAdmin?normalizedBench:undefined,location_count:normalizedBench.length},
+    source_status:{ok:warnings.length===0,warnings}
+  };
+}
+
+router.get("/decision-support",async(req:AuthRequest,res,next)=>{
+  try{
+    const financialVisible=await canViewFinancial(req);
+    const from=String(req.query.from||new Date(Date.now()-29*86400000).toISOString().slice(0,10));
+    const to=String(req.query.to||new Date().toISOString().slice(0,10));
+    const requestedLocation=String(req.query.location_id||"").trim()||null;
+    const roles=roleKeys(req),isAdmin=roles.includes("admin");
+    const locationId=isAdmin?requestedLocation:(req.user?.location_id?String(req.user.location_id):null);
+    const cacheKey=`management-bi:${scopedCacheKey([from,to,locationId,financialVisible,isAdmin])}`;
+    const payload=await shortCache(cacheKey,MANAGEMENT_CACHE_MS,()=>timed(`/management/decision-support ${from}..${to} ${locationId||"all"}`,()=>buildDecisionSupport(from,to,locationId,financialVisible,isAdmin)));
+    res.setHeader("Cache-Control","private, no-store");res.json(payload);
+  }catch(err){next(err)}
+});
 
 router.get(["/", "/summary"], async (req: AuthRequest, res, next) => {
   try {
