@@ -1,0 +1,9 @@
+Deploy trigger for dashboard tenant/auth hotfix.
+
+Fixes included:
+- dashboard tenant derived from signed salon when stale JWT tenant disagrees;
+- repeated requireAuth preserves trusted in-request tenant/location context;
+- /api/dashboard no longer runs a second authentication pass after locationManagerScope resolves the tenant;
+- regression coverage locks the single-auth dashboard path.
+
+2026-08-18
