@@ -63,6 +63,33 @@ async function applyCommercialModel(client: PoolClient) {
   `);
 
   await client.query(`
+    CREATE OR REPLACE FUNCTION enforce_saas_trial_policy()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    DECLARE configured_trial_days integer;
+    DECLARE configured_plan_code text;
+    BEGIN
+      SELECT trial_days,code INTO configured_trial_days,configured_plan_code
+        FROM subscription_plans WHERE id=NEW.plan_id;
+      IF NEW.status='trial' THEN
+        IF COALESCE(configured_trial_days,0)<=0 THEN
+          RAISE EXCEPTION 'SAAS_TRIAL_NOT_AVAILABLE:%',COALESCE(configured_plan_code,'unknown');
+        END IF;
+        NEW.trial_ends_at:=COALESCE(NEW.trial_ends_at,now()+make_interval(days=>configured_trial_days));
+        IF NEW.trial_ends_at>now()+make_interval(days=>configured_trial_days) THEN
+          NEW.trial_ends_at:=now()+make_interval(days=>configured_trial_days);
+        END IF;
+      ELSE
+        NEW.trial_ends_at:=NULL;
+      END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS subscriptions_trial_policy_guard ON subscriptions;
+    CREATE TRIGGER subscriptions_trial_policy_guard
+      BEFORE INSERT OR UPDATE OF plan_id,status,trial_ends_at ON subscriptions
+      FOR EACH ROW EXECUTE FUNCTION enforce_saas_trial_policy();
+  `);
+
+  await client.query(`
     INSERT INTO tenant_settings(tenant_id,settings)
     SELECT id, jsonb_build_object(
       'saas_commercial_model_version',$1::text,
