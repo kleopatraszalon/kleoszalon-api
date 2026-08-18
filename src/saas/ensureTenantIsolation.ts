@@ -40,10 +40,11 @@ export const TENANT_MASTER_TABLES = [
 /**
  * Runtime tenant-isolation readiness check.
  *
- * The old implementation performed ALTER TABLE / CREATE INDEX / UPDATE backfill
- * work during application startup. That has been moved into versioned SQL
- * migrations. Runtime code now fails closed when an existing tenant-scoped table
- * is missing tenant_id instead of mutating production schema under API traffic.
+ * The old implementation changed schema and backfilled tenant ownership during
+ * application startup. All schema/data migration work now lives in versioned
+ * SQL migrations. Runtime code fails closed when an existing tenant-scoped
+ * table is missing tenant_id instead of mutating production schema under API
+ * traffic.
  */
 export function ensureTenantIsolation(): Promise<void> {
   if (isolationPromise) return isolationPromise;
