@@ -21,7 +21,7 @@ export async function ensureExecutiveAiMenu(){
       SELECT x.code,x.name,x.icon,x.route,x.order_index,p.id,'analytics',true FROM p CROSS JOIN (VALUES
         ('analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/finance/executive-ai',15),
         ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16),
-        ('analytics.exception_intelligence','Exception Intelligence','Network','/finance/exception-command-center/intelligence',17),
+        ('analytics.exception_intelligence','Exception Intelligence','ChartNoAxesCombined','/finance/exception-command-center/intelligence',17),
         ('analytics.exception_capa','CAPA központ','ClipboardCheck','/finance/exception-command-center/capa',18)
       ) x(code,name,icon,route,order_index)
       ON CONFLICT(code) DO UPDATE SET
