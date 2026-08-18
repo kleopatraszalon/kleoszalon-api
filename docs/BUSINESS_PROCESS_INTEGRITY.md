@@ -99,4 +99,24 @@ Egy üzleti nap csak akkor tekinthető teljesen zártnak, ha:
 - nincs negatív készlet;
 - nincs elavult nyitott kasszaműszak.
 
-A későbbi Release Control integrációban ezek a státuszok production blocking gate-ként használhatók.
+## Release Control backend gate
+
+A Release Control backend válaszát a `src/middleware/releaseControlProcessIntegrity.ts` szerveroldali gate egészíti ki a `/api/transactions/release-control` útvonalon.
+
+A gate kulcsa: `business.process_integrity`.
+
+A gate **blocking és nem szerkeszthető**. PASS csak akkor adható, ha az előző kontrollnap globális (`location_key='__all__'`) `business_process_integrity_runs` rekordja:
+
+- létezik;
+- `status = 'ok'`;
+- `exception_count = 0`.
+
+Minden más állapot fail-closed `NO-GO`:
+
+- hiányzó séma;
+- hiányzó globális futás;
+- `warning` vagy `critical` folyamatállapot;
+- bármilyen kivétel;
+- adatbázis/ellenőrzési hiba.
+
+A middleware a gate hozzáadása után szerveroldalon újraszámolja a `release_ready`, `decision`, `summary`, `blockers` és `gates` mezőket. Emiatt a frontend nem tudja egy hibás vagy hiányzó folyamatintegritási eredményt lokálisan GO állapotra felülírni.
