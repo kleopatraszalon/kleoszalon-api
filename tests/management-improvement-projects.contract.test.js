@@ -32,6 +32,12 @@ test('improvement workflow is tenant scoped and approval is fail closed',()=>{
   contains(p,['resolveTenantIdentity','locationBelongsToTenant','tenant_id=$2::bigint','request-approval','before_value IS NOT NULL AND after_value IS NOT NULL','project.approval_state !== "pending"','Nincs függő jóváhagyási kérelem.','A projekt csak jóváhagyás után zárható le.','CAPA intézkedés eredményességét igazolni kell.']);
 });
 
+test('approval API matches DB readiness and returns business conflicts instead of false 500',()=>{
+  const p=read('src/routes/managementImprovement.ts');
+  contains(p,["String(error?.code || \"\") === \"23514\"","dbConstraint ? 409 : 500","status NOT IN ('verified','cancelled')","intézkedés eredményességét igazolni vagy az intézkedést megszakítani kell."]);
+  assert.ok(!p.includes("status NOT IN ('completed','verified','cancelled')`"),'approval request must not treat merely completed CAPA as verified');
+});
+
 test('all project mutations are audit trailed',()=>{
   const p=read('src/routes/managementImprovement.ts');
   contains(p,['project.created','project.updated','action.created','action.updated','action.deleted','kpi.created','kpi.updated','kpi.deleted','approval.requested','approval.approved','approval.rejected','project.closed']);
