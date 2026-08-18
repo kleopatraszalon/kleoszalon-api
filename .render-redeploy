@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T12:06:00+02:00
-Deploy latest main including all previously merged commits.
-Reason: full production redeploy after menu label cleanup and persistent drag-and-drop menu layout restoration.
+2026-08-18T12:09:00+02:00
+Deploy latest main including Observability/APM, Financial Reconciliation Center and automatic stock reconciliation.
+Reason: user-requested production deploy of the completed business integrity controls.
