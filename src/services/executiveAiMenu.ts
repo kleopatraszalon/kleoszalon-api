@@ -20,7 +20,8 @@ export async function ensureExecutiveAiMenu(){
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
       SELECT x.code,x.name,x.icon,x.route,x.order_index,p.id,'analytics',true FROM p CROSS JOIN (VALUES
         ('analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/finance/executive-ai',15),
-        ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16)
+        ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16),
+        ('analytics.exception_intelligence','Exception Intelligence','Network','/finance/exception-command-center/intelligence',17)
       ) x(code,name,icon,route,order_index)
       ON CONFLICT(code) DO UPDATE SET
         name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
@@ -34,7 +35,7 @@ export async function ensureExecutiveAiMenu(){
         )
         SELECT r.role_key,m.id,true,false,true,false,true,true,true,false,'all_locations',now()
         FROM (VALUES('admin'),('manager')) r(role_key)
-        CROSS JOIN menus m WHERE m.code IN('analytics','analytics.executive_ai','analytics.exception_center')
+        CROSS JOIN menus m WHERE m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence')
         ON CONFLICT(role_key,menu_id) DO UPDATE SET
           can_view=true,
           can_edit=EXCLUDED.can_edit,
@@ -48,7 +49,7 @@ export async function ensureExecutiveAiMenu(){
             can_approve=false,can_export=false,can_view_financial=false,updated_at=now()
         FROM menus m
         WHERE p.menu_id=m.id
-          AND m.code IN('analytics.executive_ai','analytics.exception_center')
+          AND m.code IN('analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence')
           AND lower(p.role_key) NOT IN('admin','manager')`);
     }
 
