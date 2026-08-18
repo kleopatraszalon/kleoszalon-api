@@ -1,3 +1,4 @@
 Render redeploy trigger
-2026-08-18T11:36:00+02:00
+2026-08-18T12:06:00+02:00
 Deploy latest main including all previously merged commits.
+Reason: full production redeploy after menu label cleanup and persistent drag-and-drop menu layout restoration.
