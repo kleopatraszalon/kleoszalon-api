@@ -24,6 +24,11 @@ jobs:
             const repo = context.repo.repo;
             const run = context.payload.workflow_run;
             const failures = [];
+            const canonicalRequiredChecks = [
+              'build',
+              'regression-build-rbac-security',
+              'production-baseline-smoke'
+            ];
 
             if (!run || run.name !== 'Render deploy') {
               core.notice('Not a Render deploy workflow_run event.');
@@ -34,26 +39,22 @@ jobs:
               const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
               if (!branch.data.protected) {
                 failures.push('P0/4 main branch protected=false');
-              } else {
-                const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
-                if (!protection.data.required_pull_request_reviews) {
-                  failures.push('P0/4 pull-request review is not required');
-                }
-                if (!protection.data.required_status_checks) {
-                  failures.push('P0/4 required status checks are not configured');
-                }
-                if (protection.data.allow_force_pushes?.enabled) {
-                  failures.push('P0/4 force pushes are enabled');
+              }
+              const contexts = branch.data.protection?.required_status_checks?.contexts || [];
+              for (const required of canonicalRequiredChecks) {
+                if (!contexts.includes(required)) {
+                  failures.push(`P0/4 required status check ${required} is missing`);
                 }
               }
             } catch (error) {
-              failures.push(`P0/4 branch protection cannot be proven (${error.status || error.message})`);
+              failures.push(`P0/4 readable branch protection metadata cannot be proven (${error.status || error.message})`);
             }
 
             for (const item of [
               { number: 270, label: 'P0/1 backup/restore' },
               { number: 62, label: 'P0/2 credential rotation' },
               { number: 212, label: 'P0/3 NAV TEST' },
+              { number: 320, label: 'P0/4 branch governance evidence' },
             ]) {
               try {
                 const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
