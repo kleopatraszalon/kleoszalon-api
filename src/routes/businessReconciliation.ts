@@ -5,11 +5,11 @@ import {
   ensureBusinessReconciliationSchema,
   runFinancialReconciliation,
   runStockReconciliation,
-  startBusinessReconciliationScheduler,
 } from "../services/businessReconciliation";
+import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 
 const router=Router();
-startBusinessReconciliationScheduler();
+startBusinessReconciliationSchedulerV2();
 
 const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0,10));if(!validDate(s))throw Object.assign(new Error("A dátum formátuma YYYY-MM-DD legyen."),{status:400});return s};
