@@ -31,7 +31,7 @@ test('dashboard tenant resolution repairs stale tenant id from the signed salon 
     'the recovery path must document that normal tenant/location checks still apply');
 });
 
-test('repeated authentication cannot erase a database-resolved tenant from the same request', () => {
+test('dashboard authenticates exactly once before tenant scope resolution', () => {
   const auth = read('src/middleware/auth.ts');
   const scope = read('src/middleware/locationManagerScope.ts');
   const dashboard = read('src/routes/dashboard.ts');
@@ -39,12 +39,14 @@ test('repeated authentication cannot erase a database-resolved tenant from the s
     'scoped middleware must reuse an already authenticated user');
   assert.match(scope, /return requireAuth\(req,res,\(\)=>void guard\(req,res,next,kind\)\)/,
     'scoped middleware authenticates before resolving tenant context');
-  assert.match(dashboard, /router\.get\("\/", requireAuth,/,
-    'dashboard currently applies an inner auth layer after the scope middleware');
+  assert.doesNotMatch(dashboard, /router\.get\("\/",\s*requireAuth,/,
+    'dashboard route must not decode the same JWT again after tenant scope resolution');
+  assert.doesNotMatch(dashboard, /import\s*\{[^}]*requireAuth[^}]*\}\s*from\s*["']\.\.\/middleware\/auth["']/,
+    'dashboard route must not import an unused inner authentication middleware');
   assert.match(auth, /const sameAuthenticatedUser = previousUser\?\.id != null && decodedId != null && String\(previousUser\.id\) === String\(decodedId\)/,
-    'auth must only preserve enriched scope for the same verified user');
+    'generic repeated authentication must still preserve enriched scope only for the same verified user');
   assert.match(auth, /tenant_id: preservedTenantId \?\? decoded\.tenant_id \?\? null/,
-    'trusted in-request tenant resolution must survive the inner dashboard authentication');
+    'generic nested routes remain protected from tenant context loss');
 });
 
 test('legacy dashboard tenant resolution still supports signed salon then membership then fallback', () => {
