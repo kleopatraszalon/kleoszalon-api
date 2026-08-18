@@ -5,6 +5,7 @@ import observabilityRouter from "./observability";
 import businessReconciliationRouter from "./businessReconciliation";
 import exceptionCommandCenterRouter from "./exceptionCommandCenter";
 import businessContinuityGameDayRouter from "./businessContinuityGameDay";
+import operationalRiskControlRegisterRouter from "./operationalRiskControlRegister";
 import { requireManagement } from "../middleware/requireRoles";
 import { startAlertRuleScheduler } from "../services/alertRuleEngine";
 import { startObservabilityWorker } from "../services/observabilityApm";
@@ -22,6 +23,7 @@ void ensureExceptionCommandCenterSchema().catch(error=>console.error('[exception
 router.use("/observability",requireManagement,observabilityRouter);
 router.use("/reconciliation",requireManagement,businessReconciliationRouter);
 router.use("/gameday",requireManagement,businessContinuityGameDayRouter);
+router.use("/risk-register",requireManagement,operationalRiskControlRegisterRouter);
 router.use("/exceptions",requireManagement,exceptionCommandCenterRouter);
 router.use("/alert-rules",alertRuleAdminRouter);
 router.use("/",legacyNotificationsRouter);
