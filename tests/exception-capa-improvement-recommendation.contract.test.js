@@ -21,6 +21,13 @@ test('critical recurrent and multi-case CAPA signals drive recommendation scorin
   assert.match(src,/target_value:0/);
 });
 
+test('suggested due date never reuses an already expired CAPA deadline',()=>{
+  const src=read('src/services/exceptionCapaImprovementRecommendation.ts');
+  assert.match(src,/function earlierFutureDate/);
+  assert.match(src,/candidate<=Date\.now\(\)/);
+  assert.match(src,/computedDue=earlierFutureDate/);
+});
+
 test('automatic recommendation scheduler runs after the CAPA candidate cycle',()=>{
   const src=read('src/services/exceptionCapaImprovementRecommendation.ts');
   assert.match(src,/12,27,42,57 \* \* \* \*/);
@@ -42,5 +49,5 @@ test('recommendation never bypasses project approval governance',()=>{
   const bridge=read('src/services/exceptionCapaImprovement.ts');
   assert.doesNotMatch(recommendation,/INSERT INTO management_improvement_projects/);
   assert.match(bridge,/Fejlesztési projekt csak ember által jóváhagyott CAPA rekordból indítható/);
-  assert.match(recommendation,/can_promote:\['approved','in_progress','verification','verified'\]/);
+  assert.match(recommendation,/can_promote:safe\(capa\.status\)==='approved'/);
 });
