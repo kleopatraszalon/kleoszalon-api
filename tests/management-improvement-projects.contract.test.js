@@ -24,7 +24,7 @@ test('improvement schema persists project CAPA KPI approval and append-only audi
 
 test('database boundary freezes approval evidence and prevents approval-state bypass',()=>{
   const p=read('src/management/ensureManagementImprovement.ts');
-  contains(p,["NEW.approval_state='pending' AND NEW.status<>'review'","NEW.approval_state='approved' AND NEW.status NOT IN ('approved','closed')","NEW.status='review' AND NEW.approval_state<>'pending'","NEW.status IN ('approved','closed') AND NEW.approval_state<>'approved'","Jóváhagyás alatt vagy után a projekt bizonyítéktartalma nem módosítható.","Jóváhagyás alatt vagy után CAPA/KPI bizonyíték nem módosítható."]);
+  contains(p,["NEW.approval_state='pending' AND NEW.status<>'review'","NEW.approval_state='approved' AND NEW.status NOT IN ('approved','closed')","NEW.status='review' AND NEW.approval_state<>'pending'","NEW.status IN ('approved','closed') AND NEW.approval_state<>'approved'","A pending jóváhagyási állapothoz függő jóváhagyási rekord szükséges.","A jóváhagyott projektállapothoz jóváhagyási bizonyíték szükséges.","Lezárt projekthez lezárási időbélyeg szükséges.","Projekt nem zárható le nem igazolt CAPA intézkedéssel.","Jóváhagyás alatt vagy után a projekt bizonyítéktartalma nem módosítható.","Jóváhagyás alatt vagy után CAPA/KPI bizonyíték nem módosítható."]);
 });
 
 test('improvement workflow is tenant scoped and approval is fail closed',()=>{
