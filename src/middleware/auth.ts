@@ -55,13 +55,24 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decodedId = decoded.id ?? decoded.userId;
+    const previousUser = req.user;
+    const sameAuthenticatedUser = previousUser?.id != null && decodedId != null && String(previousUser.id) === String(decodedId);
+
+    // Some scoped middleware enriches req.user with a tenant resolved from the
+    // database before an inner router applies requireAuth again. Re-verifying the
+    // same JWT must not erase that trusted tenant context just because an older JWT
+    // predates tenant_id. Without this, /api/dashboard passed the tenant boundary
+    // and then immediately returned 403 inside dashboard.ts after the second auth.
+    const preservedTenantId = sameAuthenticatedUser ? previousUser?.tenant_id ?? null : null;
+    const preservedLocationId = sameAuthenticatedUser ? previousUser?.location_id ?? null : null;
 
     req.user = {
-      id: decoded.id ?? decoded.userId,
+      id: decodedId,
       email: decoded.email,
       role: decoded.role,
-      location_id: decoded.location_id ?? null,
-      tenant_id: decoded.tenant_id ?? null,
+      location_id: decoded.location_id ?? preservedLocationId ?? null,
+      tenant_id: decoded.tenant_id ?? preservedTenantId ?? null,
       uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
 
