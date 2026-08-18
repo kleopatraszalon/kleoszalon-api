@@ -13,6 +13,7 @@ describe('Exception CAPA -> management improvement bridge',()=>{
     expect(route).toContain('promoteExceptionCapaToImprovement');
     expect(route).toContain('locationBelongsToTenant');
     expect(service).toContain('PRIMARY KEY(capa_id,tenant_id)');
+    expect(service).toContain('pg_advisory_xact_lock');
     expect(service).toContain('created: false');
   });
 
