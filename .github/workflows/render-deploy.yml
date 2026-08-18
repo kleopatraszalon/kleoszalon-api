@@ -100,11 +100,10 @@ jobs:
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
 
   deploy:
-    name: Manual approval + production deploy
+    name: Automatic exact-SHA production deploy
     needs: automated-quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 18
-    environment: production-manual-approval
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
