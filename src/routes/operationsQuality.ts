@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db";
 import type { AuthRequest } from "../middleware/auth";
 import managementImprovementRouter from "./managementImprovement";
+import ensureManagementImprovementMenu from "../menu/ensureManagementImprovementMenu";
 import {
   ensureLegacyEvaluation2018Schema,
   getLegacyEvaluation2018AutomationSummary,
@@ -21,6 +22,15 @@ import {
 const router = Router();
 startLegacyEvaluation2018Worker();
 startLegacyMonthlyEvaluationWorker();
+
+for (const delay of [0, 5_000, 20_000, 60_000]) {
+  const timer = setTimeout(() => {
+    void ensureManagementImprovementMenu().catch(error => {
+      console.error("Fejlesztési projekt menü bootstrap hiba:", error?.message || error);
+    });
+  }, delay);
+  timer.unref?.();
+}
 
 function userKey(req: AuthRequest): string {
   return String(req.user?.email || req.user?.id || "manager");
