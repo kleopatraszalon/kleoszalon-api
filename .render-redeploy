@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T17:36:00+02:00
-Deploy latest main including Exception Intelligence, automatic L1/L2/L3 escalation, root-cause correlation, recurrence and hotspot analytics, team/owner MTTA-MTTR and SLA metrics, executive briefs, CAPA proposal/governance workflow, append-only CAPA audit, database-level approval and verification evidence guards, location-scoped CAPA access and supported management menu registration.
-Reason: production redeploy after the Exception Command Center was extended into a closed-loop detect-correlate-escalate-correct-verify management control system.
+2026-08-18T20:34:00+02:00
+Deploy latest main including automatic Major Incident / War Room detection, impact scoring, SEV1/SEV2 declaration, command team governance, append-only incident timeline, action board with evidence-based completion, internal executive alerts, heartbeat watchdog, source-recovery monitoring, mandatory resolution evidence and post-mortem, System Health readiness, management-only menu/API, and business.major_incident Release Control blocking gate.
+Reason: production redeploy after Major Incident / War Room closed-loop incident command and release governance were completed.
