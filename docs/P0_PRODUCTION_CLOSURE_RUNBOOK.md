@@ -49,8 +49,8 @@ No NAV secret value may be written to GitHub issues or workflow inputs.
 Current audit state: `main` reports `protected=false`.
 
 Required GitHub repository administration:
-1. GitHub repository → Settings → Rules → Rulesets (or Branches → Branch protection rule).
-2. Target branch: `main`.
+1. GitHub repository → Settings → Branches → Branch protection rules.
+2. Create or update the rule for `main`.
 3. Require a pull request before merging.
 4. Require at least one approval.
 5. Require status checks before merging.
@@ -60,7 +60,7 @@ Required GitHub repository administration:
 9. Block branch deletion.
 10. Do not allow routine bypass of the rule.
 
-The `P0 production readiness` workflow verifies `protected=true`, required PR review, required status checks and disabled force-push behavior. It fails closed if protection cannot be proven.
+The `P0 production readiness` workflow verifies the classic branch-protection API: `protected=true`, required PR review, required status checks and disabled force-push behavior. It fails closed if those controls cannot be proven.
 
 ## Final closure gate
 
