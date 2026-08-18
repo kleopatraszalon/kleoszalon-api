@@ -15,6 +15,7 @@ import financeDashboardRouter from "./financeDashboard";
 import financeLinkingRouter from "./financeLinking";
 import financeControlRouter from "./financeControl";
 import systemHealthRouter from "./systemHealth";
+import releaseControlRouter from "./releaseControl";
 import uatTestCenterRouter from "./uatTestCenter";
 import uatIssuesRouter from "./uatIssues";
 import loyaltyRouter from "./loyalty";
@@ -186,6 +187,7 @@ router.use("/nav-test-uat",requireManagement,ensureNavInvoiceReady,requireFeatur
 router.use("/loyalty-automation",loyaltyAutomationRouter);
 router.use("/loyalty-program",requireManagement,loyaltyProgramRouter);
 router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
+router.use("/release-control",requireManagement,releaseControlRouter);
 router.use("/uat",requireManagement,uatTestCenterRouter);
 router.use("/uat-issues",requireManagement,uatIssuesRouter);
 router.use("/cashier/management-summary",ensureFinanceReady,requireFeature("management_dashboard"),requireMenuPermission("finance","can_view_financial"),managementSummaryRouter);
