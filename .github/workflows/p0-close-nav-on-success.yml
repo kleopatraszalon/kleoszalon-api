@@ -1,0 +1,36 @@
+name: Close NAV P0 on successful TEST UAT
+
+on:
+  workflow_run:
+    workflows: ['NAV real TEST UAT']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  close-nav-p0:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close NAV TEST configuration P0 with run evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = 212;
+            const run = context.payload.workflow_run;
+            const issue = await github.rest.issues.get({ owner, repo, issue_number });
+            const evidence = [
+              'NAV real TEST UAT PASS.',
+              `Workflow: ${run.html_url}`,
+              `Head SHA: ${run.head_sha}`,
+              `Event: ${run.event}`,
+              'The P0 is closed automatically only after a successful real TEST UAT workflow run.'
+            ].join('\n');
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: evidence });
+            if (issue.data.state !== 'closed') {
+              await github.rest.issues.update({ owner, repo, issue_number, state: 'closed', state_reason: 'completed' });
+            }
