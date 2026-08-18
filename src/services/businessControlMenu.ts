@@ -9,8 +9,6 @@ export async function ensureBusinessControlMenu(){
     const menus=Boolean((await db.query(`SELECT to_regclass('public.menus') IS NOT NULL ok`)).rows[0]?.ok);
     if(!menus)return;
 
-    // The parent menu rows are also self-healed here. This makes the critical
-    // controls independent from menu-maintenance timing and legacy seed order.
     await db.query(`
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
       VALUES
@@ -27,7 +25,10 @@ export async function ensureBusinessControlMenu(){
 
     await db.query(`WITH p AS (SELECT id FROM menus WHERE code='finance' LIMIT 1)
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
-      SELECT 'finance.reconciliation','Pénzügyi egyeztető központ','BadgeCheck','/finance/reconciliation',65,p.id,'finance',true FROM p
+      SELECT x.code,x.name,x.icon,x.route,x.order_index,p.id,'finance',true FROM p CROSS JOIN (VALUES
+        ('finance.reconciliation','Pénzügyi egyeztető központ','BadgeCheck','/finance/reconciliation',65),
+        ('finance.transaction_trace','Tranzakció-életút','GitBranch','/finance/transaction-trace',66)
+      ) x(code,name,icon,route,order_index)
       ON CONFLICT(code) DO UPDATE SET
         name=EXCLUDED.name,
         icon=EXCLUDED.icon,
@@ -56,10 +57,10 @@ export async function ensureBusinessControlMenu(){
           can_export,can_view_financial,can_manage_permissions,scope_type,updated_at
         )
         SELECT r.role_key,m.id,true,false,false,false,false,true,
-          (m.code IN('finance','finance.reconciliation')),false,'all_locations',now()
+          (m.code IN('finance','finance.reconciliation','finance.transaction_trace')),false,'all_locations',now()
         FROM (VALUES('admin'),('manager')) r(role_key)
         CROSS JOIN menus m
-        WHERE m.code IN('finance','finance.reconciliation','settings','settings.system_health')
+        WHERE m.code IN('finance','finance.reconciliation','finance.transaction_trace','settings','settings.system_health')
         ON CONFLICT(role_key,menu_id) DO UPDATE SET
           can_view=true,
           can_export=true,
