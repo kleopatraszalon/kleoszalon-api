@@ -5,16 +5,22 @@ const path=require('node:path');
 
 const read=(p)=>fs.readFileSync(path.join(process.cwd(),p),'utf8');
 
-test('dashboard hotfix protected reads resolve SaaS tenant context before data access',()=>{
+test('dashboard compatibility reads resolve SaaS tenant context before data access',()=>{
   const src=read('src/routes/api500Hotfix.ts');
   assert.match(src,/import\s*\{[^}]*requireTenantContext[^}]*\}\s*from\s*["']\.\.\/middleware\/tenantContext["']/,
     'api500Hotfix must import requireTenantContext');
   assert.match(src,/router\.get\(["']\/employees["'],\s*requireAuth,\s*requireTenantContext,/,
     '/employees hotfix must resolve tenant context');
-  assert.match(src,/router\.get\(["']\/dashboard["'],\s*requireAuth,\s*requireTenantContext,/,
-    '/dashboard hotfix must resolve tenant context');
   assert.match(src,/router\.get\(["']\/timetable["'],\s*requireAuth,\s*requireTenantContext,/,
     '/timetable hotfix must resolve tenant context');
+});
+
+test('compatibility layer does not replace the real analytics dashboard with hardcoded zero metrics',()=>{
+  const src=read('src/routes/api500Hotfix.ts');
+  assert.doesNotMatch(src,/router\.get\(["']\/dashboard["']/,
+    'api500Hotfix must not shadow the real /api/dashboard analytics route');
+  assert.doesNotMatch(src,/dailyRevenue:0,monthlyRevenue:0,totalRevenue:0/,
+    'compatibility layer must not fabricate zero financial analytics');
 });
 
 test('authentication request type preserves tenant_id when present in JWT',()=>{
