@@ -10,6 +10,7 @@ export interface AuthRequest extends Request {
     email?: string;
     role?: string | string[];
     location_id?: number | string | null;
+    tenant_id?: number | string | null;
     uat_scope?: string;
   };
 }
@@ -60,6 +61,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       email: decoded.email,
       role: decoded.role,
       location_id: decoded.location_id ?? null,
+      tenant_id: decoded.tenant_id ?? null,
       uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
 
