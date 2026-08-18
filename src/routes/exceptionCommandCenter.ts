@@ -47,12 +47,14 @@ import {
   updateMajorIncidentAction,
 } from "../services/majorIncidentWarRoom";
 import { ensureMajorIncidentHardeningSchema } from "../services/majorIncidentWarRoomHardening";
+import { runMajorIncidentWarRoomWatchdog, startMajorIncidentWarRoomWatchdog } from "../services/majorIncidentWarRoomWatchdog";
 
 const router=Router();
 startExceptionCommandCenterScheduler();
 startExceptionCommandCenterIntelligenceScheduler();
 startExceptionCapaScheduler();
 startMajorIncidentWarRoomScheduler();
+startMajorIncidentWarRoomWatchdog();
 void ensureExceptionCommandCenterSchema().catch(error=>console.error("[exception-center] startup schema bootstrap failed",error));
 void ensureExceptionIntelligenceSchema().catch(error=>console.error("[exception-intelligence] startup schema bootstrap failed",error));
 void ensureExceptionCapaSchema().catch(error=>console.error("[exception-capa] startup schema bootstrap failed",error));
@@ -90,6 +92,7 @@ router.post("/intelligence/brief/:type",async(req:AuthRequest,res,next)=>{try{co
 router.get("/intelligence/major-incidents/summary",async(req:AuthRequest,res,next)=>{try{res.json(await majorIncidentSummary(loc(req)))}catch(error){next(error)}});
 router.get("/intelligence/major-incidents",async(req:AuthRequest,res,next)=>{try{res.json({items:await listMajorIncidents({...req.query,location_id:loc(req)})})}catch(error){next(error)}});
 router.post("/intelligence/major-incidents/sync",async(_req:AuthRequest,res,next)=>{try{res.json(await syncMajorIncidentWarRooms())}catch(error){next(error)}});
+router.post("/intelligence/major-incidents/watchdog",async(_req:AuthRequest,res,next)=>{try{res.json(await runMajorIncidentWarRoomWatchdog())}catch(error){next(error)}});
 router.get("/intelligence/major-incidents/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getMajorIncident(String(req.params.id));if(!incidentVisible(detail,loc(req)))return res.status(404).json({message:"A Major Incident nem található ebben a telephelyi hatókörben."});res.json(detail)}catch(error:any){sendError(error,res,next)}});
 router.patch("/intelligence/major-incidents/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getMajorIncident(String(req.params.id));if(!incidentVisible(detail,loc(req)))return res.status(404).json({message:"A Major Incident nem található ebben a telephelyi hatókörben."});res.json(await updateMajorIncident(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendMajorIncidentGovernanceError(error,res,next)}});
 router.post("/intelligence/major-incidents/:id/actions",async(req:AuthRequest,res,next)=>{try{const detail=await getMajorIncident(String(req.params.id));if(!incidentVisible(detail,loc(req)))return res.status(404).json({message:"A Major Incident nem található ebben a telephelyi hatókörben."});res.json(await addMajorIncidentAction(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendMajorIncidentGovernanceError(error,res,next)}});
