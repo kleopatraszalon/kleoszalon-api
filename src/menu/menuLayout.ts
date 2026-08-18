@@ -31,10 +31,29 @@ async function ensureMovableAdminItems(){
   SELECT d.code,d.name,d.icon,d.route,d.order_index,p.id,d.feature_key,true
   FROM defs d JOIN menus p ON p.code=d.parent_code
   WHERE NOT EXISTS(SELECT 1 FROM menus m WHERE m.code=d.code);
+
+  UPDATE menus SET name='Fitnesz – Gyöngyös',icon='Dumbbell',route=NULL,feature_key='finance',is_active=true WHERE code='fitness.gyongyos';
+  INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+  SELECT 'fitness.gyongyos','Fitnesz – Gyöngyös','Dumbbell',NULL,150,NULL,'finance',true
+  WHERE NOT EXISTS(SELECT 1 FROM menus WHERE code='fitness.gyongyos');
+
+  WITH p AS (SELECT id FROM menus WHERE code='fitness.gyongyos' LIMIT 1), defs(code,name,route,order_index) AS (VALUES
+    ('fitness.gyongyos.overview','Áttekintés és bérletek','/finance/fitness',10),
+    ('fitness.gyongyos.lockers','Öltözőszekrények','/finance/fitness/lockers',20)
+  )
+  UPDATE menus m SET name=d.name,route=d.route,parent_id=p.id,feature_key='finance',is_active=true
+  FROM p,defs d WHERE m.code=d.code;
+  WITH p AS (SELECT id FROM menus WHERE code='fitness.gyongyos' LIMIT 1), defs(code,name,route,order_index) AS (VALUES
+    ('fitness.gyongyos.overview','Áttekintés és bérletek','/finance/fitness',10),
+    ('fitness.gyongyos.lockers','Öltözőszekrények','/finance/fitness/lockers',20)
+  )
+  INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+  SELECT d.code,d.name,NULL,d.route,d.order_index,p.id,'finance',true FROM p,defs d
+  WHERE NOT EXISTS(SELECT 1 FROM menus m WHERE m.code=d.code);
  `);
  await pool.query(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
    SELECT 'admin',m.id,true,true,true,false,false,false,(m.code='finance.receipt_compliance'),true,'all_locations',now()
-   FROM menus m WHERE m.code IN('finance.receipt_compliance','marketing.wallboard','settings.vir_admin','settings.menu_layout','settings.spec_parity','settings.saas')
+   FROM menus m WHERE m.code IN('finance.receipt_compliance','marketing.wallboard','settings.vir_admin','settings.menu_layout','settings.spec_parity','settings.saas','fitness.gyongyos','fitness.gyongyos.overview','fitness.gyongyos.lockers')
    ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_manage_permissions=true,scope_type='all_locations',updated_at=now()`).catch(()=>undefined);
  await pool.query(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
    SELECT 'manager',m.id,true,false,true,false,false,false,(m.code='finance.receipt_compliance'),false,'all_locations',now()
