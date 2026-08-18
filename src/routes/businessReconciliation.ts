@@ -9,16 +9,27 @@ import {
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 import { ensureBusinessControlMenu } from "../services/businessControlMenu";
+import { ensureExecutiveAiMenu } from "../services/executiveAiMenu";
 
 const router=Router();
 startBusinessReconciliationSchedulerV2();
-void ensureBusinessControlMenu();
+
+async function ensureCriticalMenus(){
+  const results=await Promise.allSettled([ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);
+  for(const result of results){
+    if(result.status==="rejected")console.warn("[menu-bootstrap] critical menu registration retry failed:",result.reason?.message||result.reason);
+  }
+}
+for(const delay of [0,5_000,20_000,60_000]){
+  const timer=setTimeout(()=>{void ensureCriticalMenus()},delay);
+  timer.unref?.();
+}
 
 const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0,10));if(!validDate(s))throw Object.assign(new Error("A dátum formátuma YYYY-MM-DD legyen."),{status:400});return s};
 const loc=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
 
-router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu()]);next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
 
 router.get("/finance",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runFinancialReconciliation(date,loc(req,req.query),{persist:false,notify:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
