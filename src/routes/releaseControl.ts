@@ -104,15 +104,15 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
 
   try {
     const email = await verifyEmailTransport();
-    const status: GateStatus = email.ok ? "pass" : (email.mode === "disabled" || email.mode === "unconfigured") ? "fail" : "fail";
+    const status: GateStatus = email.ok ? "pass" : "fail";
     add({ key:"integration.smtp", group:"Integrációk", label:"SMTP / e-mail", status, blocking:true, message:email.ok?"SMTP kapcsolat és hitelesítés rendben.":`SMTP nem küldéskész: ${email.mode}${email.error_code?` (${email.error_code})`:""}.`, source:"runtime" });
   } catch (error:any) {
     add({ key:"integration.smtp", group:"Integrációk", label:"SMTP / e-mail", status:"fail", blocking:true, message:error?.message || "SMTP ellenőrzési hiba.", source:"runtime" });
   }
 
   const mailbox = getComplaintMailboxStatus();
-  const imapOk = mailbox.enabled && !mailbox.lastError;
-  add({ key:"integration.imap", group:"Integrációk", label:"Panasz IMAP", status:imapOk?"pass":"fail", blocking:true, message:imapOk?`IMAP engedélyezve${mailbox.lastSuccessAt?`; utolsó siker: ${mailbox.lastSuccessAt}`:""}.`:mailbox.enabled?`IMAP hiba: ${mailbox.lastError || "még nincs sikeres állapot"}.`:"COMPLAINT_IMAP nincs konfigurálva.", source:"runtime" });
+  const imapOk = mailbox.enabled && Boolean(mailbox.lastSuccessAt) && !mailbox.lastError;
+  add({ key:"integration.imap", group:"Integrációk", label:"Panasz IMAP", status:imapOk?"pass":"fail", blocking:true, message:imapOk?`IMAP működik; utolsó siker: ${mailbox.lastSuccessAt}.`:mailbox.enabled?`IMAP még nem igazoltan működőképes: ${mailbox.lastError || "nincs sikeres szinkron"}.`:"COMPLAINT_IMAP nincs konfigurálva.", source:"runtime" });
 
   const navSettings = await tableExists("nav_online_invoice_settings");
   const navQueue = await tableExists("nav_invoice_queue");
@@ -123,6 +123,18 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const pushSecrets = pushTable ? await safeCount(`SELECT COUNT(*) FROM app_runtime_secrets WHERE secret_key IN('vapid_public_key','vapid_private_key')`) : 0;
   const pushEnv = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
   add({ key:"integration.push", group:"Integrációk", label:"Mobil push / VAPID", status:pushEnv || pushSecrets>=2?"pass":"fail", blocking:true, message:pushEnv?"VAPID kulcsok környezeti változókból elérhetők.":pushSecrets>=2?"VAPID kulcsok runtime secrets táblából elérhetők.":"VAPID kulcspár nem található.", source:"runtime" });
+
+  const wallboardCampaigns = await tableExists("daily_action_campaigns");
+  add({ key:"integration.wallboard", group:"Integrációk", label:"WallBoard / napi akció", status:wallboardCampaigns?"pass":"fail", blocking:true, message:wallboardCampaigns?"A napi akció / WallBoard runtime adatforrás elérhető.":"A daily_action_campaigns runtime tábla hiányzik.", source:"runtime" });
+
+  const mobileSettings = await tableExists("mobile_app_settings");
+  const mobileSubscriptions = await tableExists("app_push_subscriptions");
+  add({ key:"integration.mobile_app", group:"Integrációk", label:"Mobilapp runtime", status:mobileSettings && mobileSubscriptions?"pass":"fail", blocking:true, message:mobileSettings && mobileSubscriptions?"A mobilapp beállítás- és push-előfizetés táblák elérhetők.":"A mobilapp runtime séma hiányos.", source:"runtime" });
+
+  const products = await tableExists("products");
+  const productGroups = await tableExists("product_groups");
+  const productCategories = await tableExists("product_categories");
+  add({ key:"integration.webshop", group:"Integrációk", label:"Webshop runtime", status:products && productGroups && productCategories?"pass":"fail", blocking:true, message:products && productGroups && productCategories?"A webshop termék- és taxonómia-törzsek elérhetők.":"A webshop termék/taxonómia runtime séma hiányos.", source:"runtime" });
 
   const instanceCount = Number(process.env.RENDER_INSTANCE_COUNT || process.env.WEB_CONCURRENCY || 1);
   const dbHa = process.env.DATABASE_HA_ENABLED === "1";
