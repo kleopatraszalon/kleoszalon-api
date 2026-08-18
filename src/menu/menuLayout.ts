@@ -68,9 +68,13 @@ export function ensureMenuLayoutSchema():Promise<void>{
     menu_id bigint PRIMARY KEY REFERENCES menus(id) ON DELETE CASCADE,
     parent_id bigint NULL,
     order_index integer NOT NULL,
+    default_parent_id bigint NULL,
+    default_order_index integer NULL,
     updated_by text,
     updated_at timestamptz NOT NULL DEFAULT now()
   );
+  ALTER TABLE menu_layout_overrides ADD COLUMN IF NOT EXISTS default_parent_id bigint NULL;
+  ALTER TABLE menu_layout_overrides ADD COLUMN IF NOT EXISTS default_order_index integer NULL;
   CREATE INDEX IF NOT EXISTS menu_layout_overrides_parent_idx
     ON menu_layout_overrides(parent_id,order_index,menu_id);
  `).then(ensureMovableAdminItems).then(()=>undefined).catch(error=>{schemaPromise=null;throw error});
@@ -98,7 +102,7 @@ export async function saveMenuLayout(items:MenuLayoutItem[],updatedBy?:string|nu
  try{
   await client.query("BEGIN");
   const ids=items.map(x=>x.id);
-  const {rows}=await client.query(`SELECT id,parent_id FROM menus WHERE COALESCE(is_active,true) AND id=ANY($1::bigint[])`,[ids]);
+  const {rows}=await client.query(`SELECT id,parent_id,order_index FROM menus WHERE COALESCE(is_active,true) AND id=ANY($1::bigint[])`,[ids]);
   if(rows.length!==ids.length)throw new Error("A menüelrendezés inaktív vagy nem létező elemet tartalmaz.");
   const activeParents=items.map(x=>x.parent_id).filter((x):x is number=>x!==null);
   if(activeParents.length){
@@ -108,17 +112,37 @@ export async function saveMenuLayout(items:MenuLayoutItem[],updatedBy?:string|nu
   const current=await client.query(`SELECT id,parent_id FROM menus WHERE COALESCE(is_active,true)`);
   const parentMap=new Map<number,number|null>(current.rows.map(r=>[Number(r.id),r.parent_id==null?null:Number(r.parent_id)]));
   for(const item of items)parentMap.set(item.id,item.parent_id);
-  for(const [id] of parentMap){
-   const seen=new Set<number>();let cursor:number|null=id;
+  for(const menuId of parentMap.keys()){
+   const seen=new Set<number>();let cursor:number|null=menuId;
    while(cursor!==null){if(seen.has(cursor))throw new Error("Körkörös menüstruktúra nem hozható létre.");seen.add(cursor);cursor=parentMap.get(cursor)??null}
   }
-  await client.query(`DELETE FROM menu_layout_overrides WHERE menu_id=ANY($1::bigint[])`,[ids]);
+  const baseline=new Map<number,{parent_id:number|null;order_index:number}>(rows.map(r=>[Number(r.id),{parent_id:r.parent_id==null?null:Number(r.parent_id),order_index:Number(r.order_index||0)}]));
   for(const item of items){
-   await client.query(`INSERT INTO menu_layout_overrides(menu_id,parent_id,order_index,updated_by,updated_at) VALUES($1,$2,$3,$4,now()) ON CONFLICT(menu_id) DO UPDATE SET parent_id=EXCLUDED.parent_id,order_index=EXCLUDED.order_index,updated_by=EXCLUDED.updated_by,updated_at=now()`,[item.id,item.parent_id,item.order_index,updatedBy||null]);
+   const initial=baseline.get(item.id)!;
+   await client.query(`
+    INSERT INTO menu_layout_overrides(menu_id,parent_id,order_index,default_parent_id,default_order_index,updated_by,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,now())
+    ON CONFLICT(menu_id) DO UPDATE SET
+      parent_id=EXCLUDED.parent_id,
+      order_index=EXCLUDED.order_index,
+      default_parent_id=CASE WHEN menu_layout_overrides.default_order_index IS NULL THEN EXCLUDED.default_parent_id ELSE menu_layout_overrides.default_parent_id END,
+      default_order_index=COALESCE(menu_layout_overrides.default_order_index,EXCLUDED.default_order_index),
+      updated_by=EXCLUDED.updated_by,
+      updated_at=now()
+   `,[item.id,item.parent_id,item.order_index,initial.parent_id,initial.order_index,updatedBy||null]);
    await client.query(`UPDATE menus SET parent_id=$2,order_index=$3 WHERE id=$1`,[item.id,item.parent_id,item.order_index]);
   }
   await client.query("COMMIT");
  }catch(error){await client.query("ROLLBACK");throw error}finally{client.release()}
 }
 
-export async function clearMenuLayoutOverrides():Promise<void>{await ensureMenuLayoutSchema();await pool.query(`DELETE FROM menu_layout_overrides`)}
+export async function clearMenuLayoutOverrides():Promise<void>{
+ await ensureMenuLayoutSchema();
+ const client=await pool.connect();
+ try{
+  await client.query("BEGIN");
+  await client.query(`UPDATE menus m SET parent_id=o.default_parent_id,order_index=o.default_order_index FROM menu_layout_overrides o WHERE o.menu_id=m.id AND o.default_order_index IS NOT NULL`);
+  await client.query(`DELETE FROM menu_layout_overrides`);
+  await client.query("COMMIT");
+ }catch(error){await client.query("ROLLBACK");throw error}finally{client.release()}
+}
