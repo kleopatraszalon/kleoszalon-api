@@ -207,12 +207,16 @@ async function collectDailyActionMetric(): Promise<ApmMetric> {
 async function collectBusinessMetrics(api: ReturnType<typeof getApiWindow>): Promise<ApmMetric[]> {
   const result: ApmMetric[] = [];
 
-  if (await tableExists("cashier_shifts")) {
+  if (await tableExists("cash_register_shifts")) {
+    const openTotal = await count(`SELECT COUNT(*)::int count FROM cash_register_shifts WHERE status IN ('open','handover_pending')`);
+    const stale = await count(`SELECT COUNT(*)::int count FROM cash_register_shifts WHERE status IN ('open','handover_pending') AND (business_date<CURRENT_DATE OR opened_at<now()-interval '18 hours')`);
+    result.push(metric({ key:"cashier.open_stale", group:"Pénzügy", label:"Nyitva maradt pénztári műszakok", status:highStatus(stale,thresholds.staleCashierWarn,thresholds.staleCashierCritical), value:stale, unit:"műszak", message:`${stale} elavult és ${openTotal} összes nyitott/átadásra váró pénztári műszak.`, threshold:`warning >= ${thresholds.staleCashierWarn}, critical >= ${thresholds.staleCashierCritical}`, details:{ open_total:openTotal, stale, source:"cash_register_shifts" } }));
+  } else if (await tableExists("cashier_shifts")) {
     const openTotal = await count(`SELECT COUNT(*)::int count FROM cashier_shifts WHERE status='open'`);
     const stale = await count(`SELECT COUNT(*)::int count FROM cashier_shifts WHERE status='open' AND (business_date<CURRENT_DATE OR opened_at<now()-interval '18 hours')`);
-    result.push(metric({ key:"cashier.open_stale", group:"Pénzügy", label:"Nyitva maradt pénztári műszakok", status:highStatus(stale,thresholds.staleCashierWarn,thresholds.staleCashierCritical), value:stale, unit:"műszak", message:`${stale} elavult és ${openTotal} összes nyitott műszak.`, threshold:`warning >= ${thresholds.staleCashierWarn}, critical >= ${thresholds.staleCashierCritical}`, details:{ open_total:openTotal, stale } }));
+    result.push(metric({ key:"cashier.open_stale", group:"Pénzügy", label:"Nyitva maradt pénztári műszakok", status:highStatus(stale,thresholds.staleCashierWarn,thresholds.staleCashierCritical), value:stale, unit:"műszak", message:`${stale} elavult és ${openTotal} összes nyitott legacy pénztári műszak.`, threshold:`warning >= ${thresholds.staleCashierWarn}, critical >= ${thresholds.staleCashierCritical}`, details:{ open_total:openTotal, stale, source:"cashier_shifts" } }));
   } else {
-    result.push(metric({ key:"cashier.open_stale", group:"Pénzügy", label:"Nyitva maradt pénztári műszakok", status:"unknown", value:"n/a", message:"A cashier_shifts tábla nem érhető el.", threshold:`warning >= ${thresholds.staleCashierWarn}, critical >= ${thresholds.staleCashierCritical}` }));
+    result.push(metric({ key:"cashier.open_stale", group:"Pénzügy", label:"Nyitva maradt pénztári műszakok", status:"unknown", value:"n/a", message:"Pénztári műszaktábla nem érhető el.", threshold:`warning >= ${thresholds.staleCashierWarn}, critical >= ${thresholds.staleCashierCritical}` }));
   }
 
   const settlementFailures = api.settlement_failures;
@@ -220,7 +224,7 @@ async function collectBusinessMetrics(api: ReturnType<typeof getApiWindow>): Pro
 
   let inventoryDiscrepancies = 0;
   let negativeBalances = 0;
-  if (await tableExists("inventory_stocktakes")) {
+  if ((await tableExists("inventory_stocktakes")) && (await tableExists("inventory_stocktake_items"))) {
     inventoryDiscrepancies = await count(`SELECT COUNT(*)::int count FROM inventory_stocktake_items i JOIN inventory_stocktakes s ON s.id=i.stocktake_id WHERE s.status IN ('draft','submitted') AND i.counted_quantity IS NOT NULL AND abs(i.counted_quantity-i.expected_quantity)>0.001`);
   }
   if (await tableExists("inventory_warehouse_balances")) {
@@ -292,7 +296,7 @@ async function persistSnapshot(snapshot: ApmSnapshot) {
 
 export async function collectApmSnapshot(options: { persist?: boolean; notify?: boolean; windowMinutes?: number } = {}): Promise<ApmSnapshot> {
   if (collectInFlight) return collectInFlight;
-  collectInFlight = (async () => {
+  const work = (async () => {
     const windowMinutes = Math.max(1, Math.min(1440, Number(options.windowMinutes || process.env.APM_WINDOW_MINUTES || 15)));
     const api = getApiWindow(windowMinutes);
     const slow = getSlowQueryWindow(windowMinutes);
@@ -301,7 +305,7 @@ export async function collectApmSnapshot(options: { persist?: boolean; notify?: 
     const waiting = Number((db as any).waitingCount || 0);
     const active = Math.max(0,total-idle);
     const utilization = PG_POOL_MAX > 0 ? Math.round((active / PG_POOL_MAX) * 10_000) / 100 : 0;
-    const poolStatus = waiting >= thresholds.poolWaitingCritical || utilization >= thresholds.poolUtilCritical ? "critical" : waiting >= thresholds.poolWaitingWarn || utilization >= thresholds.poolUtilWarn ? "warning" : "ok";
+    const poolStatus: ApmStatus = waiting >= thresholds.poolWaitingCritical || utilization >= thresholds.poolUtilCritical ? "critical" : waiting >= thresholds.poolWaitingWarn || utilization >= thresholds.poolUtilWarn ? "warning" : "ok";
 
     const sampleState: ApmStatus = api.requests < 5 ? "unknown" : "ok";
     const metrics: ApmMetric[] = [
@@ -340,7 +344,8 @@ export async function collectApmSnapshot(options: { persist?: boolean; notify?: 
     if (options.persist !== false) await persistSnapshot(snapshot);
     if (options.notify !== false) await syncCriticalAlerts(metrics);
     return snapshot;
-  })().finally(() => { collectInFlight = null; });
+  })();
+  collectInFlight = work.finally(() => { collectInFlight = null; });
   return collectInFlight;
 }
 
