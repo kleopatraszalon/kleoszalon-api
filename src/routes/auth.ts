@@ -18,10 +18,11 @@ const NAV_TEST_UAT_AUDIENCE="kleoszalon-nav-test-uat";
 const NAV_TEST_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/nav-real-test-uat.yml@refs/heads/main";
 
 function authCookieOptions() {
+  const production = process.env.NODE_ENV === "production";
   return {
     httpOnly: true,
-    sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    sameSite: (production ? "none" : "lax") as "none" | "lax",
+    secure: production,
     path: "/",
   };
 }
@@ -31,6 +32,7 @@ function setAuthCookie(res: Response, token: string) {
     ...authCookieOptions(),
     maxAge: 8 * 60 * 60 * 1000,
   });
+  res.setHeader("Cache-Control", "no-store");
 }
 
 function clearAuthCookie(res: Response) {
@@ -94,7 +96,7 @@ async function findEmployee(identifier: string, user?: any) {
   const loginName = String(user?.login_name || "").trim();
   const { rows } = await db.query(
     `SELECT e.id,e.full_name,e.email,e.login_name,e.password_hash,e.role,e.location_id,
-            l.name AS location_name
+            l.name AS location_name,l.tenant_id
        FROM employees e
        LEFT JOIN locations l ON l.id=e.location_id
       WHERE COALESCE(e.active,true)=true
@@ -121,6 +123,32 @@ async function locationName(locationId: any) {
   }
 }
 
+/**
+ * A browser user may enter a tenant only through an explicit active tenant_users
+ * membership. If a location is selected, that location must belong to the same
+ * explicitly granted tenant. This closes the previous admin-any-location path.
+ */
+async function tenantForUser(userId: unknown, locationId?: unknown): Promise<string | null> {
+  const uid = String(userId ?? "").trim();
+  const lid = String(locationId ?? "").trim();
+  if (!uid) return null;
+
+  const { rows } = await db.query(
+    `SELECT t.id::text AS tenant_id
+       FROM tenant_users tu
+       JOIN tenants t ON t.id=tu.tenant_id
+       LEFT JOIN locations l ON l.tenant_id=t.id AND ($2<>'' AND l.id::text=$2)
+      WHERE tu.user_id=$1
+        AND tu.active=true
+        AND t.status IN ('active','trial')
+        AND ($2='' OR l.id IS NOT NULL)
+      ORDER BY t.id
+      LIMIT 1`,
+    [uid, lid],
+  );
+  return rows[0]?.tenant_id ? String(rows[0].tenant_id) : null;
+}
+
 async function respondAsEmployee(res: Response, employee: any, password: string, roleOverride?: any, requestedLocationId?: string | null) {
   if (!employee.password_hash) {
     return res.status(401).json({ error: "Ehhez a munkatárshoz még nincs jelszó beállítva." });
@@ -129,6 +157,9 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
   if (!employee.location_id) {
     return res.status(409).json({ error: "A munkatárshoz nincs telephely rendelve. Kérlek jelezd az adminisztrátornak." });
+  }
+  if (!employee.tenant_id) {
+    return res.status(403).json({ error: "A munkatárs telephelyéhez nincs aktív tenant rendelve." });
   }
   if (requestedLocationId && String(employee.location_id) !== requestedLocationId) {
     return res.status(403).json({ error: "Ehhez a telephelyhez nincs jogosultságod." });
@@ -144,6 +175,7 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
       login_name: employee.login_name,
       role,
       location_id: employee.location_id,
+      tenant_id: employee.tenant_id,
     },
     JWT_SECRET,
     { expiresIn: "8h" }
@@ -152,11 +184,12 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   setAuthCookie(res, token);
   return res.json({
     success: true,
+    auth_transport: "http_only_cookie",
     account_type: "staff",
-    token,
     role,
     location_id: employee.location_id,
     location_name: employee.location_name ?? null,
+    tenant_id: employee.tenant_id,
     full_name: employee.full_name ?? employee.login_name,
     email: employee.email ?? null,
     employee_id: employee.id,
@@ -282,6 +315,16 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(403).json({ error: "Ehhez a telephelyhez nincs jogosultságod." });
     }
     const effectiveLocationId = admin && requestedLocationId ? requestedLocationId : (user.location_id ?? null);
+    const tenantId = await tenantForUser(user.id, effectiveLocationId);
+    if (!tenantId) {
+      return res.status(403).json({
+        error: effectiveLocationId
+          ? "A kiválasztott telephelyhez nincs aktív tenant-jogosultságod."
+          : "A felhasználóhoz nincs aktív tenant-hozzáférés rendelve.",
+        code: "TENANT_ACCESS_DENIED",
+      });
+    }
+
     const effectiveLocationName = await locationName(effectiveLocationId);
     const token = jwt.sign(
       {
@@ -290,6 +333,7 @@ router.post("/login", async (req: Request, res: Response) => {
         email: user.email,
         role: user.role,
         location_id: effectiveLocationId,
+        tenant_id: tenantId,
       },
       JWT_SECRET,
       { expiresIn: "8h" }
@@ -298,20 +342,22 @@ router.post("/login", async (req: Request, res: Response) => {
     setAuthCookie(res, token);
     return res.json({
       success: true,
+      auth_transport: "http_only_cookie",
       account_type: admin ? "admin" : "customer",
       user: {
         id: user.id,
         email: user.email,
         role: user.role,
         location_id: effectiveLocationId,
+        tenant_id: tenantId,
       },
       role: user.role,
       location_id: effectiveLocationId,
       location_name: effectiveLocationName,
+      tenant_id: tenantId,
       full_name: user.full_name ?? null,
       email: user.email ?? null,
       login_name: user.login_name ?? null,
-      token,
     });
   } catch (err) {
     console.error("[AUTH] /api/login hiba:", err);
