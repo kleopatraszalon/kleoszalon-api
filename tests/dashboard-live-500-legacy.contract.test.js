@@ -38,3 +38,38 @@ test('optional dashboard dimensions cannot fail the whole management dashboard',
       `${label} dashboard dimension must use isolated optional query handling`);
   }
 });
+
+test('production build copies SQL runtime assets next to compiled dashboard code', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const copier = read('scripts/copy-runtime-sql-assets.mjs');
+  assert.match(pkg.scripts.build, /copy-runtime-sql-assets\.mjs/,
+    'production build must copy runtime SQL assets after TypeScript compilation');
+  assert.match(copier, /"src",\s*"sql"/,
+    'runtime SQL copier must read from src/sql');
+  assert.match(copier, /"dist",\s*"sql"/,
+    'runtime SQL copier must publish into dist/sql');
+});
+
+test('dashboard migration loader supports compiled and source-tree runtime paths', () => {
+  const ensure = read('src/dashboard/ensureDashboardAnalytics.ts');
+  assert.match(ensure, /process\.cwd\(\),\s*"dist",\s*"sql"/,
+    'dashboard migration loader must resolve the production dist/sql asset');
+  assert.match(ensure, /process\.cwd\(\),\s*"src",\s*"sql"/,
+    'dashboard migration loader must retain a source-tree fallback');
+  assert.match(ensure, /DASHBOARD_MIGRATION_ASSET_MISSING/,
+    'missing migration assets must have a diagnosable error code');
+});
+
+test('summary and trend failures degrade analytics instead of returning dashboard 500', () => {
+  const src = read('src/routes/dashboard.ts');
+  assert.match(src, /safeRows\("summary"/,
+    'summary query must use fail-soft execution');
+  assert.match(src, /safeRows\("trend"/,
+    'trend query must use fail-soft execution');
+  assert.match(src, /analyticsBootstrapError/,
+    'analytics bootstrap failure must be isolated from the dashboard response');
+  assert.match(src, /analytics:\{available:!analyticsDegraded,degraded:analyticsDegraded\}/,
+    'dashboard response must expose analytics availability');
+  assert.match(src, /emptyTrend\(from, to\)/,
+    'a missing fact store must still return chart-safe zero data');
+});
