@@ -81,13 +81,13 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     if (err.name === "TokenExpiredError") {
       res.clearCookie("token", { path: "/" });
       return res.status(401).json({
-        error: "A munkamenet lejárt. Kérjük, jelentkezzen be újra.",
+        error: "A munkamenet lejárt. Kérjük, jelentkezz be újra.",
       });
     }
 
     if (["JsonWebTokenError", "NotBeforeError"].includes(String(err?.name || ""))) {
       return res.status(401).json({
-        error: "Érvénytelen token. Kérjük, jelentkezzen be újra.",
+        error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
       });
     }
 
