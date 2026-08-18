@@ -25,14 +25,17 @@ test('critical finance and system menus self-heal with parent visibility',()=>{
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
 });
 
-test('AI executive menu self-heals analytics parent and management permissions',()=>{
+test('AI executive menu self-heals analytics parent, exception center and management permissions',()=>{
   const src=read('src/services/executiveAiMenu.ts');
   for(const marker of [
     "VALUES('analytics','Statisztika és VIR'",
     'analytics.executive_ai',
     'AI vezetői asszisztens',
     '/finance/executive-ai',
-    "m.code IN('analytics','analytics.executive_ai')",
+    'analytics.exception_center',
+    'Exception Command Center',
+    '/finance/exception-command-center',
+    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center')",
     'clearShortCache("menu:")',
   ]) assert.ok(src.includes(marker),marker);
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
