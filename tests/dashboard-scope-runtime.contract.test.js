@@ -17,6 +17,18 @@ test('read-only dashboard request is not blocked by full tenant schema mutation 
     'explicit dashboard location filters must remain tenant-bound');
 });
 
+test('dashboard tenant resolution follows the authenticated salon before the legacy fallback', () => {
+  const src = read('src/saas/tenantAccess.ts');
+  assert.match(src, /tenantFromAuthenticatedLocation\(userId,authUser\.location_id,authUser\.role\)/,
+    'a signed location_id must be usable to resolve the active tenant when old JWTs have no tenant_id');
+  assert.match(src, /FROM locations l[\s\S]*JOIN tenants t ON t\.id=l\.tenant_id/,
+    'tenant inference must use the location-to-tenant relation instead of hard-coding the Kleopatra tenant');
+  const locationPos = src.indexOf('tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role)');
+  const fallbackPos = src.indexOf("slug='kleopatra'");
+  assert.ok(locationPos >= 0 && fallbackPos > locationPos,
+    'the legacy Kleopatra fallback must run only after location-derived tenant resolution');
+});
+
 test('location-manager dashboard client counter is fail-soft', () => {
   const src = read('src/middleware/locationManagerScope.ts');
   assert.match(src, /if\(kind==="dashboard"\)\{[\s\S]*?let ownClients=0;[\s\S]*?try\{[\s\S]*?FROM clients WHERE location_id::text=\$1[\s\S]*?catch\(error:any\)/,
