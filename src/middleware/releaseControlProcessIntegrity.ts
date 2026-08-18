@@ -61,16 +61,37 @@ export async function buildTransactionTraceReleaseGate():Promise<ReleaseGate>{
   }catch(error:any){return{key:"business.transaction_trace",group:"Üzleti integritás",label:"Tranzakció-életút és bizonyítás",status:"fail",blocking:true,editable:false,message:`NO-GO: a tranzakció-életút release gate nem ellenőrizhető (${error?.message||"ismeretlen adatbázishiba"}).`,evidence:null,source:"transaction-trace"}}
 }
 
+export async function buildExceptionManagementReleaseGate():Promise<ReleaseGate>{
+  try{
+    const casesTable=await tableExists("exception_cases"),eventsTable=await tableExists("exception_case_events"),rulesTable=await tableExists("exception_routing_rules");
+    if(!casesTable||!eventsTable||!rulesTable)return{key:"business.exception_management",group:"Üzleti integritás",label:"Exception Command Center release readiness",status:"fail",blocking:true,editable:false,message:"NO-GO: az Exception Command Center runtime séma hiányos.",evidence:`cases=${casesTable}; events=${eventsTable}; rules=${rulesTable}`,source:"exception-command-center"};
+    const blockingCategories=['finance','nav','inventory','cashier','trace','system','process'];
+    const row=(await db.query(`SELECT
+        COUNT(*) FILTER(WHERE severity='critical')::int critical,
+        COUNT(*) FILTER(WHERE severity='high' AND sla_state='breached')::int high_breached,
+        COUNT(*) FILTER(WHERE owner_key IS NULL)::int unassigned,
+        COUNT(*)::int total
+      FROM exception_cases
+      WHERE status IN('open','acknowledged','in_progress','waiting','snoozed')
+        AND category=ANY($1::text[])`,[blockingCategories])).rows[0]||{};
+    const critical=Number(row.critical||0),highBreached=Number(row.high_breached||0),unassigned=Number(row.unassigned||0),total=Number(row.total||0);
+    const passed=critical===0&&highBreached===0;
+    return{key:"business.exception_management",group:"Üzleti integritás",label:"Exception Command Center release readiness",status:passed?"pass":"fail",blocking:true,editable:false,
+      message:passed?`PASS: nincs release-kritikus nyitott Exception case. Figyelt aktív ügyek: ${total}; kiosztatlan: ${unassigned}.`:`NO-GO: ${critical} kritikus és ${highBreached} magas súlyosságú, SLA-sértett release-kritikus Exception case nyitott.`,
+      evidence:`blocking_categories=${blockingCategories.join(',')}; active=${total}; critical=${critical}; high_sla_breached=${highBreached}; unassigned=${unassigned}`,source:"exception-command-center"};
+  }catch(error:any){return{key:"business.exception_management",group:"Üzleti integritás",label:"Exception Command Center release readiness",status:"fail",blocking:true,editable:false,message:`NO-GO: az Exception Command Center release gate nem ellenőrizhető (${error?.message||"ismeretlen adatbázishiba"}).`,evidence:null,source:"exception-command-center"}}
+}
+
 function recomputeReleaseDecision(body:any,newGates:ReleaseGate[]){
   if(!body||!Array.isArray(body.gates))return body;
   const keys=new Set(newGates.map(g=>g.key));const gates=[...body.gates.filter((item:any)=>!keys.has(item?.key)),...newGates];
   const blocking=gates.filter((item:any)=>Boolean(item?.blocking)),blockers=blocking.filter((item:any)=>item?.status!=="pass");
   const summary={total:gates.length,pass:gates.filter((x:any)=>x?.status==="pass").length,warning:gates.filter((x:any)=>x?.status==="warning").length,fail:gates.filter((x:any)=>x?.status==="fail").length,pending:gates.filter((x:any)=>x?.status==="pending").length,blocking_total:blocking.length,blocking_open:blockers.length};
-  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null}};
+  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null,exception_management_gate:newGates.find(x=>x.key==="business.exception_management")?.status||null}};
 }
 
 export async function enforceProcessIntegrityReleaseGate(req:Request,res:Response,next:NextFunction){
   if(req.method!=="GET"||(req.path!=="/"&&req.path!==""))return next();
-  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate()]);
+  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate(),buildExceptionManagementReleaseGate()]);
   const originalJson=res.json.bind(res);res.json=((body:any)=>originalJson(recomputeReleaseDecision(body,gates))) as typeof res.json;next();
 }
