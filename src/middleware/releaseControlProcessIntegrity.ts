@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import db from "../db";
+import { buildResilienceRecoveryReleaseGate } from "./releaseControlResilience";
 
 type ReleaseGate = {
   key: string;
@@ -107,11 +108,11 @@ function recomputeReleaseDecision(body:any,newGates:ReleaseGate[]){
   const keys=new Set(newGates.map(g=>g.key));const gates=[...body.gates.filter((item:any)=>!keys.has(item?.key)),...newGates];
   const blocking=gates.filter((item:any)=>Boolean(item?.blocking)),blockers=blocking.filter((item:any)=>item?.status!=="pass");
   const summary={total:gates.length,pass:gates.filter((x:any)=>x?.status==="pass").length,warning:gates.filter((x:any)=>x?.status==="warning").length,fail:gates.filter((x:any)=>x?.status==="fail").length,pending:gates.filter((x:any)=>x?.status==="pending").length,blocking_total:blocking.length,blocking_open:blockers.length};
-  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null,exception_management_gate:newGates.find(x=>x.key==="business.exception_management")?.status||null,major_incident_gate:newGates.find(x=>x.key==="business.major_incident")?.status||null}};
+  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null,exception_management_gate:newGates.find(x=>x.key==="business.exception_management")?.status||null,major_incident_gate:newGates.find(x=>x.key==="business.major_incident")?.status||null,resilience_recovery_gate:newGates.find(x=>x.key==="business.resilience_recovery")?.status||null}};
 }
 
 export async function enforceProcessIntegrityReleaseGate(req:Request,res:Response,next:NextFunction){
   if(req.method!=="GET"||(req.path!=="/"&&req.path!==""))return next();
-  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate(),buildExceptionManagementReleaseGate(),buildMajorIncidentReleaseGate()]);
+  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate(),buildExceptionManagementReleaseGate(),buildMajorIncidentReleaseGate(),buildResilienceRecoveryReleaseGate()]);
   const originalJson=res.json.bind(res);res.json=((body:any)=>originalJson(recomputeReleaseDecision(body,gates))) as typeof res.json;next();
 }
