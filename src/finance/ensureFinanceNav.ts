@@ -53,6 +53,10 @@ export function ensureFinanceNav(){
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2'
       ));
+      await step('sql:20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3.sql',()=>runSqlOnce(
+        '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3.sql',
+        '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3'
+      ));
     })().catch(err=>{ensurePromise=null;throw err});
   }return ensurePromise;
 }
