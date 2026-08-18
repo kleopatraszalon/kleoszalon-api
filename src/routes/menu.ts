@@ -3,6 +3,7 @@ import pool from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
 import { ensureVirSpecModules } from "../virSpec/ensureVirSpecModules";
 import { ensureMenuHealth } from "../menu/ensureMenuHealth";
+import { applyMenuLayoutOverrides, clearMenuLayoutOverrides, saveMenuLayout, type MenuLayoutItem } from "../menu/menuLayout";
 import { clearShortCache, shortCache, timed } from "../performance/shortCache";
 
 const router=express.Router();
@@ -44,6 +45,7 @@ async function runMenuMaintenance(){
  await bestEffort("aktuális etap menük",()=>ensureCurrentStageMenus());
  await bestEffort("korábbi menütisztítás",()=>ensureCleanMenu());
  await bestEffort("menü audit és önjavítás",()=>ensureMenuHealth());
+ await bestEffort("egyedi menürendezés",()=>applyMenuLayoutOverrides());
  clearShortCache("menu:");
 }
 function scheduleMenuMaintenance(force=false){
@@ -57,9 +59,56 @@ function scheduleMenuMaintenance(force=false){
  timer.unref?.();
 }
 
-router.put("/reorder-roots",requireAuth,async(req:AuthRequest,res)=>{if(!isAdmin(req))return res.status(403).json({message:"Csak adminisztrátor rendezheti a főmenüt."});const ids=Array.isArray(req.body?.ordered_ids)?req.body.ordered_ids.map((x:unknown)=>Number(x)).filter((x:number)=>Number.isInteger(x)&&x>0):[];if(!ids.length)return res.status(400).json({message:"Hiányzik a főmenü sorrendje."});const client=await pool.connect();try{await client.query("BEGIN");const{rows}=await client.query(`SELECT id FROM menus WHERE parent_id IS NULL AND COALESCE(is_active,true) AND id=ANY($1::int[])`,[ids]);if(rows.length!==ids.length){await client.query("ROLLBACK");return res.status(400).json({message:"A sorrend csak aktív főmenü-elemeket tartalmazhat."})}for(let i=0;i<ids.length;i++)await client.query(`UPDATE menus SET order_index=$2 WHERE id=$1 AND parent_id IS NULL`,[ids[i],(i+1)*10]);await client.query("COMMIT");clearShortCache("menu:");res.json({ok:true})}catch(err:any){await client.query("ROLLBACK");res.status(500).json({message:"A főmenü sorrendjét nem sikerült menteni."})}finally{client.release()}});
+function parseLayoutItems(raw:unknown):MenuLayoutItem[]{
+ if(!Array.isArray(raw)||!raw.length)throw new Error("Hiányzik a menüelrendezés.");
+ const items=raw.map((value:any)=>({id:Number(value?.id),parent_id:value?.parent_id===null||value?.parent_id===undefined?null:Number(value.parent_id),order_index:Number(value?.order_index)}));
+ if(items.some(x=>!Number.isInteger(x.id)||x.id<=0||!Number.isInteger(x.order_index)||x.order_index<0||(x.parent_id!==null&&(!Number.isInteger(x.parent_id)||x.parent_id<=0))))throw new Error("Érvénytelen menüelrendezési adat.");
+ if(new Set(items.map(x=>x.id)).size!==items.length)throw new Error("Egy menüpont csak egyszer szerepelhet az elrendezésben.");
+ if(items.some(x=>x.parent_id===x.id))throw new Error("Egy menüpont nem lehet saját maga alatt.");
+ return items;
+}
 
-async function readMenuTree(roles:string[],admin:boolean){let rows:any[]=[];try{const r=await pool.query(`SELECT DISTINCT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,COALESCE(p.can_view,$2::boolean) can_view,COALESCE(p.can_create,$2::boolean) can_create,COALESCE(p.can_edit,$2::boolean) can_edit,COALESCE(p.can_delete,$2::boolean) can_delete,COALESCE(p.can_approve,$2::boolean) can_approve,COALESCE(p.can_export,$2::boolean) can_export,COALESCE(p.can_view_financial,$2::boolean) can_view_financial,COALESCE(p.can_manage_permissions,$2::boolean) can_manage_permissions,COALESCE(p.scope_type,CASE WHEN $2 THEN 'all_locations' ELSE 'own_location' END) scope_type FROM menus m LEFT JOIN role_menu_permissions p ON p.menu_id=m.id AND lower(p.role_key)=ANY($1::text[]) WHERE COALESCE(m.is_active,true) AND ($2 OR COALESCE(p.can_view,false)) ORDER BY m.order_index,m.id`,[roles,admin]);rows=r.rows}catch(e:any){if(!admin)throw e;rows=(await pool.query(`SELECT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,true can_view,true can_create,true can_edit,true can_delete,true can_approve,true can_export,true can_view_financial,true can_manage_permissions,'all_locations'::text scope_type FROM menus m WHERE COALESCE(m.is_active,true) ORDER BY m.order_index,m.id`)).rows}const byId=new Map<number,any>();rows.forEach(r=>byId.set(Number(r.id),{...r,id:Number(r.id),required_role:"all",role:"all",permissions:{can_view:r.can_view,can_create:r.can_create,can_edit:r.can_edit,can_delete:r.can_delete,can_approve:r.can_approve,can_export:r.can_export,can_view_financial:r.can_view_financial,can_manage_permissions:r.can_manage_permissions,scope_type:r.scope_type},submenus:[]}));const roots:any[]=[];rows.forEach(r=>{const item=byId.get(Number(r.id));if(r.parent_id&&byId.has(Number(r.parent_id)))byId.get(Number(r.parent_id)).submenus.push(item);else roots.push(item)});const sort=(a:any[])=>{a.sort((x,y)=>(x.order_index||0)-(y.order_index||0)||x.id-y.id);a.forEach(x=>sort(x.submenus))};sort(roots);return roots}
+router.put("/layout",requireAuth,async(req:AuthRequest,res)=>{
+ if(!isAdmin(req))return res.status(403).json({message:"Csak adminisztrátor rendezheti át a menüt."});
+ try{
+  const items=parseLayoutItems(req.body?.items);
+  const actor=String((req.user as any)?.id||(req.user as any)?.email||"admin");
+  await saveMenuLayout(items,actor);
+  clearShortCache("menu:");
+  res.json({ok:true,count:items.length});
+ }catch(err:any){res.status(400).json({message:err?.message||"A menüelrendezést nem sikerült menteni."})}
+});
+
+router.delete("/layout",requireAuth,async(req:AuthRequest,res)=>{
+ if(!isAdmin(req))return res.status(403).json({message:"Csak adminisztrátor állíthatja vissza a menüt."});
+ try{
+  await clearMenuLayoutOverrides();
+  await runMenuMaintenance();
+  clearShortCache("menu:");
+  res.json({ok:true});
+ }catch(err:any){res.status(500).json({message:err?.message||"A menü alapelrendezését nem sikerült visszaállítani."})}
+});
+
+router.put("/reorder-roots",requireAuth,async(req:AuthRequest,res)=>{
+ if(!isAdmin(req))return res.status(403).json({message:"Csak adminisztrátor rendezheti a főmenüt."});
+ const ids=Array.isArray(req.body?.ordered_ids)?req.body.ordered_ids.map((x:unknown)=>Number(x)).filter((x:number)=>Number.isInteger(x)&&x>0):[];
+ if(!ids.length)return res.status(400).json({message:"Hiányzik a főmenü sorrendje."});
+ try{
+  const{rows}=await pool.query(`SELECT id FROM menus WHERE parent_id IS NULL AND COALESCE(is_active,true) AND id=ANY($1::bigint[])`,[ids]);
+  if(rows.length!==ids.length)return res.status(400).json({message:"A sorrend csak aktív főmenü-elemeket tartalmazhat."});
+  const actor=String((req.user as any)?.id||(req.user as any)?.email||"admin");
+  await saveMenuLayout(ids.map((id:number,index:number)=>({id,parent_id:null,order_index:(index+1)*10})),actor);
+  clearShortCache("menu:");
+  res.json({ok:true});
+ }catch(err:any){res.status(500).json({message:err?.message||"A főmenü sorrendjét nem sikerült menteni."})}
+});
+
+async function readMenuTree(roles:string[],admin:boolean){
+ await bestEffort("egyedi menürendezés betöltése",()=>applyMenuLayoutOverrides());
+ let rows:any[]=[];
+ try{const r=await pool.query(`SELECT DISTINCT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,COALESCE(p.can_view,$2::boolean) can_view,COALESCE(p.can_create,$2::boolean) can_create,COALESCE(p.can_edit,$2::boolean) can_edit,COALESCE(p.can_delete,$2::boolean) can_delete,COALESCE(p.can_approve,$2::boolean) can_approve,COALESCE(p.can_export,$2::boolean) can_export,COALESCE(p.can_view_financial,$2::boolean) can_view_financial,COALESCE(p.can_manage_permissions,$2::boolean) can_manage_permissions,COALESCE(p.scope_type,CASE WHEN $2 THEN 'all_locations' ELSE 'own_location' END) scope_type FROM menus m LEFT JOIN role_menu_permissions p ON p.menu_id=m.id AND lower(p.role_key)=ANY($1::text[]) WHERE COALESCE(m.is_active,true) AND ($2 OR COALESCE(p.can_view,false)) ORDER BY m.order_index,m.id`,[roles,admin]);rows=r.rows}catch(e:any){if(!admin)throw e;rows=(await pool.query(`SELECT m.id,m.code,m.name,m.icon,m.route,m.order_index,m.parent_id,m.feature_key,true can_view,true can_create,true can_edit,true can_delete,true can_approve,true can_export,true can_view_financial,true can_manage_permissions,'all_locations'::text scope_type FROM menus m WHERE COALESCE(m.is_active,true) ORDER BY m.order_index,m.id`)).rows}
+ const byId=new Map<number,any>();rows.forEach(r=>byId.set(Number(r.id),{...r,id:Number(r.id),required_role:"all",role:"all",permissions:{can_view:r.can_view,can_create:r.can_create,can_edit:r.can_edit,can_delete:r.can_delete,can_approve:r.can_approve,can_export:r.can_export,can_view_financial:r.can_view_financial,can_manage_permissions:r.can_manage_permissions,scope_type:r.scope_type},submenus:[]}));const roots:any[]=[];rows.forEach(r=>{const item=byId.get(Number(r.id));if(r.parent_id&&byId.has(Number(r.parent_id)))byId.get(Number(r.parent_id)).submenus.push(item);else roots.push(item)});const sort=(a:any[])=>{a.sort((x,y)=>(x.order_index||0)-(y.order_index||0)||x.id-y.id);a.forEach(x=>sort(x.submenus))};sort(roots);return roots
+}
 
 router.get("/",requireAuth,async(req:AuthRequest,res)=>{const roles=roleKeys(req.user?.role).map(x=>x.toLowerCase()).sort(),admin=roles.includes("admin");try{const key=`menu:${admin?"admin":"user"}:${roles.join(",")}`;const roots=await shortCache(key,MENU_CACHE_MS,()=>timed(`/api/menus ${roles.join(",")||"no-role"}`,()=>readMenuTree(roles,admin)));res.setHeader("Cache-Control","private, no-store");res.json(roots);scheduleMenuMaintenance()}catch(err:any){console.error("❌ Jogosultságalapú menühiba:",err?.message||err);res.status(500).json({error:"A menü betöltése nem sikerült.",detail:err?.message||String(err)})}});
 export default router;
