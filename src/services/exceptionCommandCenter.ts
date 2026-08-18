@@ -31,6 +31,7 @@ async function collect(source:string,tables:string[],fn:()=>Promise<Candidate[]>
     for(const table of tables)if(!(await tableExists(table)))return{source,ok:false,items:[],error:`${table} unavailable`};
     return{source,ok:true,items:await fn()};
   }catch(error:any){return{source,ok:false,items:[],error:error?.message||String(error)}
+  }
 }
 
 export function ensureExceptionCommandCenterSchema(){
