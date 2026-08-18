@@ -45,27 +45,24 @@ jobs:
               if (!branch.data.protected) {
                 failures.push('P0/4: main branch is not protected');
               } else {
-                details.push('P0/4 main branch reports protected=true');
+                details.push('P0/4: main branch reports protected=true');
               }
 
-              const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
-              if (!protection.data.required_pull_request_reviews) {
-                failures.push('P0/4: pull-request review is not required on main');
-              }
-              if (!protection.data.required_status_checks) {
-                failures.push('P0/4: required status checks are not configured on main');
-              }
-              if (protection.data.allow_force_pushes?.enabled) {
-                failures.push('P0/4: force pushes are enabled on main');
+              const contexts = branch.data.protection?.required_status_checks?.contexts || [];
+              if (!contexts.includes('p0/production-readiness')) {
+                failures.push('P0/4: p0/production-readiness is not a required status check on main');
+              } else {
+                details.push('P0/4: p0/production-readiness is required on main');
               }
             } catch (error) {
-              failures.push(`P0/4: branch protection cannot be proven (${error.status || error.message})`);
+              failures.push(`P0/4: readable branch protection metadata cannot be proven (${error.status || error.message})`);
             }
 
             const requiredIssues = [
               { number: 270, label: 'P0/1 backup/restore evidence' },
               { number: 62, label: 'P0/2 credential rotation' },
               { number: 212, label: 'P0/3 NAV TEST configuration/UAT' },
+              { number: 320, label: 'P0/4 branch governance evidence' },
             ];
 
             for (const item of requiredIssues) {
