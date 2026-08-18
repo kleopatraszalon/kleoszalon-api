@@ -47,6 +47,7 @@ void ensureExceptionCapaHardeningSchema().catch(error=>console.error("[exception
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
 const loc=(req:AuthRequest)=>String(req.query.location_id||req.user?.location_id||"").trim()||null;
 const sendError=(error:any,res:any,next:any)=>error?.status?res.status(error.status).json({message:error.message}):next(error);
+const sendGovernanceError=(error:any,res:any,next:any)=>String(error?.code||"")==="23514"?res.status(409).json({message:error?.message||"A governance szabály megakadályozta a műveletet.",code:"capa_governance_conflict"}):sendError(error,res,next);
 const capaVisible=(detail:any,location:string|null)=>!location||!detail?.item?.location_id||String(detail.item.location_id)===location;
 
 router.use(async(_req,_res,next)=>{try{await ensureExceptionCommandCenterSchema();await ensureExceptionCapaHardeningSchema();next()}catch(error){next(error)}});
@@ -72,7 +73,7 @@ router.get("/intelligence/capa/summary",async(req:AuthRequest,res,next)=>{try{re
 router.get("/intelligence/capa",async(req:AuthRequest,res,next)=>{try{const location=loc(req);const rows=await listExceptionCapas({...req.query,location_id:null});const items=location?rows.filter((x:any)=>!x.location_id||String(x.location_id)===location):rows;res.json({items})}catch(error){next(error)}});
 router.post("/intelligence/capa/sync",async(_req:AuthRequest,res,next)=>{try{res.json(await syncExceptionCapaCandidates())}catch(error){next(error)}});
 router.get("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(detail)}catch(error:any){sendError(error,res,next)}});
-router.patch("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(await updateExceptionCapa(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
+router.patch("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(await updateExceptionCapa(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendGovernanceError(error,res,next)}});
 
 router.get("/export.csv",async(req:AuthRequest,res,next)=>{try{const csv=await exportExceptionCasesCsv({...req.query,location_id:loc(req)});res.setHeader("Content-Type","text/csv; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="kleo-exception-center-${new Date().toISOString().slice(0,10)}.csv"`);res.send(csv)}catch(error){next(error)}});
 
