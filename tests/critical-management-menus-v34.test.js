@@ -25,26 +25,17 @@ test('critical finance and system menus self-heal with parent visibility',()=>{
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
 });
 
-test('AI Exception CAPA and Major Incident executive menus self-heal analytics parent with management permissions',()=>{
+test('AI Exception CAPA Major Incident and Resilience executive menus self-heal analytics parent with management permissions',()=>{
   const src=read('src/services/executiveAiMenu.ts');
   for(const marker of [
     "VALUES('analytics','Statisztika és VIR'",
-    'analytics.executive_ai',
-    'AI vezetői asszisztens',
-    '/finance/executive-ai',
-    'analytics.exception_center',
-    'Exception Command Center',
-    '/finance/exception-command-center',
-    'analytics.exception_intelligence',
-    'Exception Intelligence',
-    '/finance/exception-command-center/intelligence',
-    'analytics.exception_capa',
-    'CAPA központ',
-    '/finance/exception-command-center/capa',
-    'analytics.major_incident',
-    'Major Incident / War Room',
-    '/finance/exception-command-center/major-incidents',
-    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident')",
+    'analytics.executive_ai','AI vezetői asszisztens','/finance/executive-ai',
+    'analytics.exception_center','Exception Command Center','/finance/exception-command-center',
+    'analytics.exception_intelligence','Exception Intelligence','/finance/exception-command-center/intelligence',
+    'analytics.exception_capa','CAPA központ','/finance/exception-command-center/capa',
+    'analytics.major_incident','Major Incident / War Room','/finance/exception-command-center/major-incidents',
+    'analytics.resilience_recovery','Resilience & Recovery','/finance/exception-command-center/resilience',
+    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident','analytics.resilience_recovery')",
     'clearShortCache("menu:")',
   ]) assert.ok(src.includes(marker),marker);
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
