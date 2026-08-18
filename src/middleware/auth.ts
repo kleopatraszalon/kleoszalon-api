@@ -10,6 +10,7 @@ export interface AuthRequest extends Request {
     email?: string;
     role?: string | string[];
     location_id?: number | string | null;
+    tenant_id?: number | string | null;
     uat_scope?: string;
   };
 }
@@ -60,6 +61,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       email: decoded.email,
       role: decoded.role,
       location_id: decoded.location_id ?? null,
+      tenant_id: decoded.tenant_id ?? null,
       uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
 
@@ -79,13 +81,13 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     if (err.name === "TokenExpiredError") {
       res.clearCookie("token", { path: "/" });
       return res.status(401).json({
-        error: "A munkamenet lejárt. Kérjük, jelentkezz be újra.",
+        error: "A munkamenet lejárt. Kérjük, jelentkezzen be újra.",
       });
     }
 
     if (["JsonWebTokenError", "NotBeforeError"].includes(String(err?.name || ""))) {
       return res.status(401).json({
-        error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
+        error: "Érvénytelen token. Kérjük, jelentkezzen be újra.",
       });
     }
 
