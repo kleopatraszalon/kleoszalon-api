@@ -1,0 +1,35 @@
+name: Release Governance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-governance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    name: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.20.2
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Build, regression and requirements gate
+        run: npm run release:verify
+      - name: Verify migrations are versioned
+        run: |
+          test -f src/dbMigrations.ts
+          test -n "$(find src/migrations -maxdepth 1 -type f -name '*.sql' -print -quit)"
