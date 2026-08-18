@@ -17,16 +17,21 @@ test('read-only dashboard request is not blocked by full tenant schema mutation 
     'explicit dashboard location filters must remain tenant-bound');
 });
 
-test('dashboard tenant resolution follows the authenticated salon before the legacy fallback', () => {
+test('dashboard tenant resolution prefers explicit tenant, then signed salon, then membership, then legacy fallback', () => {
   const src = read('src/saas/tenantAccess.ts');
   assert.match(src, /tenantFromAuthenticatedLocation\(userId,authUser\.location_id,authUser\.role\)/,
     'a signed location_id must be usable to resolve the active tenant when old JWTs have no tenant_id');
   assert.match(src, /FROM locations l[\s\S]*JOIN tenants t ON t\.id=l\.tenant_id/,
     'tenant inference must use the location-to-tenant relation instead of hard-coding the Kleopatra tenant');
+
+  const tokenPos = src.indexOf('tenantFromToken(userId,tokenTenantId)');
   const locationPos = src.indexOf('tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role)');
+  const membershipPos = src.indexOf('tenantFromMembership(userId)');
   const fallbackPos = src.indexOf("slug='kleopatra'");
-  assert.ok(locationPos >= 0 && fallbackPos > locationPos,
-    'the legacy Kleopatra fallback must run only after location-derived tenant resolution');
+  assert.ok(tokenPos >= 0 && locationPos > tokenPos && membershipPos > locationPos && fallbackPos > membershipPos,
+    'tenant resolution order must be explicit tenant -> signed location -> membership -> legacy fallback');
+  assert.match(src, /if\(!row&&!tokenTenantId\)row=await tenantFromAuthenticatedLocation/,
+    'legacy location-based resolution must not override an explicit token tenant');
 });
 
 test('location-manager dashboard client counter is fail-soft', () => {
