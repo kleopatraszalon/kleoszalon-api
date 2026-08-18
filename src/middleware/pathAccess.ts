@@ -25,6 +25,7 @@ function ruleForPath(path: string): Rule | null {
   if (path.startsWith("/api/hr/compensation-plans")) return { feature: "hr", menu: "team.payroll" };
   if (/^\/api\/hr\/employees\/[^/]+\/compensation(?:\/|$)/.test(path)) return { feature: "hr", menu: "team.payroll" };
   if (path === "/api/hr" || path.startsWith("/api/hr/")) return { feature: "hr", menu: "team" };
+  if (path === "/api/fixed-assets" || path.startsWith("/api/fixed-assets/")) return { feature: "finance", menu: "finance.fixed_assets" };
   if (path.startsWith("/api/transactions/inventory")) return { feature: "inventory", menu: "inventory" };
   if (path.startsWith("/api/transactions/cashier/management-summary") || path.startsWith("/api/transactions/management"))
     return { feature: "management_dashboard", menu: "analytics.main" };
