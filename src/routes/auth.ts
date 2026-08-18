@@ -8,6 +8,7 @@ import axios from "axios";
 import crypto from "crypto";
 import JWT_SECRET from "../security/jwtSecret";
 import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
+import releaseControlOidcRouter from "./releaseControlOidc";
 
 const router = express.Router();
 const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
@@ -178,6 +179,8 @@ async function verifyGitHubUatToken(token:string,audience:string,workflowRef:str
   if(String(claims?.workflow_ref||"")!==workflowRef)throw new Error("Nem engedélyezett GitHub workflow.");
   return claims;
 }
+
+router.use("/uat/release-control", releaseControlOidcRouter);
 
 router.post("/uat/accounting-token",async(req:Request,res:Response)=>{
   const oidcToken=bearerToken(req);
