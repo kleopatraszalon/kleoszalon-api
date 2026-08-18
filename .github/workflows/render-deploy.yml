@@ -99,8 +99,13 @@ jobs:
             exit 1
           fi
 
-      - name: Trigger Render API deploy
-        run: curl -fsS --retry 3 --max-time 30 -X POST "$RENDER_DEPLOY_HOOK_URL"
+      - name: Trigger exact Render API commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sep='?'
+          [[ "$RENDER_DEPLOY_HOOK_URL" == *'?'* ]] && sep='&'
+          curl -fsS --retry 3 --max-time 30 -X POST "${RENDER_DEPLOY_HOOK_URL}${sep}ref=${GITHUB_SHA}"
 
       - name: Wait for the actual new Render release
         shell: bash
