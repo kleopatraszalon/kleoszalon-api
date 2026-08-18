@@ -25,7 +25,8 @@ function httpError(message: string, status: number) {
   return Object.assign(new Error(message), { status });
 }
 function fail(res: any, error: any) {
-  const status = Number(error?.status || 500);
+  const dbConstraint = String(error?.code || "") === "23514";
+  const status = Number(error?.status || (dbConstraint ? 409 : 500));
   return res.status(status >= 400 && status < 600 ? status : 500).json({ message: String(error?.message || "A művelet sikertelen.") });
 }
 async function tenantId(req: AuthRequest) {
@@ -409,8 +410,8 @@ router.post("/projects/:id/request-approval", async (req: AuthRequest, res) => {
     const project = await projectRow(client, tenant, req.params.id);
     if (!project) throw httpError("A projekt nem található.", 404);
     if (["closed", "cancelled"].includes(project.status)) throw httpError("Lezárt vagy megszakított projekt nem küldhető jóváhagyásra.", 409);
-    const openActions = Number((await client.query(`SELECT count(*)::int c FROM management_improvement_actions WHERE project_id=$1 AND tenant_id=$2::bigint AND status NOT IN ('completed','verified','cancelled')`, [project.id, tenant])).rows[0]?.c || 0);
-    if (openActions > 0) throw httpError(`Jóváhagyás előtt ${openActions} nyitott intézkedést le kell zárni.`, 409);
+    const openActions = Number((await client.query(`SELECT count(*)::int c FROM management_improvement_actions WHERE project_id=$1 AND tenant_id=$2::bigint AND status NOT IN ('verified','cancelled')`, [project.id, tenant])).rows[0]?.c || 0);
+    if (openActions > 0) throw httpError(`Jóváhagyás előtt ${openActions} intézkedés eredményességét igazolni vagy az intézkedést megszakítani kell.`, 409);
     const completedKpis = Number((await client.query(`SELECT count(*)::int c FROM management_improvement_kpis WHERE project_id=$1 AND tenant_id=$2::bigint AND before_value IS NOT NULL AND after_value IS NOT NULL`, [project.id, tenant])).rows[0]?.c || 0);
     if (completedKpis < 1) throw httpError("Jóváhagyás előtt legalább egy előtte/utána KPI rögzítése kötelező.", 409);
     await client.query(`UPDATE management_improvement_approvals SET decision='withdrawn',decided_at=now(),decided_by=$3,comment='Új jóváhagyási kör indult.' WHERE project_id=$1 AND tenant_id=$2::bigint AND decision='pending'`, [project.id, tenant, actor(req)]);
