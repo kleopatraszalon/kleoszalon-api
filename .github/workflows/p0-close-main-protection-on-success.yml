@@ -1,0 +1,35 @@
+name: Close main protection P0 on readiness proof
+
+on:
+  workflow_run:
+    workflows: ['P0 production readiness']
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  close-main-protection-p0:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close branch-protection P0 with readiness evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner=context.repo.owner;
+            const repo=context.repo.repo;
+            const issue_number=320;
+            const run=context.payload.workflow_run;
+            const issue=await github.rest.issues.get({owner,repo,issue_number});
+            const body=[
+              'P0 branch-protection control proven by the fail-closed production-readiness gate.',
+              `Workflow: ${run.html_url}`,
+              `Head SHA: ${run.head_sha}`,
+              'The readiness gate verified protected=true, required PR review, required status checks and force-push protection.'
+            ].join('\n');
+            await github.rest.issues.createComment({owner,repo,issue_number,body});
+            if(issue.data.state!=='closed'){
+              await github.rest.issues.update({owner,repo,issue_number,state:'closed',state_reason:'completed'});
+            }
