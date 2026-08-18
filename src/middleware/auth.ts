@@ -17,6 +17,7 @@ export interface AuthRequest extends Request {
 
 type CredentialSource = "bearer" | "cookie";
 type RequestCredential = { token: string; source: CredentialSource };
+const COOKIE_SESSION_MARKERS = new Set(["cookie-session", "cookie-session-v1"]);
 
 /**
  * Authentication tokens are accepted only from transport locations that are
@@ -29,9 +30,12 @@ function getCredentialFromReq(req: Request): RequestCredential | null {
     (req.headers["authorization"] as string | undefined) ||
     (req.headers["Authorization"] as string | undefined);
 
+  let bearer = "";
   if (authHeader && /^Bearer\s+/i.test(authHeader)) {
-    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-    return token ? { token, source: "bearer" } : null;
+    bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (bearer && !COOKIE_SESSION_MARKERS.has(bearer)) {
+      return { token: bearer, source: "bearer" };
+    }
   }
 
   const cookieToken = (req as any).cookies?.token;
