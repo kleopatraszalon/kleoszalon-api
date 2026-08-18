@@ -1,6 +1,6 @@
 import express from "express";
 import pool from "../db";
-import { requireAuth, AuthRequest } from "../middleware/auth";
+import { AuthRequest } from "../middleware/auth";
 import { ensureDashboardAnalytics } from "../dashboard/ensureDashboardAnalytics";
 import { scheduleDashboardWarmup } from "../performance/dashboardWarmup";
 import { scopedCacheKey } from "../performance/cacheKey";
@@ -197,7 +197,11 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
   };
 }
 
-router.get("/", requireAuth, async (req: AuthRequest, res) => {
+// Authentication and tenant/location authorization are guaranteed by the
+// locationManagerScope("dashboard") middleware at the /api/dashboard mount.
+// Do not re-run requireAuth here: a second JWT decode can overwrite the tenant
+// context that the scope middleware just resolved from the database.
+router.get("/", async (req: AuthRequest, res) => {
   const now = new Date();
   const start = new Date(now);
   start.setDate(start.getDate() - 29);
