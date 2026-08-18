@@ -6,7 +6,7 @@ import { getComplaintMailboxStatus } from "../services/complaintMailbox";
 
 const router = Router();
 
-type GateStatus = "pass" | "warning" | "fail" | "pending";
+export type GateStatus = "pass" | "warning" | "fail" | "pending";
 type Gate = {
   key: string;
   group: string;
@@ -38,6 +38,19 @@ const MANUAL_GATES = [
   ["approval.production", "Jóváhagyás", "Production release approval"],
 ] as const;
 
+const AUTOMATED_KEYS = new Set([
+  "version.frontend",
+  "tests.backend",
+  "build.backend",
+  "tests.frontend",
+  "build.frontend",
+  "tests.integration",
+  "tests.financial",
+  "tests.saas",
+  "tests.rbac",
+  "backup.restore",
+]);
+
 let ensurePromise: Promise<void> | null = null;
 function ensureSchema() {
   if (!ensurePromise) ensurePromise = db.query(`
@@ -60,6 +73,7 @@ function ensureSchema() {
 function releaseRef() {
   return String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT_SHA || process.env.COMMIT_SHA || "unversioned").trim();
 }
+export function currentReleaseRef() { return releaseRef(); }
 function frontendRef() {
   return String(process.env.FRONTEND_RELEASE_SHA || process.env.FRONTEND_GIT_COMMIT || "").trim();
 }
@@ -73,6 +87,31 @@ async function safeCount(sql: string, params: any[] = []) {
 }
 function actor(req: AuthRequest) { return String(req.user?.email || req.user?.id || "system"); }
 function manualKeyAllowed(key: string) { return MANUAL_GATES.some(([k]) => k === key); }
+
+export async function recordReleaseEvidence(input: {
+  release_ref: string;
+  key: string;
+  status: GateStatus;
+  evidence?: string | null;
+  source: string;
+  updated_by: string;
+}) {
+  await ensureSchema();
+  if (!manualKeyAllowed(input.key)) throw new Error(`Ismeretlen release gate: ${input.key}`);
+  if (!["pass", "warning", "fail", "pending"].includes(input.status)) throw new Error(`Érvénytelen gate státusz: ${input.status}`);
+  const r = await db.query(`INSERT INTO release_control_evidence(release_ref,check_key,status,evidence,source,updated_by,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,now())
+    ON CONFLICT(release_ref,check_key) DO UPDATE SET status=EXCLUDED.status,evidence=EXCLUDED.evidence,source=EXCLUDED.source,updated_by=EXCLUDED.updated_by,updated_at=now()
+    RETURNING *`, [
+      String(input.release_ref || releaseRef()).trim() || releaseRef(),
+      input.key,
+      input.status,
+      String(input.evidence || "").trim().slice(0, 4000) || null,
+      String(input.source || "unknown").trim().slice(0, 300) || "unknown",
+      String(input.updated_by || "system").trim().slice(0, 300) || "system",
+    ]);
+  return r.rows[0];
+}
 
 async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const gates: Gate[] = [];
@@ -164,7 +203,19 @@ async function evidenceGates(ref: string): Promise<Gate[]> {
 
   return MANUAL_GATES.map(([key,group,label]) => {
     const row:any = map.get(key);
-    return { key, group, label, status:(row?.status || "pending") as GateStatus, blocking:true, editable:true, message:row?.evidence || "Kötelező release-bizonyíték még nincs rögzítve.", evidence:row?.evidence || null, source:row?.source || "manual", updated_by:row?.updated_by || null, updated_at:row?.updated_at || null };
+    return {
+      key,
+      group,
+      label,
+      status:(row?.status || "pending") as GateStatus,
+      blocking:true,
+      editable:!AUTOMATED_KEYS.has(key),
+      message:row?.evidence || (AUTOMATED_KEYS.has(key) ? "GitHub Actions bizonyíték még nem érkezett ehhez a futó release-hez." : "Kötelező release-bizonyíték még nincs rögzítve."),
+      evidence:row?.evidence || null,
+      source:row?.source || (AUTOMATED_KEYS.has(key) ? "github-actions" : "manual"),
+      updated_by:row?.updated_by || null,
+      updated_at:row?.updated_at || null,
+    };
   });
 }
 
@@ -194,17 +245,20 @@ router.get("/", async (_req, res, next) => {
 router.post("/evidence", async (req:AuthRequest,res,next) => {
   try {
     const key = String(req.body?.key || "").trim();
-    if (!manualKeyAllowed(key)) return res.status(400).json({message:"Ismeretlen vagy nem szerkeszthető release gate."});
+    if (!manualKeyAllowed(key)) return res.status(400).json({message:"Ismeretlen release gate."});
+    if (AUTOMATED_KEYS.has(key)) return res.status(403).json({message:"Ezt a release gate-et kizárólag a hitelesített GitHub Actions workflow írhatja."});
     const status = String(req.body?.status || "pending").trim() as GateStatus;
     if (!["pass","warning","fail","pending"].includes(status)) return res.status(400).json({message:"Érvénytelen gate státusz."});
     const ref = String(req.body?.release_ref || releaseRef()).trim() || releaseRef();
-    const evidence = String(req.body?.evidence || "").trim().slice(0,4000);
-    const source = String(req.body?.source || "manual").trim().slice(0,80) || "manual";
-    const r = await db.query(`INSERT INTO release_control_evidence(release_ref,check_key,status,evidence,source,updated_by,updated_at)
-      VALUES($1,$2,$3,$4,$5,$6,now())
-      ON CONFLICT(release_ref,check_key) DO UPDATE SET status=EXCLUDED.status,evidence=EXCLUDED.evidence,source=EXCLUDED.source,updated_by=EXCLUDED.updated_by,updated_at=now()
-      RETURNING *`, [ref,key,status,evidence || null,source,actor(req)]);
-    res.json(r.rows[0]);
+    const row = await recordReleaseEvidence({
+      release_ref: ref,
+      key,
+      status,
+      evidence: String(req.body?.evidence || "").trim(),
+      source: String(req.body?.source || "vir-admin").trim() || "vir-admin",
+      updated_by: actor(req),
+    });
+    res.json(row);
   } catch (error) { next(error); }
 });
 
@@ -212,6 +266,7 @@ router.delete("/evidence/:key", async (req:AuthRequest,res,next) => {
   try {
     const key = String(req.params.key || "");
     if (!manualKeyAllowed(key)) return res.status(400).json({message:"Ismeretlen release gate."});
+    if (AUTOMATED_KEYS.has(key)) return res.status(403).json({message:"Automatikus GitHub Actions bizonyíték kézzel nem törölhető."});
     const ref = String(req.query.release_ref || releaseRef()).trim();
     await db.query(`DELETE FROM release_control_evidence WHERE release_ref=$1 AND check_key=$2`, [ref,key]);
     res.json({ok:true,release_ref:ref,key,cleared_by:actor(req)});
