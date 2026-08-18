@@ -7,6 +7,7 @@ import {
   runStockReconciliation,
 } from "../services/businessReconciliation";
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
+import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 
 const router=Router();
 startBusinessReconciliationSchedulerV2();
@@ -15,7 +16,7 @@ const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0,10));if(!validDate(s))throw Object.assign(new Error("A dátum formátuma YYYY-MM-DD legyen."),{status:400});return s};
 const loc=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
 
-router.use(async(_req,_res,next)=>{try{await ensureBusinessReconciliationSchema();next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessControlAlertDeliverySchema()]);next()}catch(error){next(error)}});
 
 router.get("/finance",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runFinancialReconciliation(date,loc(req,req.query),{persist:false,notify:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
