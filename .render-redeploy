@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T13:15:00+02:00
-Deploy latest main including guaranteed startup registration for AI Executive Assistant, Financial Reconciliation Center and System Status menus.
-Reason: newly added management menu entries were not visible in production; deploy the parent/child permission and cache invalidation fix.
+2026-08-18T14:11:00+02:00
+Deploy latest main including Transaction Lifecycle & Traceability forensic toolkit, risk scoring, SLA anomaly detection, dependency graph API, proof package export, digest watchdog, Transaction Trace Health and hardened Release Control gates.
+Reason: production redeploy after transaction-level end-to-end evidence, forensic monitoring and watchdog hardening were completed.
