@@ -59,6 +59,7 @@ test('only accounting or admin roles may approve policies and map the company ch
   assert.match(governance, /APPROVER_ROLES/);
   assert.match(governance, /\/governance\/assets\/:id\/approve/);
   assert.match(governance, /\/governance\/chart\/:code/);
+  assert.match(governance, /\/accounting\/chart\/:code/);
   assert.match(governance, /chart_mapping_forbidden/);
   assert.match(governance, /fixed_asset_approval_forbidden/);
   assert.match(governance, /fixed_asset_gl_export_v/);
