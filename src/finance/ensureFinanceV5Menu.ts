@@ -40,12 +40,12 @@ export async function ensureFinanceV5Menu(){
 
   await safe(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
     SELECT r.role_key,m.id,
-      CASE WHEN m.code IN('finance','finance.dashboard','finance.checkout','finance.transactions','finance.cash','finance.partners','finance.documents','finance.fixed_assets','finance.online','finance.reports') THEN true ELSE false END,
+      CASE WHEN m.code IN('finance','finance.dashboard','finance.checkout','finance.transactions','finance.cash','finance.partners','finance.documents','finance.online','finance.reports') OR (r.role_key='salon_manager' AND m.code='finance.fixed_assets') THEN true ELSE false END,
       CASE WHEN m.code IN('finance.checkout','finance.transactions','finance.partners','finance.documents') THEN true ELSE false END,
       CASE WHEN m.code IN('finance.checkout','finance.transactions','finance.partners','finance.documents') THEN true ELSE false END,
       false,false,
-      CASE WHEN m.code IN('finance.transactions','finance.cash','finance.partners','finance.documents','finance.fixed_assets','finance.reports') THEN true ELSE false END,
-      CASE WHEN m.code IN('finance.dashboard','finance.checkout','finance.transactions','finance.cash','finance.partners','finance.documents','finance.fixed_assets','finance.reports') THEN true ELSE false END,
+      CASE WHEN m.code IN('finance.transactions','finance.cash','finance.partners','finance.documents','finance.reports') OR (r.role_key='salon_manager' AND m.code='finance.fixed_assets') THEN true ELSE false END,
+      CASE WHEN m.code IN('finance.dashboard','finance.checkout','finance.transactions','finance.cash','finance.partners','finance.documents','finance.reports') OR (r.role_key='salon_manager' AND m.code='finance.fixed_assets') THEN true ELSE false END,
       false,'own_location',now()
     FROM (VALUES('salon_manager'),('receptionist')) r(role_key) CROSS JOIN menus m WHERE m.code='finance' OR m.code LIKE 'finance.%'
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=EXCLUDED.can_view,can_create=EXCLUDED.can_create,can_edit=EXCLUDED.can_edit,can_delete=false,can_approve=false,can_export=EXCLUDED.can_export,can_view_financial=EXCLUDED.can_view_financial,scope_type='own_location',updated_at=now()`);
