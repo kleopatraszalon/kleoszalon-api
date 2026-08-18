@@ -10,6 +10,7 @@ import { ensureBusinessProcessIntegritySchema, runBusinessProcessIntegrity } fro
 import { ensureTransactionTraceabilitySchema } from "../services/transactionTraceability";
 import { backfillTraces, recentTraces, searchTraces, startTraceMaintenance, traceDetail } from "../services/transactionTraceRuntime";
 import { ensureTransactionTraceSigningSchema, signTraceProof, startTraceProofSigningMaintenance, verifyTraceProofSignature } from "../services/transactionTraceSigning";
+import { assessTraceForensics, buildProofPackage, buildTraceGraph, ensureTransactionTraceForensicsSchema, runTraceWatchdog, startTraceForensicWatchdog, traceHealthSummary } from "../services/transactionTraceForensics";
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 import { ensureBusinessControlMenu } from "../services/businessControlMenu";
@@ -19,6 +20,7 @@ const router=Router();
 startBusinessReconciliationSchedulerV2();
 startTraceMaintenance();
 startTraceProofSigningMaintenance();
+startTraceForensicWatchdog();
 
 async function ensureCriticalMenus(){
   const results=await Promise.allSettled([ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);
@@ -36,7 +38,7 @@ const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0
 const loc=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
 
-router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureTransactionTraceabilitySchema(),ensureTransactionTraceSigningSchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureTransactionTraceabilitySchema(),ensureTransactionTraceSigningSchema(),ensureTransactionTraceForensicsSchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
 
 router.get("/finance",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runFinancialReconciliation(date,loc(req,req.query),{persist:false,notify:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
@@ -48,6 +50,12 @@ router.get("/process-integrity",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runBusinessProcessIntegrity(date,loc(req,req.query),{persist:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
 
+router.get("/trace/health",async(req:AuthRequest,res,next)=>{
+  try{res.json(await traceHealthSummary(Number(req.query.days||30),loc(req,req.query)))}catch(error){next(error)}
+});
+router.post("/trace/watchdog",async(_req:AuthRequest,res,next)=>{
+  try{res.json(await runTraceWatchdog(1000))}catch(error){next(error)}
+});
 router.get("/trace/recent",async(req:AuthRequest,res,next)=>{
   try{res.json({items:await recentTraces(Number(req.query.limit||60),loc(req,req.query))})}catch(error){next(error)}
 });
@@ -57,11 +65,20 @@ router.get("/trace/search",async(req:AuthRequest,res,next)=>{
 router.post("/trace/backfill",async(req:AuthRequest,res,next)=>{
   try{res.json(await backfillTraces(Number(req.body?.days||30),Number(req.body?.limit||500)))}catch(error){next(error)}
 });
+router.get("/trace/:root_type/:root_id/forensics",async(req:AuthRequest,res,next)=>{
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json(await assessTraceForensics(String(data.trace.trace_id),actor(req)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
+router.get("/trace/:root_type/:root_id/graph",async(req:AuthRequest,res,next)=>{
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json(await buildTraceGraph(String(data.trace.trace_id)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
+router.get("/trace/:root_type/:root_id/proof-package",async(req:AuthRequest,res,next)=>{
+  try{const rootType=String(req.params.root_type),rootId=String(req.params.root_id);await traceDetail(rootType,rootId,actor(req));const data=await buildProofPackage(rootType,rootId,actor(req));res.setHeader("Content-Type","application/json; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="kleo-trace-${rootType}-${rootId.replace(/[^A-Za-z0-9._-]/g,'_')}.json"`);res.json(data)}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
 router.get("/trace/:root_type/:root_id",async(req:AuthRequest,res,next)=>{
-  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));res.json({...data,signature})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));const forensics=await assessTraceForensics(String(data.trace.trace_id),actor(req));res.json({...data,signature,forensics})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
 router.post("/trace/:root_type/:root_id/verify",async(req:AuthRequest,res,next)=>{
-  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));res.json({trace:data.trace,proof:data.proof,signature,stages:data.stages,verified_at:new Date().toISOString()})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));const signature=await signTraceProof(String(data.trace.trace_id),actor(req));const forensics=await assessTraceForensics(String(data.trace.trace_id),actor(req));res.json({trace:data.trace,proof:data.proof,signature,forensics,stages:data.stages,verified_at:new Date().toISOString()})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
 router.get("/trace/:root_type/:root_id/signature",async(req:AuthRequest,res,next)=>{
   try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json(await verifyTraceProofSignature(String(data.trace.trace_id)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
