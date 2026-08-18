@@ -130,21 +130,24 @@ async function buildSummary(from:string,to:string,locationId:string|null,financi
 const avg=(rows:any[],key:string)=>rows.length?rows.reduce((s,r)=>s+n(r[key]),0)/rows.length:0;
 function percentile(rows:any[],key:string,p:number){const a=rows.map(r=>n(r[key])).filter(Number.isFinite).sort((x,y)=>x-y);if(!a.length)return 0;const pos=(a.length-1)*p,lo=Math.floor(pos),hi=Math.ceil(pos);return lo===hi?a[lo]:a[lo]+(a[hi]-a[lo])*(pos-lo)}
 
-async function buildDecisionSupport(from:string,to:string,locationId:string|null,financialVisible:boolean,isAdmin:boolean){
+async function buildDecisionSupport(from:string,to:string,locationId:string|null,financialVisible:boolean,isAdmin:boolean,tenantId:string|null){
   const warnings:string[]=[];
-  const params=[from,to,locationId];
+  if(!tenantId&&!locationId) warnings.push("hálózati BI: tenant azonosító hiányzik, a lekérdezés biztonsági okból nem nyit hálózati scope-ot");
+  const params=[from,to,locationId,tenantId];
+  const scopeA=`(($3::text IS NOT NULL AND a.location_id::text=$3::text) OR ($3::text IS NULL AND $4::text IS NOT NULL AND al.tenant_id::text=$4::text))`;
+  const scopeWo=`(($3::text IS NOT NULL AND wo.location_id::text=$3::text) OR ($3::text IS NULL AND $4::text IS NOT NULL AND wl.tenant_id::text=$4::text))`;
+  const scopeT=`(($3::text IS NOT NULL AND t.location_id::text=$3::text) OR ($3::text IS NULL AND $4::text IS NOT NULL AND tl.tenant_id::text=$4::text))`;
   const [heatmapRows,rebookingRows,staffRows,benchmarkRows]=await Promise.all([
     safeRows(`SELECT EXTRACT(ISODOW FROM a.start_time)::int weekday,EXTRACT(HOUR FROM a.start_time)::int hour,
       COUNT(*)::int appointments,COUNT(*) FILTER(WHERE a.status IN ('completed','paid'))::int completed,
       COUNT(*) FILTER(WHERE a.status='no_show')::int no_show
-      FROM appointments a WHERE a.start_time::date BETWEEN $1::date AND $2::date
-      AND ($3::text IS NULL OR a.location_id::text=$3::text) AND COALESCE(a.status,'') NOT IN ('cancelled','canceled')
-      GROUP BY 1,2 ORDER BY 1,2`,params,"foglalási heatmap",warnings),
+      FROM appointments a JOIN locations al ON al.id=a.location_id
+      WHERE a.start_time::date BETWEEN $1::date AND $2::date AND ${scopeA}
+      AND COALESCE(a.status,'') NOT IN ('cancelled','canceled') GROUP BY 1,2 ORDER BY 1,2`,params,"foglalási heatmap",warnings),
     safeRows(`WITH base AS (
       SELECT DISTINCT a.id,a.client_id,a.end_time,a.location_id FROM appointments a
-      JOIN work_orders wo ON wo.appointment_id=a.id
-      WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND a.client_id IS NOT NULL
-      AND ($3::text IS NULL OR a.location_id::text=$3::text)), scored AS (
+      JOIN locations al ON al.id=a.location_id JOIN work_orders wo ON wo.appointment_id=a.id
+      WHERE wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND a.client_id IS NOT NULL AND ${scopeA}), scored AS (
       SELECT b.*,EXISTS(SELECT 1 FROM appointments nx WHERE nx.client_id=b.client_id AND nx.start_time>b.end_time
         AND nx.start_time<=b.end_time+INTERVAL '90 days' AND COALESCE(nx.status,'') NOT IN ('cancelled','canceled','no_show')) rebooked,
         EXISTS(SELECT 1 FROM appointments nx WHERE nx.client_id=b.client_id AND nx.start_time>b.end_time
@@ -156,18 +159,16 @@ async function buildDecisionSupport(from:string,to:string,locationId:string|null
         COALESCE(100.0*COUNT(*) FILTER(WHERE immediate_rebooked)/NULLIF(COUNT(*),0),0)::numeric immediate_rebooking_rate_percent FROM scored`,params,"rebooking",warnings),
     safeRows(`WITH rev AS (
       SELECT wo.employee_id,${financialVisible?"COALESCE(SUM(wi.line_total),0)::numeric":"0::numeric"} revenue,COUNT(DISTINCT wo.id)::int workorders
-      FROM work_orders wo LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
-      WHERE wo.employee_id IS NOT NULL AND wo.financial_closed_at::date BETWEEN $1::date AND $2::date
-      AND ($3::text IS NULL OR wo.location_id::text=$3::text) GROUP BY wo.employee_id), ts AS (
+      FROM work_orders wo JOIN locations wl ON wl.id=wo.location_id LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
+      WHERE wo.employee_id IS NOT NULL AND wo.financial_closed_at::date BETWEEN $1::date AND $2::date AND ${scopeWo} GROUP BY wo.employee_id), ts AS (
       SELECT t.employee_id,COALESCE(SUM(CASE WHEN COALESCE(t.regular_minutes,0)+COALESCE(t.overtime_minutes,0)>0
         THEN COALESCE(t.regular_minutes,0)+COALESCE(t.overtime_minutes,0)
         WHEN t.clock_in IS NOT NULL AND t.clock_out IS NOT NULL THEN GREATEST(EXTRACT(EPOCH FROM(t.clock_out-t.clock_in))/60-COALESCE(t.break_minutes,0),0) ELSE 0 END),0)::numeric paid_minutes
-      FROM timesheets t WHERE t.work_date BETWEEN $1::date AND $2::date AND COALESCE(t.status,'') NOT IN ('cancelled','rejected')
-      AND ($3::text IS NULL OR t.location_id::text=$3::text) GROUP BY t.employee_id), svc AS (
+      FROM timesheets t JOIN locations tl ON tl.id=t.location_id WHERE t.work_date BETWEEN $1::date AND $2::date AND COALESCE(t.status,'') NOT IN ('cancelled','rejected')
+      AND ${scopeT} GROUP BY t.employee_id), svc AS (
       SELECT a.employee_id,COALESCE(SUM(GREATEST(EXTRACT(EPOCH FROM(a.end_time-a.start_time))/60,0)),0)::numeric service_minutes,COUNT(*)::int appointments
-      FROM appointments a WHERE a.employee_id IS NOT NULL AND a.start_time::date BETWEEN $1::date AND $2::date
-      AND ($3::text IS NULL OR a.location_id::text=$3::text) AND a.end_time<=now()
-      AND COALESCE(a.status,'') NOT IN ('cancelled','canceled','no_show') GROUP BY a.employee_id), ids AS (
+      FROM appointments a JOIN locations al ON al.id=a.location_id WHERE a.employee_id IS NOT NULL AND a.start_time::date BETWEEN $1::date AND $2::date
+      AND ${scopeA} AND a.end_time<=now() AND COALESCE(a.status,'') NOT IN ('cancelled','canceled','no_show') GROUP BY a.employee_id), ids AS (
       SELECT employee_id FROM rev UNION SELECT employee_id FROM ts UNION SELECT employee_id FROM svc)
       SELECT ids.employee_id::text,COALESCE(e.full_name,e.email,'Nincs név') employee_name,COALESCE(rev.revenue,0)::numeric revenue,
         COALESCE(rev.workorders,0)::int workorders,COALESCE(ts.paid_minutes,0)::numeric paid_minutes,COALESCE(svc.service_minutes,0)::numeric service_minutes,
@@ -181,8 +182,7 @@ async function buildDecisionSupport(from:string,to:string,locationId:string|null
       ORDER BY revenue_per_hour DESC,revenue DESC LIMIT 50`,params,"munkatársi Revenue/Hour",warnings),
     safeRows(`WITH ap AS (
       SELECT a.location_id,COUNT(*) FILTER(WHERE COALESCE(a.status,'') NOT IN ('cancelled','canceled'))::int appointments,
-        COUNT(*) FILTER(WHERE a.status IN ('completed','paid'))::int completed,
-        COUNT(*) FILTER(WHERE a.status='no_show')::int no_show
+        COUNT(*) FILTER(WHERE a.status IN ('completed','paid'))::int completed,COUNT(*) FILTER(WHERE a.status='no_show')::int no_show
       FROM appointments a WHERE a.start_time::date BETWEEN $1::date AND $2::date AND a.location_id IS NOT NULL GROUP BY a.location_id), rev AS (
       SELECT wo.location_id,${financialVisible?"COALESCE(SUM(wi.line_total),0)::numeric":"0::numeric"} revenue,COUNT(DISTINCT wo.id)::int workorders
       FROM work_orders wo LEFT JOIN work_order_items wi ON wi.work_order_id=wo.id
@@ -199,7 +199,7 @@ async function buildDecisionSupport(from:string,to:string,locationId:string|null
         COALESCE(100.0*rb.rebooked/NULLIF(rb.eligible,0),0)::numeric rebooking_rate_percent,
         COALESCE(rev.revenue/NULLIF(rev.workorders,0),0)::numeric avg_ticket
       FROM locations l LEFT JOIN ap ON ap.location_id=l.id LEFT JOIN rev ON rev.location_id=l.id LEFT JOIN rb ON rb.location_id=l.id
-      WHERE COALESCE(l.active,true)=true ORDER BY revenue DESC,appointments DESC`,[from,to],"hálózati benchmark",warnings)
+      WHERE l.is_active=true AND $3::text IS NOT NULL AND l.tenant_id::text=$3::text ORDER BY revenue DESC,appointments DESC`,[from,to,tenantId],"hálózati benchmark",warnings)
   ]);
 
   const r=rebookingRows[0]||{};
@@ -209,7 +209,7 @@ async function buildDecisionSupport(from:string,to:string,locationId:string|null
   const network:any={};
   for(const key of metricKeys) network[key]={average:avg(normalizedBench,key),top_quartile:percentile(normalizedBench,key,key==="no_show_rate_percent"?.25:.75)};
   const current=locationId?normalizedBench.find(x=>x.location_id===locationId)||null:null;
-  return {period:{from,to},location_id:locationId,financial_visible:financialVisible,
+  return {period:{from,to},location_id:locationId,tenant_id:tenantId,financial_visible:financialVisible,
     heatmap:heatmapRows.map(x=>({weekday:n(x.weekday),hour:n(x.hour),appointments:n(x.appointments),completed:n(x.completed),no_show:n(x.no_show)})),
     rebooking:{eligible_visits:n(r.eligible_visits),rebooked_visits:n(r.rebooked_visits),immediate_rebooked_visits:n(r.immediate_rebooked_visits),rebooking_rate_percent:n(r.rebooking_rate_percent),immediate_rebooking_rate_percent:n(r.immediate_rebooking_rate_percent),horizon_days:90,immediate_window_hours:24},
     staff_revenue_hour:normalizedStaff,
@@ -226,8 +226,10 @@ router.get("/decision-support",async(req:AuthRequest,res,next)=>{
     const requestedLocation=String(req.query.location_id||"").trim()||null;
     const roles=roleKeys(req),isAdmin=roles.includes("admin");
     const locationId=isAdmin?requestedLocation:(req.user?.location_id?String(req.user.location_id):null);
-    const cacheKey=`management-bi:${scopedCacheKey([from,to,locationId,financialVisible,isAdmin])}`;
-    const payload=await shortCache(cacheKey,MANAGEMENT_CACHE_MS,()=>timed(`/management/decision-support ${from}..${to} ${locationId||"all"}`,()=>buildDecisionSupport(from,to,locationId,financialVisible,isAdmin)));
+    let tenantId=req.user?.tenant_id==null?null:String(req.user.tenant_id);
+    if(!tenantId&&locationId){try{tenantId=String((await db.query(`SELECT tenant_id FROM locations WHERE id::text=$1 LIMIT 1`,[locationId])).rows[0]?.tenant_id||"")||null}catch{tenantId=null}}
+    const cacheKey=`management-bi:${scopedCacheKey([from,to,locationId,tenantId,financialVisible,isAdmin])}`;
+    const payload=await shortCache(cacheKey,MANAGEMENT_CACHE_MS,()=>timed(`/management/decision-support ${from}..${to} ${locationId||"all"}`,()=>buildDecisionSupport(from,to,locationId,financialVisible,isAdmin,tenantId)));
     res.setHeader("Cache-Control","private, no-store");res.json(payload);
   }catch(err){next(err)}
 });
