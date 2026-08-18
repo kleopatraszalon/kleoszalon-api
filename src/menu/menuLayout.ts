@@ -16,7 +16,15 @@ export function ensureMenuLayoutSchema():Promise<void>{
   );
   CREATE INDEX IF NOT EXISTS menu_layout_overrides_parent_idx
     ON menu_layout_overrides(parent_id,order_index,menu_id);
- `).then(()=>undefined).catch(error=>{schemaPromise=null;throw error});
+ `).then(async()=>{
+  await pool.query(`WITH p AS (SELECT id FROM menus WHERE code='settings' LIMIT 1)
+   INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+   SELECT 'settings.menu_layout','Menürendezés','GripVertical','/admin/menu-layout',175,p.id,'settings',true FROM p
+   ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,parent_id=EXCLUDED.parent_id,feature_key='settings',is_active=true`);
+  await pool.query(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+   SELECT 'admin',m.id,true,true,true,false,false,false,false,true,'all_locations',now() FROM menus m WHERE m.code='settings.menu_layout'
+   ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_manage_permissions=true,scope_type='all_locations',updated_at=now()`).catch(()=>undefined);
+ }).then(()=>undefined).catch(error=>{schemaPromise=null;throw error});
  return schemaPromise;
 }
 
