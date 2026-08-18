@@ -18,6 +18,14 @@ function fail(res:any,status:number,message:string,code:string){return res.statu
 
 router.use(requireAuth);
 
+// The legacy FixedAssets router also exposes PUT /accounting/chart/:code.
+// Because this governance router is mounted first, this guard prevents a
+// management role from bypassing the dedicated accounting-only mapping route.
+router.use("/accounting/chart/:code",(req:any,res,next)=>{
+  if(req.method.toUpperCase()==="PUT"&&!canApprove(req))return fail(res,403,"A Kleoszalon számlatükör-leképezését csak a Könyvelés vagy rendszergazda módosíthatja.","chart_mapping_forbidden");
+  next();
+});
+
 router.get("/governance/readiness",async(req:any,res,next)=>{try{
   const loc=selectedLocation(req);const p:any[]=[];let assetWhere=`WHERE a.active=true AND a.status NOT IN('disposed','sold','scrapped')`;
   if(loc){p.push(loc);assetWhere+=` AND a.location_id=$${p.length}`}
