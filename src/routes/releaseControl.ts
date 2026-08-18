@@ -174,6 +174,30 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const productCategories = await tableExists("product_categories");
   add({ key:"integration.webshop", group:"Integrációk", label:"Webshop runtime", status:products && productGroups && productCategories?"pass":"fail", blocking:true, message:products && productGroups && productCategories?"A webshop termék- és taxonómia-törzsek elérhetők.":"A webshop termék/taxonómia runtime séma hiányos.", source:"runtime" });
 
+  let apmLastSnapshotAt: string | null = null;
+  let apmSnapshotAgeMinutes: number | null = null;
+  const apmSnapshotsReady = await tableExists("apm_metric_snapshots");
+  if (apmSnapshotsReady) {
+    try {
+      const row = (await db.query(`SELECT captured_at FROM apm_metric_snapshots ORDER BY captured_at DESC LIMIT 1`)).rows[0];
+      if (row?.captured_at) {
+        apmLastSnapshotAt = new Date(row.captured_at).toISOString();
+        apmSnapshotAgeMinutes = Math.max(0, Math.round(((Date.now() - new Date(row.captured_at).getTime()) / 60_000) * 10) / 10);
+      }
+    } catch {}
+  }
+  const apmReady = apmSnapshotAgeMinutes != null && apmSnapshotAgeMinutes <= 5;
+  add({
+    key:"infrastructure.observability",
+    group:"Infrastruktúra",
+    label:"Observability / APM aktív",
+    status:apmReady?"pass":"fail",
+    blocking:true,
+    message:apmReady?`APM worker aktív; utolsó snapshot ${apmSnapshotAgeMinutes} perce készült.`:apmSnapshotsReady?"Az APM snapshot túl régi vagy még nem készült el.":"Az APM runtime séma még nem jött létre.",
+    evidence:apmLastSnapshotAt,
+    source:"runtime",
+  });
+
   const instanceCount = Number(process.env.RENDER_INSTANCE_COUNT || process.env.WEB_CONCURRENCY || 1);
   const dbHa = process.env.DATABASE_HA_ENABLED === "1";
   const haReady = instanceCount >= 2 && dbHa;
@@ -182,7 +206,7 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const hotfixMarkers = ["api500Hotfix","LifecycleHotfix","LiveRecovery","ReadinessHotfix","RuntimeHotfix"];
   add({ key:"runtime.hotfix-awareness", group:"Kódstabilitás", label:"Hotfix-konszolidáció kapu", status:"warning", blocking:false, message:`A release gate külön bizonyítékot kér a hotfix/recovery rétegek konszolidációjára (${hotfixMarkers.length} ismert kategória).`, source:"policy" });
 
-  return { gates, meta:{ backend_ref:ref, frontend_ref:feRef || null, node_version:process.version, environment:process.env.NODE_ENV || "unknown", database_latency_ms:dbLatency, migration_count:migrationCount, last_migration:lastMigration, instance_count:instanceCount, database_ha_enabled:dbHa } };
+  return { gates, meta:{ backend_ref:ref, frontend_ref:feRef || null, node_version:process.version, environment:process.env.NODE_ENV || "unknown", database_latency_ms:dbLatency, migration_count:migrationCount, last_migration:lastMigration, apm_last_snapshot_at:apmLastSnapshotAt, apm_snapshot_age_minutes:apmSnapshotAgeMinutes, instance_count:instanceCount, database_ha_enabled:dbHa } };
 }
 
 async function evidenceGates(ref: string): Promise<Gate[]> {
