@@ -13,12 +13,12 @@ export async function ensureExecutiveAiMenu(){
     const perms=Boolean((await db.query(`SELECT to_regclass('public.role_menu_permissions') IS NOT NULL ok`)).rows[0]?.ok);
     if(perms){
       await db.query(`INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
-        SELECT r.role_key,m.id,true,false,false,false,false,true,true,false,
-          CASE WHEN r.role_key IN('admin','manager') THEN 'all_locations' ELSE 'own_location' END,now()
-        FROM (VALUES('admin'),('manager'),('location_manager'),('salon_manager')) r(role_key)
+        SELECT r.role_key,m.id,true,false,false,false,false,true,true,false,'all_locations',now()
+        FROM (VALUES('admin'),('manager')) r(role_key)
         CROSS JOIN menus m WHERE m.code='analytics.executive_ai'
-        ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_export=true,can_view_financial=true,
-          scope_type=CASE WHEN lower(role_menu_permissions.role_key) IN('admin','manager') THEN 'all_locations' ELSE 'own_location' END,updated_at=now()`);
+        ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_export=true,can_view_financial=true,scope_type='all_locations',updated_at=now()`);
+      await db.query(`UPDATE role_menu_permissions p SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,can_view_financial=false,updated_at=now()
+        FROM menus m WHERE p.menu_id=m.id AND m.code='analytics.executive_ai' AND lower(p.role_key) NOT IN('admin','manager')`);
     }
     ready=true;
   }catch(error:any){console.warn('[executive-ai] menu registration skipped:',error?.message||error);}
