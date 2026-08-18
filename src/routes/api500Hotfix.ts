@@ -1,6 +1,7 @@
 import { Router, type Response } from "express";
 import db from "../db";
 import { requireAuth, type AuthRequest } from "../middleware/auth";
+import { requireTenantContext } from "../middleware/tenantContext";
 import virCustomizerRouter from "./virCustomizer";
 
 const router = Router();
@@ -8,8 +9,8 @@ type JsonRow = Record<string, any>;
 
 const text = (value: unknown): string => value === null || value === undefined ? "" : String(value);
 const nullableText = (value: unknown): string | null => {
-  const v = text(value).trim();
-  return v ? v : null;
+  const valueAsText = text(value).trim();
+  return valueAsText ? valueAsText : null;
 };
 const numberOrNull = (value: unknown): number | null => {
   if (value === null || value === undefined || value === "") return null;
@@ -35,7 +36,7 @@ function receptionist(req: AuthRequest): boolean {
   return roleKeys(req.user?.role).some(role => ["receptionist","reception","recepciós","recepcios"].includes(role));
 }
 function tokenTenantId(req: AuthRequest): string | null {
-  return nullableText((req.user as any)?.tenant_id);
+  return nullableText(req.user?.tenant_id);
 }
 function readLocationScope(req: AuthRequest): string | null {
   const requested = nullableText(req.query.location_id);
@@ -149,44 +150,6 @@ async function employeeDtos(locationId: string | null, includeInactive = false, 
   });
 }
 
-async function countScoped(table: string, locationId: string | null, tenantId: string | null): Promise<number> {
-  try {
-    if (!/^[a-z_][a-z0-9_]*$/i.test(table) || !(await tableExists(table))) return 0;
-    const { rows } = await db.query(
-      `SELECT COUNT(*)::int total FROM ${table} t
-       WHERE ($1::text IS NULL OR NULLIF(to_jsonb(t)->>'location_id','')=$1)
-         AND ($2::text IS NULL OR NULLIF(to_jsonb(t)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(t)->>'tenant_id','')=$2)`,
-      [locationId, tenantId],
-    );
-    return Number(rows[0]?.total || 0);
-  } catch (error) {
-    warn(`countScoped(${table})`, error);
-    return 0;
-  }
-}
-
-async function appointmentStats(from: string, to: string, locationId: string | null, tenantId: string | null) {
-  const empty = { total:0, completed:0, cancelled:0, noShow:0 };
-  try {
-    if (!(await tableExists("appointments"))) return empty;
-    const { rows } = await db.query(
-      `SELECT COUNT(*)::int total,
-        COUNT(*) FILTER (WHERE lower(COALESCE(to_jsonb(a)->>'status','')) IN ('completed','paid','done','closed'))::int completed,
-        COUNT(*) FILTER (WHERE lower(COALESCE(to_jsonb(a)->>'status','')) IN ('cancelled','canceled'))::int cancelled,
-        COUNT(*) FILTER (WHERE lower(COALESCE(to_jsonb(a)->>'status','')) IN ('no_show','noshow','no-show'))::int no_show
-       FROM appointments a
-       WHERE LEFT(COALESCE(NULLIF(to_jsonb(a)->>'start_time',''),NULLIF(to_jsonb(a)->>'starts_at',''),NULLIF(to_jsonb(a)->>'start_at','')),10) BETWEEN $1 AND $2
-         AND ($3::text IS NULL OR NULLIF(to_jsonb(a)->>'location_id','')=$3)
-         AND ($4::text IS NULL OR NULLIF(to_jsonb(a)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(a)->>'tenant_id','')=$4)`,
-      [from,to,locationId,tenantId],
-    );
-    return { total:Number(rows[0]?.total||0), completed:Number(rows[0]?.completed||0), cancelled:Number(rows[0]?.cancelled||0), noShow:Number(rows[0]?.no_show||0) };
-  } catch (error) {
-    warn("appointmentStats", error);
-    return empty;
-  }
-}
-
 function dailyActionPercent(row: JsonRow): number {
   const direct = numberOrNull(row.discount_percent);
   if (direct !== null) return Math.max(0, Math.min(100, direct));
@@ -231,54 +194,22 @@ router.get("/public/marketing/daily-actions", async (req, res) => {
   }
 });
 
-router.get("/employees", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/employees", requireAuth, requireTenantContext, async (req: AuthRequest, res: Response) => {
   const locationId = readLocationScope(req);
   if (!elevated(req) && !locationId) return res.status(403).json({ error: "A felhasználói fiókhoz nincs telephely rendelve." });
   const includeInactive = text(req.query.include_inactive) === "1";
   try {
     const employees = await employeeDtos(locationId, includeInactive, tokenTenantId(req));
-    res.setHeader("X-Kleo-Hotfix", "api500-employees-v3");
+    res.setHeader("X-Kleo-Hotfix", "api500-employees-v4");
     return res.json(employees);
   } catch (error) {
     warn("employees final fallback", error);
-    res.setHeader("X-Kleo-Hotfix", "api500-employees-empty-v3");
+    res.setHeader("X-Kleo-Hotfix", "api500-employees-empty-v4");
     return res.status(200).json([]);
   }
 });
 
-router.get("/dashboard", requireAuth, async (req: AuthRequest, res: Response) => {
-  const now = new Date();
-  const defaultFrom = new Date(now); defaultFrom.setDate(defaultFrom.getDate()-29);
-  const from = /^\d{4}-\d{2}-\d{2}$/.test(text(req.query.from)) ? text(req.query.from) : defaultFrom.toISOString().slice(0,10);
-  const to = /^\d{4}-\d{2}-\d{2}$/.test(text(req.query.to)) ? text(req.query.to) : now.toISOString().slice(0,10);
-  const locationId = readLocationScope(req);
-  if (!elevated(req) && !locationId) return res.status(403).json({ error: "A felhasználói fiókhoz nincs telephely rendelve." });
-  const tenantId = tokenTenantId(req);
-  try {
-    const [totalClients, appt, rawLocations] = await Promise.all([
-      countScoped("clients", locationId, tenantId),
-      appointmentStats(from, to, locationId, tenantId),
-      loadJsonTable("locations"),
-    ]);
-    const locations = rawLocations.filter(row => {
-      const rowTenant = nullableText(row.tenant_id);
-      if (tenantId && rowTenant && rowTenant !== tenantId) return false;
-      if (locationId && text(row.id) !== locationId) return false;
-      return isActive(row.is_active ?? true);
-    }).map(row => ({ id:text(row.id), name:nameFrom(row,"Telephely") }));
-    const completionRate = appt.total ? Math.round((1000*appt.completed/appt.total))/10 : 0;
-    const noShowRate = appt.total ? Math.round((1000*appt.noShow/appt.total))/10 : 0;
-    res.setHeader("X-Kleo-Hotfix", "api500-dashboard-v3");
-    res.setHeader("Cache-Control", "private, no-store");
-    return res.json({period:{from,to},stats:{dailyRevenue:0,monthlyRevenue:0,totalRevenue:0,serviceRevenue:0,productRevenue:0,averageInvoice:0,averageServiceInvoice:0,averageCapacity:0,totalClients,newClients:0,activeAppointments:appt.total,completedAppointments:appt.completed,cancelledAppointments:appt.cancelled,noShowCount:appt.noShow,completionRate,noShowRate,sickDays:0,leaveDays:0,unexcusedDays:0,lowStockCount:0},chartData:[],revenueByLocation:[],revenueByPosition:[],topEmployees:[],absenceByPosition:[],locations,alerts:[]});
-  } catch (error) {
-    warn("dashboard final fallback", error);
-    res.setHeader("X-Kleo-Hotfix", "api500-dashboard-empty-v3");
-    return res.status(200).json({period:{from,to},stats:{dailyRevenue:0,monthlyRevenue:0,totalRevenue:0,serviceRevenue:0,productRevenue:0,averageInvoice:0,averageServiceInvoice:0,averageCapacity:0,totalClients:0,newClients:0,activeAppointments:0,completedAppointments:0,cancelledAppointments:0,noShowCount:0,completionRate:0,noShowRate:0,sickDays:0,leaveDays:0,unexcusedDays:0,lowStockCount:0},chartData:[],revenueByLocation:[],revenueByPosition:[],topEmployees:[],absenceByPosition:[],locations:[],alerts:[]});
-  }
-});
-
-router.get("/timetable", requireAuth, async (req: AuthRequest, res: Response) => {
+router.get("/timetable", requireAuth, requireTenantContext, async (req: AuthRequest, res: Response) => {
   const from = text(req.query.from).trim();
   const to = text(req.query.to).trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return res.status(400).json({ error: "Érvényes from és to dátum szükséges." });
@@ -291,7 +222,7 @@ router.get("/timetable", requireAuth, async (req: AuthRequest, res: Response) =>
 
   try {
     if (!(await tableExists("appointments"))) {
-      res.setHeader("X-Kleo-Hotfix", "api500-timetable-v3");
+      res.setHeader("X-Kleo-Hotfix", "api500-timetable-v4");
       return res.json({employees,appointments:[]});
     }
     const { rows } = await db.query(
@@ -335,11 +266,11 @@ router.get("/timetable", requireAuth, async (req: AuthRequest, res: Response) =>
       const clientId=nullableText(row.client_id),appointmentLocationId=nullableText(row.location_id);
       return{id,employee_id:nullableText(row.employee_id),client_id:clientId,client_name:clientId?clientMap.get(clientId)||"":"",location_id:appointmentLocationId,location_name:appointmentLocationId?locationMap.get(appointmentLocationId)||null:null,title:nullableText(row.title)||service_names.join(", ")||"Időpont",start_time:row.start_time??row.starts_at??row.start_at??null,end_time:row.end_time??row.ends_at??row.end_at??null,status:nullableText(row.status),operational_status,notes:nullableText(row.notes),service_names,total:serviceTotal+productTotal};
     });
-    res.setHeader("X-Kleo-Hotfix", "api500-timetable-v3");
+    res.setHeader("X-Kleo-Hotfix", "api500-timetable-v4");
     return res.json({employees,appointments});
   } catch (error) {
     warn("timetable final fallback", error);
-    res.setHeader("X-Kleo-Hotfix", "api500-timetable-empty-v3");
+    res.setHeader("X-Kleo-Hotfix", "api500-timetable-empty-v4");
     return res.status(200).json({employees,appointments:[]});
   }
 });
