@@ -56,10 +56,10 @@ export async function ensureBusinessControlMenu(){
           can_export,can_view_financial,can_manage_permissions,scope_type,updated_at
         )
         SELECT r.role_key,m.id,true,false,false,false,false,true,
-          (m.code='finance.reconciliation'),false,'all_locations',now()
+          (m.code IN('finance','finance.reconciliation')),false,'all_locations',now()
         FROM (VALUES('admin'),('manager')) r(role_key)
         CROSS JOIN menus m
-        WHERE m.code IN('finance.reconciliation','settings.system_health')
+        WHERE m.code IN('finance','finance.reconciliation','settings','settings.system_health')
         ON CONFLICT(role_key,menu_id) DO UPDATE SET
           can_view=true,
           can_export=true,
