@@ -1,15 +1,22 @@
 import { Router } from "express";
 import db from "../db";
 import type { AuthRequest } from "../middleware/auth";
+import { hasAnyRole } from "../security/roles";
 import { askExecutiveAssistant, currentBudapestDate, ensureExecutiveAiSchema, runExecutiveBrief, startExecutiveAiScheduler } from "../services/executiveAiAssistant";
+import { ensureExecutiveAiMenu } from "../services/executiveAiMenu";
 
 const router=Router();
 startExecutiveAiScheduler();
+void ensureExecutiveAiMenu();
 const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 const dateParam=(v:unknown)=>{const s=String(v||currentBudapestDate());if(!validDate(s))throw Object.assign(new Error("A dátum formátuma YYYY-MM-DD legyen."),{status:400});return s};
-const location=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
+function location(req:AuthRequest,source:any){
+  const own=String(req.user?.location_id||"").trim()||null;
+  if(hasAnyRole(req.user?.role,["admin","manager"]))return String(source?.location_id||own||"").trim()||null;
+  return own;
+}
 
-router.use(async(_req,_res,next)=>{try{await ensureExecutiveAiSchema();next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureExecutiveAiSchema(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
 
 router.get("/brief",async(req:AuthRequest,res,next)=>{
   try{
