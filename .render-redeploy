@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T20:34:00+02:00
-Deploy latest main including automatic Major Incident / War Room detection, impact scoring, SEV1/SEV2 declaration, command team governance, append-only incident timeline, action board with evidence-based completion, internal executive alerts, heartbeat watchdog, source-recovery monitoring, mandatory resolution evidence and post-mortem, System Health readiness, management-only menu/API, and business.major_incident Release Control blocking gate.
-Reason: production redeploy after Major Incident / War Room closed-loop incident command and release governance were completed.
+2026-08-18T21:18:00+02:00
+Deploy latest main including Resilience & Recovery business-continuity control, SEV1/SEV2 automatic recovery sessions, service-level RTO/RPO profiles, evidence-based recovery runbooks, automatic change-freeze, two-person exact-SHA emergency change overrides, ALL CLEAR governance, freeze-reactivation protection, System Health readiness, management-only API/menu and business.resilience_recovery Release Control gate.
+Reason: production redeploy after the Major Incident layer was extended into fail-closed service recovery, continuity objectives and controlled release recovery governance.
