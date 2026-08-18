@@ -20,7 +20,7 @@ export async function ensureExecutiveAiMenu(){
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
       SELECT x.code,x.name,x.icon,x.route,x.order_index,p.id,'analytics',true FROM p CROSS JOIN (VALUES
         ('analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/finance/executive-ai',15),
-        ('analytics.exception_center','Exception Command Center','Siren','/admin/exception-command-center',16)
+        ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16)
       ) x(code,name,icon,route,order_index)
       ON CONFLICT(code) DO UPDATE SET
         name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
