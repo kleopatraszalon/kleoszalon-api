@@ -14,6 +14,7 @@ import {
   updateExceptionCase,
   updateExceptionRoutingRule,
 } from "../services/exceptionCommandCenter";
+import { reconcileExceptionCommandCenterConsistency } from "../services/exceptionCommandCenterConsistency";
 
 const router=Router();
 startExceptionCommandCenterScheduler();
@@ -31,7 +32,8 @@ router.get("/cases/:id",async(req:AuthRequest,res,next)=>{try{res.json(await get
 router.patch("/cases/:id",async(req:AuthRequest,res,next)=>{try{res.json(await updateExceptionCase(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
 router.post("/cases/:id/comment",async(req:AuthRequest,res,next)=>{try{res.json(await addExceptionComment(String(req.params.id),String(req.body?.message||""),actor(req)))}catch(error:any){sendError(error,res,next)}});
 router.post("/cases/bulk",async(req:AuthRequest,res,next)=>{try{res.json(await bulkExceptionAction(Array.isArray(req.body?.ids)?req.body.ids:[],req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
-router.post("/sync",async(_req:AuthRequest,res,next)=>{try{res.json(await syncExceptionCommandCenter())}catch(error){next(error)}});
+router.post("/sync",async(_req:AuthRequest,res,next)=>{try{const sync=await syncExceptionCommandCenter();const consistency=await reconcileExceptionCommandCenterConsistency();res.json({...sync,consistency})}catch(error){next(error)}});
+router.post("/consistency",async(_req:AuthRequest,res,next)=>{try{res.json(await reconcileExceptionCommandCenterConsistency())}catch(error){next(error)}});
 router.get("/routing-rules",async(_req:AuthRequest,res,next)=>{try{res.json({items:await listExceptionRoutingRules()})}catch(error){next(error)}});
 router.put("/routing-rules/:category",async(req:AuthRequest,res,next)=>{try{res.json(await updateExceptionRoutingRule(String(req.params.category),req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
 router.get("/export.csv",async(req:AuthRequest,res,next)=>{try{const csv=await exportExceptionCasesCsv({...req.query,location_id:loc(req)});res.setHeader("Content-Type","text/csv; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="kleo-exception-center-${new Date().toISOString().slice(0,10)}.csv"`);res.send(csv)}catch(error){next(error)}});
