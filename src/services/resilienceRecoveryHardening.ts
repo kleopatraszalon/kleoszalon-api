@@ -60,3 +60,5 @@ export function ensureResilienceRecoveryHardeningSchema(){
   }
   return schemaPromise;
 }
+
+void ensureResilienceRecoveryHardeningSchema().catch(error=>console.error('[resilience] governance bootstrap failed',error));
