@@ -83,4 +83,32 @@ export async function ensureMenuHealth(){
     SELECT r.role_key,m.id,false,false,false,false,false,false,false,false,'own_location',now()
     FROM (VALUES('receptionist'),('employee'),('customer')) r(role_key) CROSS JOIN menus m WHERE m.code IN('marketing','marketing.newsletter','marketing.daily-deals','marketing.social','marketing.flyer','marketing.ideas','marketing.calendar','marketing.coupon','marketing.packages','marketing.referral','marketing.utm','marketing.winback','marketing.occasions','marketing.empty_slots','marketing.roi')
     ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=false,can_create=false,can_edit=false,can_delete=false,can_approve=false,can_export=false,updated_at=now()`);
+
+  // Egységes, felhasználóbarát megnevezések. Ez a blokk szándékosan az önjavítás végén fut,
+  // hogy a korábbi migrációk vagy legacy menüjavítások ne írhassák vissza a régi feliratokat.
+  await safe(`UPDATE menus SET name=CASE code
+    WHEN 'appointments' THEN 'Időpontok és beosztás'
+    WHEN 'finance.control' THEN 'Pénzügyi ellenőrzés és havi zárás'
+    WHEN 'team' THEN 'Munkatársak és HR'
+    WHEN 'team.evaluations' THEN 'Munkatársi értékelések'
+    WHEN 'team.import' THEN 'Munkatárs-import és duplikációkezelés'
+    WHEN 'procurement.dashboard' THEN 'Beszerzési áttekintés'
+    WHEN 'procurement.approvals' THEN 'Jóváhagyásra váró tételek'
+    WHEN 'inventory.taxonomy_review' THEN 'Termékbesorolás ellenőrzése'
+    WHEN 'knowledge.base' THEN 'Tudásanyagok'
+    WHEN 'knowledge.quiz' THEN 'Munkaköri teszt'
+    WHEN 'marketing.social' THEN 'Közösségi média'
+    WHEN 'marketing.utm' THEN 'Kampánylink és UTM'
+    WHEN 'marketing.roi' THEN 'Marketing ROI'
+    WHEN 'settings.system_health' THEN 'Rendszerállapot'
+    WHEN 'settings.uat' THEN 'Átvételi tesztközpont (UAT)'
+    WHEN 'settings.audit' THEN 'Audit- és rendszeresemény-napló'
+    WHEN 'settings.franchise' THEN 'Franchise érdeklődők és Mailchimp'
+    ELSE name END
+    WHERE code IN(
+      'appointments','finance.control','team','team.evaluations','team.import',
+      'procurement.dashboard','procurement.approvals','inventory.taxonomy_review',
+      'knowledge.base','knowledge.quiz','marketing.social','marketing.utm','marketing.roi',
+      'settings.system_health','settings.uat','settings.audit','settings.franchise'
+    )`);
 }
