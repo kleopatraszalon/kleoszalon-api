@@ -8,7 +8,7 @@ export async function ensureExecutiveAiMenu(){
     if(!menus)return;
     await db.query(`WITH p AS (SELECT id FROM menus WHERE code='analytics' LIMIT 1)
       INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
-      SELECT 'analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/admin/ai-executive',15,p.id,'analytics',true FROM p
+      SELECT 'analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/finance/executive-ai',15,p.id,'analytics',true FROM p
       ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key='analytics',is_active=true`);
     const perms=Boolean((await db.query(`SELECT to_regclass('public.role_menu_permissions') IS NOT NULL ok`)).rows[0]?.ok);
     if(perms){
