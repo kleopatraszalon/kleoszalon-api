@@ -29,6 +29,11 @@ export class FinanceNavBootstrapError extends Error{
 }
 
 async function runSql(file:string){const sql=await readFile(path.join(__dirname,'..','sql',file),'utf8');await pool.query(sql)}
+async function runSqlOnce(file:string,version:string){
+  const exists=await pool.query(`SELECT 1 FROM schema_migrations WHERE version=$1 LIMIT 1`,[version]);
+  if(exists.rowCount)return;
+  await runSql(file);
+}
 async function step(stage:string,fn:()=>Promise<any>){try{return await fn()}catch(error:any){if(error instanceof FinanceNavBootstrapError)throw error;throw new FinanceNavBootstrapError(stage,error)}}
 
 export function ensureFinanceNav(){
@@ -44,7 +49,10 @@ export function ensureFinanceNav(){
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
       await step('sql:20260810_RBAC_FAIL_CLOSED_V1.sql',()=>runSql('20260810_RBAC_FAIL_CLOSED_V1.sql'));
       await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
-      await step('sql:20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',()=>runSql('20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql'));
+      await step('sql:20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',()=>runSqlOnce(
+        '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',
+        '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2'
+      ));
     })().catch(err=>{ensurePromise=null;throw err});
   }return ensurePromise;
 }
