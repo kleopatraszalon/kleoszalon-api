@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T12:22:00+02:00
-Deploy latest main including AI Executive Assistant, Observability/APM, Financial Reconciliation Center and automatic stock reconciliation.
-Reason: production redeploy after automated executive analytics and business-integrity controls were added.
+2026-08-18T12:25:00+02:00
+Deploy latest main including AI Executive Assistant, Observability/APM, Financial Reconciliation Center, automatic stock reconciliation and finance menu registration.
+Reason: final production redeploy trigger after the latest business-control menu integration.
