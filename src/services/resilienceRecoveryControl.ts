@@ -11,6 +11,7 @@ const num=(v:unknown)=>{const n=Number(v??0);return Number.isFinite(n)?n:0};
 const ACTIVE_INCIDENT_STATUSES=["open","mitigating","monitoring","resolved"];
 const SERVICE_MAP:Record<string,string[]>={
   finance:["vir-core","postgresql","finance-nav"],nav:["vir-core","postgresql","finance-nav"],cashier:["vir-core","postgresql","cashier"],
+  booking:["vir-core","postgresql","booking"],appointments:["vir-core","postgresql","booking"],appointment:["vir-core","postgresql","booking"],workorder:["vir-core","postgresql","booking"],
   inventory:["vir-core","postgresql","inventory"],procurement:["vir-core","postgresql","inventory"],communications:["vir-core","communications"],
   trace:["vir-core","postgresql"],system:["vir-core","postgresql"],process:["vir-core","postgresql"],payroll:["vir-core","postgresql"],complaints:["vir-core","communications"]
 };
@@ -225,9 +226,11 @@ async function seedSession(incident:any){
       SELECT $1::uuid,r.service_key,r.step_key FROM resilience_recovery_runbooks r WHERE r.service_key=$2 AND r.active=true
       ON CONFLICT(session_id,service_key,step_key) DO NOTHING`,[session.id,serviceKey]);
   }
-  const freeze=(await db.query(`INSERT INTO resilience_change_freezes(incident_id,reason)
-    VALUES($1::uuid,$2) ON CONFLICT(incident_id) DO UPDATE SET status=CASE WHEN resilience_change_freezes.status='lifted' AND $3 THEN 'active' ELSE resilience_change_freezes.status END,updated_at=now() RETURNING *`,[
-      incident.id,`${String(incident.severity).toUpperCase()} Major Incident automatikus change-freeze`,ACTIVE_INCIDENT_STATUSES.includes(String(incident.status))
+  const shouldFreeze=ACTIVE_INCIDENT_STATUSES.includes(String(incident.status))&&!['all_clear','closed'].includes(String(session.status));
+  const freeze=(await db.query(`INSERT INTO resilience_change_freezes(incident_id,reason,status)
+    VALUES($1::uuid,$2,CASE WHEN $3 THEN 'active' ELSE 'lifted' END)
+    ON CONFLICT(incident_id) DO UPDATE SET status=CASE WHEN resilience_change_freezes.status='lifted' AND $3 THEN 'active' ELSE resilience_change_freezes.status END,updated_at=now() RETURNING *`,[
+      incident.id,`${String(incident.severity).toUpperCase()} Major Incident automatikus change-freeze`,shouldFreeze
     ])).rows[0];
   if(freeze.status==='active')await db.query(`UPDATE resilience_emergency_change_overrides SET status='expired',updated_at=now() WHERE freeze_id=$1::uuid AND status='approved' AND expires_at<=now()`,[freeze.id]);
   return{session,freeze,services};
@@ -261,9 +264,9 @@ export async function syncResilienceRecoveryControl(){
 export async function resilienceRecoverySummary(locationId:string|null=null){
   await ensureResilienceRecoverySchema();
   const row=(await db.query(`SELECT
-      COUNT(*) FILTER(WHERE rs.status IN('open','recovering','verifying'))::int active_sessions,
-      COUNT(*) FILTER(WHERE cf.status='active')::int active_freezes,
-      COUNT(*) FILTER(WHERE rs.status IN('open','recovering','verifying') AND mi.incident_commander_key IS NULL)::int commander_missing,
+      COUNT(DISTINCT rs.id) FILTER(WHERE rs.status IN('open','recovering','verifying'))::int active_sessions,
+      COUNT(DISTINCT cf.id) FILTER(WHERE cf.status='active')::int active_freezes,
+      COUNT(DISTINCT rs.id) FILTER(WHERE rs.status IN('open','recovering','verifying') AND mi.incident_commander_key IS NULL)::int commander_missing,
       COUNT(*) FILTER(WHERE rs.status IN('open','recovering','verifying') AND now()>mi.declared_at+(sp.rto_minutes||' minutes')::interval AND ss.state<>'verified')::int rto_breaches,
       COUNT(*) FILTER(WHERE ss.rpo_observed_minutes IS NOT NULL AND ss.rpo_observed_minutes>sp.rpo_minutes)::int rpo_breaches,
       COUNT(*) FILTER(WHERE ss.state<>'verified' AND rs.status IN('open','recovering','verifying'))::int unverified_services
@@ -324,6 +327,7 @@ export async function updateRecoveryStep(sessionId:string,serviceKey:string,step
 
 export async function declareRecoveryAllClear(sessionId:string,input:any,actor:string){
   await ensureResilienceRecoverySchema();const detail=await getRecoverySession(sessionId);const note=safe(input.note),evidence=input.evidence||{};
+  if(!['monitoring','resolved'].includes(String(detail.item.incident_status)))throw Object.assign(new Error("ALL CLEAR csak monitoring vagy resolved Major Incident állapotból adható."),{status:409});
   if(!safe(detail.item.incident_commander_key))throw Object.assign(new Error("All Clear csak kijelölt Incident Commander mellett adható."),{status:409});
   if(note.length<10||safe(evidence.description).length<5)throw Object.assign(new Error("All Clear indok és konkrét bizonyíték szükséges."),{status:400});
   const mandatoryOpen=Number((await db.query(`SELECT COUNT(*)::int count FROM resilience_recovery_step_runs sr JOIN resilience_recovery_runbooks r ON r.service_key=sr.service_key AND r.step_key=sr.step_key WHERE sr.session_id=$1::uuid AND r.mandatory=true AND sr.status<>'completed'`,[sessionId])).rows[0]?.count||0);
