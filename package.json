@@ -8,7 +8,7 @@
   "main": "dist/server.js",
   "scripts": {
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('.nav-build',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.server.json && node scripts/prepare-nav-xsd-assets.mjs && node scripts/copy-nav-build-assets.mjs && node scripts/nav-xsd-smoke.cjs",
+    "build": "npm run clean && tsc -p tsconfig.server.json && node scripts/copy-runtime-sql-assets.mjs && node scripts/prepare-nav-xsd-assets.mjs && node scripts/copy-nav-build-assets.mjs && node scripts/nav-xsd-smoke.cjs",
     "test": "node --test tests/*.test.js",
     "requirements:check": "node scripts/validate-requirements.mjs && node scripts/validate-operational-requirements.mjs && node scripts/validate-requirement-automation.mjs",
     "requirements:matrix": "node scripts/validate-requirements.mjs --write-matrix && node scripts/validate-operational-requirements.mjs --write-matrix",

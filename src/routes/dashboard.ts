@@ -24,18 +24,43 @@ const roleKeys = (role: unknown): string[] => {
   return String(role || "").split(",").map(x => x.replace(/[\[\]"]/g, "").trim().toLowerCase()).filter(Boolean);
 };
 
-async function optionalRows(label: string, sql: string, params: any[]): Promise<any[]> {
+type SafeRows = { rows: any[]; error: string | null };
+
+async function safeRows(label: string, sql: string, params: any[]): Promise<SafeRows> {
   try {
     const result = await pool.query(sql, params);
-    return result.rows;
+    return { rows: result.rows, error: null };
   } catch (error: any) {
-    console.warn(`[dashboard] opcionális lekérdezés kihagyva (${label}):`, error?.message || String(error));
-    return [];
+    const message = error?.message || String(error);
+    console.warn(`[dashboard] lekérdezés kihagyva (${label}):`, message);
+    return { rows: [], error: message };
   }
 }
 
+async function optionalRows(label: string, sql: string, params: any[]): Promise<any[]> {
+  return (await safeRows(label, sql, params)).rows;
+}
+
+function emptyTrend(from: string, to: string) {
+  const start = new Date(`${from}T00:00:00.000Z`);
+  const end = new Date(`${to}T00:00:00.000Z`);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) return [];
+  const rows: any[] = [];
+  for (let cursor = new Date(start), guard = 0; cursor <= end && guard < 370; cursor.setUTCDate(cursor.getUTCDate() + 1), guard += 1) {
+    rows.push({date: cursor.toISOString().slice(0, 10), revenue: 0, service_revenue: 0, product_revenue: 0, completed: 0});
+  }
+  return rows;
+}
+
 async function loadDashboard(from: string, to: string, locationId: any, isAdmin: boolean, tenantId: string, now: Date) {
-  await ensureDashboardAnalytics();
+  let analyticsBootstrapError: string | null = null;
+  try {
+    await ensureDashboardAnalytics();
+  } catch (error: any) {
+    analyticsBootstrapError = error?.message || String(error);
+    console.warn("[dashboard] analytics bootstrap nem sikerült; degradált dashboard folytatódik:", analyticsBootstrapError);
+  }
+
   const params = [from, to, locationId, tenantId];
   const tenantFact = `EXISTS (
     SELECT 1 FROM locations tl
@@ -46,8 +71,8 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
     AND ($3::text IS NULL OR f.location_id::text=$3::text)
     AND ${tenantFact}`;
 
-  const [summaryRes, trendRes] = await Promise.all([
-    pool.query(`
+  const [summaryResult, trendResult] = await Promise.all([
+    safeRows("summary", `
       SELECT
         COALESCE(SUM(service_revenue+product_revenue),0)::numeric total_revenue,
         COALESCE(SUM(service_revenue),0)::numeric service_revenue,
@@ -67,7 +92,7 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
         COALESCE(SUM(paid_leave_minutes+unpaid_leave_minutes)/480.0,0)::numeric leave_days,
         COALESCE(SUM(unexcused_minutes)/480.0,0)::numeric unexcused_days
       FROM management_daily_facts f WHERE ${filter}`, params),
-    pool.query(`
+    safeRows("trend", `
       WITH days AS (SELECT generate_series($1::date,$2::date,'1 day')::date AS fact_day)
       SELECT d.fact_day::text date,
         COALESCE(SUM(f.service_revenue+f.product_revenue),0)::numeric revenue,
@@ -138,15 +163,19 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
       ORDER BY l.name`, [tenantId, isAdmin, locationId]),
   ]);
 
-  const summary = summaryRes.rows[0] || {};
-  const todayRevenue = trendRes.rows.find((row: any) => row.date === now.toISOString().slice(0,10))?.revenue || 0;
+  const summary = summaryResult.rows[0] || {};
+  const chartData = trendResult.rows.length ? trendResult.rows : emptyTrend(from, to);
+  const todayRevenue = chartData.find((row: any) => row.date === now.toISOString().slice(0,10))?.revenue || 0;
+  const analyticsDegraded = Boolean(analyticsBootstrapError || summaryResult.error || trendResult.error);
   const alerts: Array<{level:string;title:string;detail:string}> = [];
+  if (analyticsDegraded) alerts.push({level:"warning",title:"Vezetői analitika korlátozott",detail:"Az analitikai ténytár átmenetileg nem elérhető; az irányítópult többi része tovább használható."});
   if (Number(summary.no_show_rate) >= 5) alerts.push({level:"warning",title:"Magas meg nem jelenési arány",detail:`${summary.no_show_rate}% az időszakban`});
-  if (Number(summary.average_capacity) < 60) alerts.push({level:"info",title:"Kihasználatlan kapacitás",detail:`Átlagosan ${summary.average_capacity}% a foglaltság`});
+  if (!analyticsDegraded && Number(summary.average_capacity) < 60) alerts.push({level:"info",title:"Kihasználatlan kapacitás",detail:`Átlagosan ${summary.average_capacity}% a foglaltság`});
   if (Number(summary.unexcused_days) > 0) alerts.push({level:"critical",title:"Igazolatlan hiányzás",detail:`${Number(summary.unexcused_days).toFixed(1)} munkanap`});
 
   return {
     period:{from,to},
+    analytics:{available:!analyticsDegraded,degraded:analyticsDegraded},
     stats:{
       dailyRevenue:Number(todayRevenue), monthlyRevenue:Number(summary.total_revenue||0), totalRevenue:Number(summary.total_revenue||0),
       serviceRevenue:Number(summary.service_revenue||0), productRevenue:Number(summary.product_revenue||0),
@@ -158,7 +187,7 @@ async function loadDashboard(from: string, to: string, locationId: any, isAdmin:
       noShowRate:Number(summary.no_show_rate||0), sickDays:Number(summary.sick_days||0),
       leaveDays:Number(summary.leave_days||0), unexcusedDays:Number(summary.unexcused_days||0), lowStockCount:0
     },
-    chartData:trendRes.rows,
+    chartData,
     revenueByLocation:locationRows,
     revenueByPosition:positionRows,
     topEmployees:staffRows,
