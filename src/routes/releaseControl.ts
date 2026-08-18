@@ -139,7 +139,6 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
 
   const backendVersioned = ref !== "unversioned";
   add({ key:"version.backend", group:"Verzió és build", label:"Backend Git SHA", status:backendVersioned?"pass":"fail", blocking:true, message:backendVersioned?ref:"A futó backend release commitja nem azonosítható.", evidence:backendVersioned?ref:null, source:"runtime" });
-  if (feRef) add({ key:"version.frontend", group:"Verzió és build", label:"Frontend Git SHA / deploy", status:"pass", blocking:true, message:feRef, evidence:feRef, source:"environment" });
 
   try {
     const email = await verifyEmailTransport();
