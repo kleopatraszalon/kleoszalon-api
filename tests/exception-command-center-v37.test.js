@@ -36,11 +36,19 @@ test('SLA engine and alert digest are automatic and deduplicated',()=>{
  assert.ok(src.includes('Europe/Budapest'));
 });
 
-test('management API exposes triage, ownership, bulk, SLA and export tools',()=>{
+test('NAV consistency reconciler closes stale historical errors using latest actual status',()=>{
+ const src=read('src/services/exceptionCommandCenterConsistency.ts');
+ for(const marker of ['reconcileExceptionCommandCenterConsistency','nav_invoice_queue','ORDER BY COALESCE','latest_status','consistency_resolved','system-consistency'])assert.ok(src.includes(marker),marker);
+ assert.ok(src.includes('!["error","failed","rejected"].includes(status)'));
+ assert.match(src,/2-59\/5 \* \* \* \*/);
+});
+
+test('management API exposes triage, ownership, bulk, SLA, consistency and export tools',()=>{
  const route=read('src/routes/exceptionCommandCenter.ts');
- for(const endpoint of ['/summary','/cases','/cases/:id','/cases/:id/comment','/cases/bulk','/sync','/routing-rules','/export.csv'])assert.ok(route.includes(endpoint),endpoint);
+ for(const endpoint of ['/summary','/cases','/cases/:id','/cases/:id/comment','/cases/bulk','/sync','/consistency','/routing-rules','/export.csv'])assert.ok(route.includes(endpoint),endpoint);
  const notifications=read('src/routes/notifications.ts');
  assert.ok(notifications.includes('exceptionCommandCenterRouter'));
+ assert.ok(notifications.includes('startExceptionCommandCenterConsistencyScheduler'));
  assert.ok(notifications.includes('"/exceptions"'));
 });
 
