@@ -15,27 +15,78 @@ export interface AuthRequest extends Request {
   };
 }
 
+type CredentialSource = "bearer" | "cookie";
+type RequestCredential = { token: string; source: CredentialSource };
+
 /**
  * Authentication tokens are accepted only from transport locations that are
  * intended for credentials: the Authorization header or the HttpOnly cookie.
  * Query-string/body tokens are deliberately rejected because URLs and request
  * bodies can be copied into browser history, proxy/access logs and diagnostics.
  */
-function getTokenFromReq(req: Request): string | null {
+function getCredentialFromReq(req: Request): RequestCredential | null {
   const authHeader =
     (req.headers["authorization"] as string | undefined) ||
     (req.headers["Authorization"] as string | undefined);
 
   if (authHeader && /^Bearer\s+/i.test(authHeader)) {
-    return authHeader.replace(/^Bearer\s+/i, "").trim() || null;
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    return token ? { token, source: "bearer" } : null;
   }
 
   const cookieToken = (req as any).cookies?.token;
   if (typeof cookieToken === "string" && cookieToken.trim()) {
-    return cookieToken.trim();
+    return { token: cookieToken.trim(), source: "cookie" };
   }
 
   return null;
+}
+
+function normalizeOrigin(value: string) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
+const DEFAULT_TRUSTED_BROWSER_ORIGINS = [
+  "https://kleoszalon-frontend.onrender.com",
+  "https://weblap-o3g6.onrender.com",
+  "https://kleoszalon-api-1.onrender.com",
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+  "http://127.0.0.1:5173",
+].map(normalizeOrigin);
+
+function trustedBrowserOrigins() {
+  const configured = String(process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  return new Set([...DEFAULT_TRUSTED_BROWSER_ORIGINS, ...configured]);
+}
+
+function isUnsafeMethod(method: string) {
+  return !["GET", "HEAD", "OPTIONS"].includes(String(method || "").toUpperCase());
+}
+
+/**
+ * Cookie authentication is an ambient browser credential, therefore unsafe
+ * requests must be demonstrably same-site/trusted-origin. Bearer/OIDC clients
+ * are not subject to CSRF because the browser does not attach those credentials
+ * automatically.
+ */
+function cookieRequestPassesCsrfBoundary(req: Request) {
+  if (!isUnsafeMethod(req.method)) return true;
+
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+  if (fetchSite === "cross-site") return false;
+
+  const origin = normalizeOrigin(String(req.headers.origin || ""));
+  if (origin === "null") return false;
+  if (origin && !trustedBrowserOrigins().has(origin)) return false;
+
+  return true;
 }
 
 function navTestUatPathAllowed(req:Request){
@@ -45,16 +96,23 @@ function navTestUatPathAllowed(req:Request){
 }
 
 export async function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
-  const token = getTokenFromReq(req);
+  const credential = getCredentialFromReq(req);
 
-  if (!token) {
+  if (!credential) {
     return res.status(401).json({
       error: "Nincs belépés. Kérjük, jelentkezz be újra.",
     });
   }
 
+  if (credential.source === "cookie" && !cookieRequestPassesCsrfBoundary(req)) {
+    return res.status(403).json({
+      code: "CSRF_ORIGIN_REJECTED",
+      error: "A kérés biztonsági eredetellenőrzése sikertelen.",
+    });
+  }
+
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(credential.token, JWT_SECRET) as any;
 
     req.user = {
       id: decoded.id ?? decoded.userId,
