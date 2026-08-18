@@ -10,7 +10,8 @@ test('executive AI uses deterministic VIR signals for every requested management
  for(const key of ['revenue.change','staff.low_capacity','appointments.no_show','stock.risk','locations.outlier','marketing.action','staff.shortage_forecast','complaints.urgent'])assert.match(src,new RegExp(key.replace(/[.]/g,'\\.')));
  for(const table of ['financial_movements','appointments','employees','inventory_warehouse_balances','inventory_movements','operations_quality_records'])assert.match(src,new RegExp(table));
  assert.match(src,/Kizárólag a kapott, determinisztikusan kiszámított üzleti adatokból dolgozz/);
- assert.match(src,/nem autonóm döntéshozó/i);
+ assert.match(src,/nem\s+(?:vagy\s+)?autonóm\s+döntéshozó/i);
+ assert.match(src,/ne állítsd, hogy kampányt indítottál, beosztást módosítottál, készletet rendeltél, dolgozót értékeltél vagy panaszt lezártál/i);
 });
 
 test('executive AI automation is scheduled and critical alerts are audited',()=>{
