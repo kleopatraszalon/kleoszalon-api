@@ -9,11 +9,13 @@ import { startAlertRuleScheduler } from "../services/alertRuleEngine";
 import { startObservabilityWorker } from "../services/observabilityApm";
 import { ensureTransactionTraceForensicsSchema } from "../services/transactionTraceForensics";
 import { ensureExceptionCommandCenterSchema, startExceptionCommandCenterScheduler } from "../services/exceptionCommandCenter";
+import { startExceptionCommandCenterConsistencyScheduler } from "../services/exceptionCommandCenterConsistency";
 
 const router=Router();
 startAlertRuleScheduler();
 startObservabilityWorker();
 startExceptionCommandCenterScheduler();
+startExceptionCommandCenterConsistencyScheduler();
 void ensureTransactionTraceForensicsSchema().catch(error=>console.error('[transaction-trace] startup forensic schema bootstrap failed',error));
 void ensureExceptionCommandCenterSchema().catch(error=>console.error('[exception-center] startup schema bootstrap failed',error));
 router.use("/observability",requireManagement,observabilityRouter);
