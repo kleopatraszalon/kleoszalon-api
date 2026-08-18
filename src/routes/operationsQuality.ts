@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db";
 import type { AuthRequest } from "../middleware/auth";
+import managementImprovementRouter from "./managementImprovement";
 import {
   ensureLegacyEvaluation2018Schema,
   getLegacyEvaluation2018AutomationSummary,
@@ -67,6 +68,8 @@ async function ensure() {
 router.use(async (_req,_res,next) => {
   try { await ensure(); next(); } catch (error) { next(error); }
 });
+
+router.use("/improvement",managementImprovementRouter);
 
 router.get("/employees", async (_req,res,next) => {
   try {
