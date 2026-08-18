@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T14:11:00+02:00
-Deploy latest main including Transaction Lifecycle & Traceability forensic toolkit, risk scoring, SLA anomaly detection, dependency graph API, proof package export, digest watchdog, Transaction Trace Health and hardened Release Control gates.
-Reason: production redeploy after transaction-level end-to-end evidence, forensic monitoring and watchdog hardening were completed.
+2026-08-18T15:26:00+02:00
+Deploy latest main including the automatic Exception Command Center, durable case lifecycle, 5-minute multi-source discovery, SLA/routing engine, owner workflow, safe auto-resolve, NAV consistency reconciler, alert digest, audit history, fixed-asset exceptions, System Health integration support and Release Control exception-management gate.
+Reason: production redeploy after Exception Command Center implementation and release hardening were completed.
