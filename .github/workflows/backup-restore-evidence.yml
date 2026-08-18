@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   issues: write
+  id-token: write
 
 jobs:
   restore-evidence:
@@ -34,6 +35,7 @@ jobs:
     env:
       LOCAL_SOURCE_URL: postgresql://postgres:postgres@localhost:5432/kleo_backup_fixture
       RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_restore_target
+      API_BASE_URL: https://kleoszalon-api-1.onrender.com
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,6 +81,21 @@ jobs:
           name: requirements-evidence-backup-restore-${{ github.sha }}
           path: evidence/requirements-evidence-backup-restore.json
           retention-days: 90
+
+      - name: Publish production restore evidence to Release Control Center
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
+          oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
+          test -n "$oidc"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production backup dump + isolated PostgreSQL restore + consistency checks PASS; artifact requirements-evidence-backup-restore"}]}))')"
+          curl -fsS --retry 3 --max-time 30 \
+            -H "Authorization: Bearer $oidc" \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$API_BASE_URL/api/uat/release-control/evidence"
 
   alert-on-failure:
     if: ${{ always() && needs.restore-evidence.result == 'failure' && github.event_name != 'pull_request' }}
