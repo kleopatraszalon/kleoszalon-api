@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T12:25:00+02:00
-Deploy latest main including AI Executive Assistant, Observability/APM, Financial Reconciliation Center, automatic stock reconciliation and finance menu registration.
-Reason: final production redeploy trigger after the latest business-control menu integration.
+2026-08-18T12:58:00+02:00
+Deploy latest main including all currently merged backend changes.
+Reason: full production redeploy requested for the complete Kleopatra VIR release.
