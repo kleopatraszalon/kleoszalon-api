@@ -11,6 +11,8 @@ const hardening = read('src/sql/20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3.sq
 const bootstrap = read('src/finance/ensureFinanceNav.ts');
 const access = read('src/middleware/pathAccess.ts');
 const menu = read('src/finance/ensureFinanceV5Menu.ts');
+const governance = read('src/routes/fixedAssetGovernance.ts');
+const server = read('src/server.ts');
 
 test('fixed asset governance migration is fail-closed for accounting and policy approval', () => {
   assert.match(migration, /mapping_status text NOT NULL DEFAULT 'unmapped'/);
@@ -42,6 +44,34 @@ test('fixed asset route is protected by central fail-closed finance RBAC', () =>
   assert.match(access, /path === "\/api\/fixed-assets"/);
   assert.match(access, /menu: "finance\.fixed_assets"/);
   assert.match(access, /feature: "finance"/);
+});
+
+test('accounting readiness API exposes chart, asset policy and manufacturer-maintenance readiness', () => {
+  assert.match(governance, /\/governance\/readiness/);
+  assert.match(governance, /chart_of_accounts/);
+  assert.match(governance, /maintenance_source_approved_ready/);
+  assert.match(governance, /tao_missing/);
+  assert.match(governance, /useful_life_missing/);
+  assert.match(governance, /posting_ready/);
+});
+
+test('only accounting or admin roles may approve policies and map the company chart', () => {
+  assert.match(governance, /APPROVER_ROLES/);
+  assert.match(governance, /\/governance\/assets\/:id\/approve/);
+  assert.match(governance, /\/governance\/chart\/:code/);
+  assert.match(governance, /chart_mapping_forbidden/);
+  assert.match(governance, /fixed_asset_approval_forbidden/);
+  assert.match(governance, /fixed_asset_gl_export_v/);
+});
+
+test('governance router is mounted before the general fixed asset router', () => {
+  const importIndex=server.indexOf('fixedAssetGovernanceRouter');
+  const govMount=server.indexOf('app.use("/api/fixed-assets",fixedAssetGovernanceRouter)');
+  const assetMount=server.indexOf('app.use("/api/fixed-assets",fixedAssetsRouter)');
+  assert.ok(importIndex>=0,'governance router import missing');
+  assert.ok(govMount>=0,'governance router mount missing');
+  assert.ok(assetMount>=0,'fixed asset router mount missing');
+  assert.ok(govMount<assetMount,'governance router must be mounted first');
 });
 
 test('first-time chart mapping trigger does not access OLD on INSERT path', () => {
