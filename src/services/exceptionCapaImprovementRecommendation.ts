@@ -21,7 +21,7 @@ type Evaluation={
 };
 
 function addDays(days:number){const d=new Date();d.setDate(d.getDate()+days);return d.toISOString()}
-function earlierDate(a:string,b:unknown){const raw=safe(b);if(!raw)return a;const parsed=new Date(raw);if(Number.isNaN(parsed.getTime()))return a;return parsed.getTime()<new Date(a).getTime()?parsed.toISOString():a}
+function earlierFutureDate(a:string,b:unknown){const raw=safe(b);if(!raw)return a;const parsed=new Date(raw);if(Number.isNaN(parsed.getTime()))return a;const candidate=parsed.getTime();if(candidate<=Date.now())return a;return candidate<new Date(a).getTime()?parsed.toISOString():a}
 
 export async function ensureExceptionCapaImprovementRecommendationSchema(){
   if(!schemaPromise){
@@ -87,7 +87,7 @@ function evaluate(capa:any):Evaluation{
   score=Math.max(0,Math.min(100,score));
   const recommended=score>=50||severity==='critical'||clusterType==='recurrence'||caseCount>=3;
   const dueDays=severity==='critical'?7:(severity==='high'||clusterType==='recurrence'?14:30);
-  const computedDue=earlierDate(addDays(dueDays),capa.due_at);
+  const computedDue=earlierFutureDate(addDays(dueDays),capa.due_at);
   const baseline=Math.max(1,caseCount);
   return{
     score,recommended,reason_codes:reasons,
@@ -141,7 +141,7 @@ export async function refreshExceptionCapaImprovementRecommendation(capaId:strin
       reopen?'A fejlesztési projekt javaslat újranyílt a kockázati pontszám növekedése miatt.':'Automatikus fejlesztési projekt javaslat készült.',
       {score:evaluation.score,reason_codes:evaluation.reason_codes,suggested_due_at:evaluation.suggested_due_at,suggested_kpi:evaluation.suggested_kpi});
   }
-  return{...row,can_promote:['approved','in_progress','verification','verified'].includes(safe(capa.status)),capa_status:capa.status,location_id:capa.location_id||null};
+  return{...row,can_promote:safe(capa.status)==='approved',capa_status:capa.status,location_id:capa.location_id||null};
 }
 
 export async function getExceptionCapaImprovementRecommendation(capaId:string,tenantId:string){
