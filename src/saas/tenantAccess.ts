@@ -14,6 +14,10 @@ function featureForRequest(req: AuthRequest): string | null {
   if(url.startsWith("/api/marketing")||url.startsWith("/api/newsletter")||url.startsWith("/api/daily-actions")) return "marketing";
   return null;
 }
+function isDashboardRequest(req:AuthRequest):boolean{
+  const path=String(req.originalUrl||req.baseUrl||req.url||"").split("?",1)[0].toLowerCase();
+  return path==="/api/dashboard"||path.startsWith("/api/dashboard/");
+}
 
 async function tenantFromAuthenticatedLocation(userId:string,locationId:unknown,role:unknown){
   const value=String(locationId??"").trim();
@@ -54,12 +58,19 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   if(!authUser?.id) return null;
   const userId=String(authUser.id),tokenTenantId=authUser.tenant_id==null?"":String(authUser.tenant_id);
 
-  // An explicit tenant in a new JWT is authoritative. Legacy admin/staff tokens often
-  // carry only a signed location_id, so resolve that salon before an arbitrary active
-  // membership or the historical Kleopatra fallback. This preserves fail-closed
-  // tenant/location authorization while preventing false dashboard 403 responses.
-  let row=tokenTenantId?await tenantFromToken(userId,tokenTenantId):null;
-  if(!row&&!tokenTenantId)row=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
+  const tokenRow=tokenTenantId?await tenantFromToken(userId,tokenTenantId):null;
+  const locationRow=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
+
+  // Dashboard requests are read-only and location-scoped. Some production sessions
+  // still contain a previously issued tenant_id together with the current signed
+  // location_id. If those two disagree, the signed salon is the authoritative scope
+  // for the dashboard; otherwise locationManagerScope rejects the valid session with
+  // TENANT_LOCATION_MISMATCH. This does not widen access: the selected tenant comes
+  // directly from the authenticated token's location_id and is checked again by the
+  // tenant/location boundary middleware before dashboard data is returned.
+  let row=tokenRow;
+  if(isDashboardRequest(req)&&locationRow&&(!tokenRow||String(locationRow.id)!==String(tokenRow.id)))row=locationRow;
+  if(!row&&!tokenTenantId)row=locationRow;
   if(!row&&!tokenTenantId)row=await tenantFromMembership(userId);
   if(!row){const fallback=await db.query(`SELECT id::text id,slug,$2::text tenant_role FROM tenants WHERE slug='kleopatra' AND status IN ('active','trial') LIMIT 1`,[userId,roleText(authUser.role).includes("admin")?"owner":"member"]);row=fallback.rows[0];}
   if(!row) return null;
