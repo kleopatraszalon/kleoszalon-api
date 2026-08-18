@@ -82,16 +82,36 @@ export async function buildExceptionManagementReleaseGate():Promise<ReleaseGate>
   }catch(error:any){return{key:"business.exception_management",group:"Üzleti integritás",label:"Exception Command Center release readiness",status:"fail",blocking:true,editable:false,message:`NO-GO: az Exception Command Center release gate nem ellenőrizhető (${error?.message||"ismeretlen adatbázishiba"}).`,evidence:null,source:"exception-command-center"}}
 }
 
+export async function buildMajorIncidentReleaseGate():Promise<ReleaseGate>{
+  try{
+    const incidentTable=await tableExists("major_incidents"),actionTable=await tableExists("major_incident_actions"),eventTable=await tableExists("major_incident_events");
+    if(!incidentTable||!actionTable||!eventTable)return{key:"business.major_incident",group:"Üzleti integritás",label:"Major Incident / War Room release readiness",status:"fail",blocking:true,editable:false,message:"NO-GO: a Major Incident / War Room runtime séma hiányos.",evidence:`incidents=${incidentTable}; actions=${actionTable}; events=${eventTable}`,source:"major-incident-war-room"};
+    const row=(await db.query(`SELECT
+        COUNT(*) FILTER(WHERE severity='sev1' AND status NOT IN('postmortem_closed','dismissed'))::int sev1_open,
+        COUNT(*) FILTER(WHERE severity='sev2' AND status IN('open','mitigating','monitoring'))::int sev2_active,
+        COUNT(*) FILTER(WHERE severity IN('sev1','sev2') AND status IN('open','mitigating') AND incident_commander_key IS NULL)::int commander_missing
+      FROM major_incidents`)).rows[0]||{};
+    const actionRow=(await db.query(`SELECT COUNT(*)::int overdue_critical_actions FROM major_incident_actions a JOIN major_incidents mi ON mi.id=a.incident_id
+      WHERE mi.severity IN('sev1','sev2') AND mi.status NOT IN('postmortem_closed','dismissed')
+        AND a.status IN('open','in_progress') AND a.priority IN('critical','high') AND a.due_at<now()`)).rows[0]||{};
+    const sev1=Number(row.sev1_open||0),sev2=Number(row.sev2_active||0),commanderMissing=Number(row.commander_missing||0),overdueActions=Number(actionRow.overdue_critical_actions||0);
+    const passed=sev1===0&&sev2===0&&overdueActions===0;
+    return{key:"business.major_incident",group:"Üzleti integritás",label:"Major Incident / War Room release readiness",status:passed?"pass":"fail",blocking:true,editable:false,
+      message:passed?"PASS: nincs release-blokkoló SEV1/SEV2 Major Incident vagy lejárt kritikus War Room akció.":`NO-GO: SEV1 governance-open=${sev1}, operatív SEV2=${sev2}, lejárt critical/high War Room akció=${overdueActions}, commander nélkül=${commanderMissing}.`,
+      evidence:`sev1_until_postmortem_closed=${sev1}; sev2_operational_active=${sev2}; overdue_critical_high_actions=${overdueActions}; commander_missing=${commanderMissing}`,source:"major-incident-war-room"};
+  }catch(error:any){return{key:"business.major_incident",group:"Üzleti integritás",label:"Major Incident / War Room release readiness",status:"fail",blocking:true,editable:false,message:`NO-GO: a Major Incident release gate nem ellenőrizhető (${error?.message||"ismeretlen adatbázishiba"}).`,evidence:null,source:"major-incident-war-room"}}
+}
+
 function recomputeReleaseDecision(body:any,newGates:ReleaseGate[]){
   if(!body||!Array.isArray(body.gates))return body;
   const keys=new Set(newGates.map(g=>g.key));const gates=[...body.gates.filter((item:any)=>!keys.has(item?.key)),...newGates];
   const blocking=gates.filter((item:any)=>Boolean(item?.blocking)),blockers=blocking.filter((item:any)=>item?.status!=="pass");
   const summary={total:gates.length,pass:gates.filter((x:any)=>x?.status==="pass").length,warning:gates.filter((x:any)=>x?.status==="warning").length,fail:gates.filter((x:any)=>x?.status==="fail").length,pending:gates.filter((x:any)=>x?.status==="pending").length,blocking_total:blocking.length,blocking_open:blockers.length};
-  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null,exception_management_gate:newGates.find(x=>x.key==="business.exception_management")?.status||null}};
+  return{...body,release_ready:blockers.length===0,decision:blockers.length===0?"GO":"NO-GO",summary,blockers:blockers.map((x:any)=>({key:x.key,label:x.label,status:x.status,message:x.message})),gates,meta:{...(body.meta||{}),process_integrity_gate:newGates.find(x=>x.key==="business.process_integrity")?.status||null,transaction_trace_gate:newGates.find(x=>x.key==="business.transaction_trace")?.status||null,exception_management_gate:newGates.find(x=>x.key==="business.exception_management")?.status||null,major_incident_gate:newGates.find(x=>x.key==="business.major_incident")?.status||null}};
 }
 
 export async function enforceProcessIntegrityReleaseGate(req:Request,res:Response,next:NextFunction){
   if(req.method!=="GET"||(req.path!=="/"&&req.path!==""))return next();
-  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate(),buildExceptionManagementReleaseGate()]);
+  const gates=await Promise.all([buildProcessIntegrityReleaseGate(),buildTransactionTraceReleaseGate(),buildExceptionManagementReleaseGate(),buildMajorIncidentReleaseGate()]);
   const originalJson=res.json.bind(res);res.json=((body:any)=>originalJson(recomputeReleaseDecision(body,gates))) as typeof res.json;next();
 }
