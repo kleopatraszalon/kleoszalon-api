@@ -38,7 +38,10 @@ test('AI and Exception executive menus self-heal analytics parent with managemen
     'analytics.exception_intelligence',
     'Exception Intelligence',
     '/finance/exception-command-center/intelligence',
-    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence')",
+    'analytics.exception_capa',
+    'CAPA központ',
+    '/finance/exception-command-center/capa',
+    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa')",
     'clearShortCache("menu:")',
   ]) assert.ok(src.includes(marker),marker);
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
