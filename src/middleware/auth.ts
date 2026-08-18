@@ -59,11 +59,10 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     const previousUser = req.user;
     const sameAuthenticatedUser = previousUser?.id != null && decodedId != null && String(previousUser.id) === String(decodedId);
 
-    // Some scoped middleware enriches req.user with a tenant resolved from the
-    // database before an inner router applies requireAuth again. Re-verifying the
-    // same JWT must not erase that trusted tenant context just because an older JWT
-    // predates tenant_id. Without this, /api/dashboard passed the tenant boundary
-    // and then immediately returned 403 inside dashboard.ts after the second auth.
+    // Scoped middleware can enrich req.user with a tenant resolved and validated
+    // against the database before an inner router applies requireAuth again. When
+    // the same verified user is authenticated twice in one request, that trusted
+    // in-request tenant/location context is more current than a legacy or stale JWT.
     const preservedTenantId = sameAuthenticatedUser ? previousUser?.tenant_id ?? null : null;
     const preservedLocationId = sameAuthenticatedUser ? previousUser?.location_id ?? null : null;
 
@@ -71,8 +70,8 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       id: decodedId,
       email: decoded.email,
       role: decoded.role,
-      location_id: decoded.location_id ?? preservedLocationId ?? null,
-      tenant_id: decoded.tenant_id ?? preservedTenantId ?? null,
+      location_id: preservedLocationId ?? decoded.location_id ?? null,
+      tenant_id: preservedTenantId ?? decoded.tenant_id ?? null,
       uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
 
