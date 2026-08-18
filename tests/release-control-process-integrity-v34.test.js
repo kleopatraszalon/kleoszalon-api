@@ -28,6 +28,13 @@ test('Exception Command Center release gate blocks critical operational integrit
   assert.ok(src.includes('exception_management_gate'));
 });
 
+test('Major Incident gate blocks SEV1 until post-mortem closure and active SEV2 or overdue critical actions',()=>{
+  const src=read('src/middleware/releaseControlProcessIntegrity.ts');
+  for(const marker of ['business.major_incident','Major Incident / War Room release readiness','major_incidents','major_incident_actions',"severity='sev1' AND status NOT IN('postmortem_closed','dismissed')","severity='sev2' AND status IN('open','mitigating','monitoring')",'overdue_critical_actions','major_incident_gate'])assert.ok(src.includes(marker),marker);
+  assert.ok(src.includes('sev1===0&&sev2===0&&overdueActions===0'));
+  assert.ok(src.includes('buildMajorIncidentReleaseGate()'));
+});
+
 test('backend middleware recomputes GO NO-GO and blockers after adding business integrity gates',()=>{
   const src=read('src/middleware/releaseControlProcessIntegrity.ts');
   assert.ok(src.includes('blockers=blocking.filter'));
@@ -37,5 +44,7 @@ test('backend middleware recomputes GO NO-GO and blockers after adding business 
   assert.ok(src.includes('process_integrity_gate'));
   assert.ok(src.includes('transaction_trace_gate'));
   assert.ok(src.includes('exception_management_gate'));
+  assert.ok(src.includes('major_incident_gate'));
   assert.ok(src.includes('buildExceptionManagementReleaseGate()'));
+  assert.ok(src.includes('buildMajorIncidentReleaseGate()'));
 });
