@@ -28,19 +28,39 @@ async function tenantFromAuthenticatedLocation(userId:string,locationId:unknown,
   return rows[0]??null;
 }
 
+async function tenantFromToken(userId:string,tenantId:string){
+  if(!tenantId)return null;
+  const {rows}=await db.query(`SELECT t.id::text id,t.slug,COALESCE(tu.tenant_role,'member') tenant_role
+    FROM tenants t
+    LEFT JOIN tenant_users tu ON tu.tenant_id=t.id AND tu.user_id=$1 AND tu.active=true
+    WHERE t.id::text=$2 AND t.status IN ('active','trial')
+    LIMIT 1`,[userId,tenantId]);
+  return rows[0]??null;
+}
+
+async function tenantFromMembership(userId:string){
+  const {rows}=await db.query(`SELECT t.id::text id,t.slug,COALESCE(tu.tenant_role,'member') tenant_role
+    FROM tenant_users tu
+    JOIN tenants t ON t.id=tu.tenant_id
+    WHERE tu.user_id=$1 AND tu.active=true AND t.status IN ('active','trial')
+    ORDER BY t.id
+    LIMIT 1`,[userId]);
+  return rows[0]??null;
+}
+
 export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIdentity|null> {
   await ensureSaasCore();
   const authUser=req.user as (NonNullable<AuthRequest["user"]>&{tenant_id?:string|number|null;tenant_feature_denied?:string|null})|undefined;
   if(!authUser?.id) return null;
   const userId=String(authUser.id),tokenTenantId=authUser.tenant_id==null?"":String(authUser.tenant_id);
-  const {rows}=await db.query(`SELECT t.id::text id,t.slug,COALESCE(tu.tenant_role,'member') tenant_role FROM tenants t LEFT JOIN tenant_users tu ON tu.tenant_id=t.id AND tu.user_id=$1 AND tu.active=true WHERE t.status IN ('active','trial') AND (($2<>'' AND t.id::text=$2) OR ($2='' AND tu.user_id IS NOT NULL)) ORDER BY CASE WHEN $2<>'' AND t.id::text=$2 THEN 0 ELSE 1 END,t.id LIMIT 1`,[userId,tokenTenantId]);
-  let row=rows[0];
-  // Admin/staff login tokens historically carried location_id but not tenant_id. In a
-  // multi-tenant/franchise installation the selected salon can therefore belong to a
-  // different tenant than the legacy "kleopatra" fallback. Resolve that signed
-  // location first so the following tenant/location boundary check does not reject a
-  // valid dashboard request with HTTP 403.
-  if(!row)row=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
+
+  // An explicit tenant in a new JWT is authoritative. Legacy admin/staff tokens often
+  // carry only a signed location_id, so resolve that salon before an arbitrary active
+  // membership or the historical Kleopatra fallback. This preserves fail-closed
+  // tenant/location authorization while preventing false dashboard 403 responses.
+  let row=tokenTenantId?await tenantFromToken(userId,tokenTenantId):null;
+  if(!row&&!tokenTenantId)row=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
+  if(!row&&!tokenTenantId)row=await tenantFromMembership(userId);
   if(!row){const fallback=await db.query(`SELECT id::text id,slug,$2::text tenant_role FROM tenants WHERE slug='kleopatra' AND status IN ('active','trial') LIMIT 1`,[userId,roleText(authUser.role).includes("admin")?"owner":"member"]);row=fallback.rows[0];}
   if(!row) return null;
   const tenantId=String(row.id);authUser.tenant_id=tenantId;authUser.tenant_feature_denied=null;
