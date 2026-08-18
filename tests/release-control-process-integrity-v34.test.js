@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const read=p=>fs.readFileSync(path.join(process.cwd(),p),'utf8');
 
-test('Release Control mounts the process-integrity gate on the backend route',()=>{
+test('Release Control mounts the business integrity middleware on the backend route',()=>{
   const tx=read('src/routes/transactions.ts');
   assert.match(tx,/import \{enforceProcessIntegrityReleaseGate\} from "\.\.\/middleware\/releaseControlProcessIntegrity"/);
   assert.match(tx,/router\.use\("\/release-control",requireManagement,enforceProcessIntegrityReleaseGate,releaseControlRouter\)/);
@@ -20,6 +20,14 @@ test('process-integrity release gate is mandatory and fail-closed',()=>{
   assert.ok(src.includes('nincs globális folyamatintegritási futás'));
 });
 
+test('Exception Command Center release gate blocks critical operational integrity cases only',()=>{
+  const src=read('src/middleware/releaseControlProcessIntegrity.ts');
+  for(const marker of ['business.exception_management','Exception Command Center release readiness','exception_cases','exception_case_events','exception_routing_rules','high_breached'])assert.ok(src.includes(marker),marker);
+  for(const category of ['finance','nav','inventory','cashier','trace','system','process'])assert.ok(src.includes(`'${category}'`),category);
+  assert.ok(src.includes('critical===0&&highBreached===0'));
+  assert.ok(src.includes('exception_management_gate'));
+});
+
 test('backend middleware recomputes GO NO-GO and blockers after adding business integrity gates',()=>{
   const src=read('src/middleware/releaseControlProcessIntegrity.ts');
   assert.ok(src.includes('blockers=blocking.filter'));
@@ -28,4 +36,6 @@ test('backend middleware recomputes GO NO-GO and blockers after adding business 
   assert.ok(src.includes('blocking_open:blockers.length'));
   assert.ok(src.includes('process_integrity_gate'));
   assert.ok(src.includes('transaction_trace_gate'));
+  assert.ok(src.includes('exception_management_gate'));
+  assert.ok(src.includes('buildExceptionManagementReleaseGate()'));
 });
