@@ -130,6 +130,31 @@ async function bootstrap(){
       IF NEW.status IN ('approved','closed') AND NEW.approval_state<>'approved' THEN
         RAISE EXCEPTION 'Approved/closed állapot csak formális jóváhagyás után állítható be.' USING ERRCODE='23514';
       END IF;
+      IF NEW.approval_state='pending' AND NOT EXISTS(
+        SELECT 1 FROM management_improvement_approvals a
+         WHERE a.project_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.decision='pending'
+      ) THEN
+        RAISE EXCEPTION 'A pending jóváhagyási állapothoz függő jóváhagyási rekord szükséges.' USING ERRCODE='23514';
+      END IF;
+      IF NEW.approval_state='approved' AND NOT EXISTS(
+        SELECT 1 FROM management_improvement_approvals a
+         WHERE a.project_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.decision='approved'
+      ) THEN
+        RAISE EXCEPTION 'A jóváhagyott projektállapothoz jóváhagyási bizonyíték szükséges.' USING ERRCODE='23514';
+      END IF;
+      IF NEW.status='closed' THEN
+        IF NEW.closed_at IS NULL THEN
+          RAISE EXCEPTION 'Lezárt projekthez lezárási időbélyeg szükséges.' USING ERRCODE='23514';
+        END IF;
+        IF EXISTS(
+          SELECT 1 FROM management_improvement_actions a
+           WHERE a.project_id=NEW.id AND a.tenant_id=NEW.tenant_id
+             AND a.action_type IN ('correction','corrective','preventive')
+             AND a.status NOT IN ('verified','cancelled')
+        ) THEN
+          RAISE EXCEPTION 'Projekt nem zárható le nem igazolt CAPA intézkedéssel.' USING ERRCODE='23514';
+        END IF;
+      END IF;
       IF TG_OP='UPDATE' AND OLD.approval_state IN ('pending','approved') AND
          ROW(NEW.location_id,NEW.title,NEW.problem_statement,NEW.objective,NEW.methodology,NEW.analysis_data,
              NEW.owner_employee_id,NEW.owner_name,NEW.priority,NEW.start_date,NEW.due_date)
