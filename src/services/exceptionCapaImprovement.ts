@@ -83,6 +83,7 @@ export async function promoteExceptionCapaToImprovement(input: {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${input.tenantId}:${input.capaId}`]);
     const existing = (await client.query(
       `SELECT l.*,p.code project_code,p.title project_title,p.status project_status,p.approval_state
          FROM exception_capa_improvement_links l
