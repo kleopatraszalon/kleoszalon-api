@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T13:02:00+02:00
-Deploy latest main including critical menu bootstrap retries, AI Executive Assistant, Observability/APM, Financial Reconciliation Center and automatic stock reconciliation.
-Reason: user-requested production redeploy because newly added menu entries were not visible.
+2026-08-18T13:15:00+02:00
+Deploy latest main including guaranteed startup registration for AI Executive Assistant, Financial Reconciliation Center and System Status menus.
+Reason: newly added management menu entries were not visible in production; deploy the parent/child permission and cache invalidation fix.
