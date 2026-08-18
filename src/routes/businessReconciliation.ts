@@ -7,6 +7,8 @@ import {
   runStockReconciliation,
 } from "../services/businessReconciliation";
 import { ensureBusinessProcessIntegritySchema, runBusinessProcessIntegrity } from "../services/businessProcessIntegrity";
+import { ensureTransactionTraceabilitySchema } from "../services/transactionTraceability";
+import { backfillTraces, recentTraces, searchTraces, startTraceMaintenance, traceDetail } from "../services/transactionTraceRuntime";
 import { startBusinessReconciliationSchedulerV2 } from "../services/businessReconciliationScheduler";
 import { ensureBusinessControlAlertDeliverySchema } from "../services/businessControlAlertDelivery";
 import { ensureBusinessControlMenu } from "../services/businessControlMenu";
@@ -14,6 +16,7 @@ import { ensureExecutiveAiMenu } from "../services/executiveAiMenu";
 
 const router=Router();
 startBusinessReconciliationSchedulerV2();
+startTraceMaintenance();
 
 async function ensureCriticalMenus(){
   const results=await Promise.allSettled([ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);
@@ -29,8 +32,9 @@ for(const delay of [0,5_000,20_000,60_000]){
 const validDate=(v:string)=>/^\d{4}-\d{2}-\d{2}$/.test(v);
 const dateParam=(v:unknown)=>{const s=String(v||new Date().toISOString().slice(0,10));if(!validDate(s))throw Object.assign(new Error("A dátum formátuma YYYY-MM-DD legyen."),{status:400});return s};
 const loc=(req:AuthRequest,source:any)=>String(source?.location_id||req.user?.location_id||"").trim()||null;
+const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
 
-router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await Promise.all([ensureBusinessReconciliationSchema(),ensureBusinessProcessIntegritySchema(),ensureTransactionTraceabilitySchema(),ensureBusinessControlAlertDeliverySchema(),ensureBusinessControlMenu(),ensureExecutiveAiMenu()]);next()}catch(error){next(error)}});
 
 router.get("/finance",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runFinancialReconciliation(date,loc(req,req.query),{persist:false,notify:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
@@ -41,6 +45,23 @@ router.get("/stock",async(req:AuthRequest,res,next)=>{
 router.get("/process-integrity",async(req:AuthRequest,res,next)=>{
   try{const date=dateParam(req.query.date);res.json(await runBusinessProcessIntegrity(date,loc(req,req.query),{persist:false}))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
 });
+
+router.get("/trace/recent",async(req:AuthRequest,res,next)=>{
+  try{res.json({items:await recentTraces(Number(req.query.limit||60),loc(req,req.query))})}catch(error){next(error)}
+});
+router.get("/trace/search",async(req:AuthRequest,res,next)=>{
+  try{res.json({items:await searchTraces(String(req.query.q||""),Number(req.query.limit||40))})}catch(error){next(error)}
+});
+router.post("/trace/backfill",async(req:AuthRequest,res,next)=>{
+  try{res.json(await backfillTraces(Number(req.body?.days||30),Number(req.body?.limit||500)))}catch(error){next(error)}
+});
+router.get("/trace/:root_type/:root_id",async(req:AuthRequest,res,next)=>{
+  try{res.json(await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req)))}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
+router.post("/trace/:root_type/:root_id/verify",async(req:AuthRequest,res,next)=>{
+  try{const data=await traceDetail(String(req.params.root_type),String(req.params.root_id),actor(req));res.json({trace:data.trace,proof:data.proof,stages:data.stages,verified_at:new Date().toISOString()})}catch(error:any){if(error?.status)return res.status(error.status).json({message:error.message});next(error)}
+});
+
 router.post("/run",async(req:AuthRequest,res,next)=>{
   try{
     const date=dateParam(req.body?.date),locationId=loc(req,req.body),scope=String(req.body?.scope||"all");
