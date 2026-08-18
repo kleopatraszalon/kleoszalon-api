@@ -10,6 +10,10 @@ permissions:
   id-token: write
   statuses: write
 
+concurrency:
+  group: render-production-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   automated-quality-gate:
     name: Unit / integration / E2E / build
