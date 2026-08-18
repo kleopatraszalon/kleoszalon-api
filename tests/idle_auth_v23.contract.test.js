@@ -13,8 +13,8 @@ test('logout invalidates the HttpOnly auth cookie and protected auth rejects mis
  assert.match(route,/router\.post\("\/logout"/);
  assert.match(route,/clearAuthCookie\(res\)/);
  assert.match(route,/res\.setHeader\("Cache-Control", "no-store"\)/);
- assert.match(middleware,/const token = getTokenFromReq\(req\)/);
- assert.match(middleware,/if \(!token\)/);
+ assert.match(middleware,/const credential = getCredentialFromReq\(req\)/);
+ assert.match(middleware,/if \(!credential\)/);
  assert.match(middleware,/return res\.status\(401\)\.json/);
  assert.match(middleware,/cookies\?\.token/);
 });
