@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T15:26:00+02:00
-Deploy latest main including the automatic Exception Command Center, durable case lifecycle, 5-minute multi-source discovery, SLA/routing engine, owner workflow, safe auto-resolve, NAV consistency reconciler, alert digest, audit history, fixed-asset exceptions, System Health integration support and Release Control exception-management gate.
-Reason: production redeploy after Exception Command Center implementation and release hardening were completed.
+2026-08-18T17:36:00+02:00
+Deploy latest main including Exception Intelligence, automatic L1/L2/L3 escalation, root-cause correlation, recurrence and hotspot analytics, team/owner MTTA-MTTR and SLA metrics, executive briefs, CAPA proposal/governance workflow, append-only CAPA audit, database-level approval and verification evidence guards, location-scoped CAPA access and supported management menu registration.
+Reason: production redeploy after the Exception Command Center was extended into a closed-loop detect-correlate-escalate-correct-verify management control system.
