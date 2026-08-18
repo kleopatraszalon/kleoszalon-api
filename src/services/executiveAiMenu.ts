@@ -43,7 +43,7 @@ export async function ensureExecutiveAiMenu(){
         )
         SELECT r.role_key,m.id,true,false,false,false,false,true,true,false,'all_locations',now()
         FROM (VALUES('admin'),('manager')) r(role_key)
-        CROSS JOIN menus m WHERE m.code='analytics.executive_ai'
+        CROSS JOIN menus m WHERE m.code IN('analytics','analytics.executive_ai')
         ON CONFLICT(role_key,menu_id) DO UPDATE SET
           can_view=true,
           can_export=true,
