@@ -1,8 +1,8 @@
 BEGIN;
 
 -- Kleoszalon fixed-asset accounting governance V2
--- Goal: the accounting subledger may only post with an explicitly mapped chart
--- of accounts and an explicitly approved asset policy. Legacy master-equipment
+-- The subledger may only post with an explicitly mapped company chart of
+-- accounts and an explicitly approved asset policy. Legacy master-equipment
 -- data is imported as a review suggestion, never as an automatically approved
 -- depreciation/maintenance policy.
 
@@ -23,8 +23,8 @@ ALTER TABLE fixed_asset_maintenance_plans
 ALTER TABLE gl_journal_lines
   ADD COLUMN IF NOT EXISTS external_account_code_snapshot text;
 
--- Existing non-empty mappings are treated as approved because the only write API
--- is protected by management/accounting RBAC. Empty mappings remain fail-closed.
+-- Existing non-empty company mappings are retained as approved. Empty mappings
+-- remain fail-closed until an authorised finance user sets the actual account.
 UPDATE gl_accounts
 SET mapping_status='approved',
     mapping_approved_at=COALESCE(mapping_approved_at,now()),
@@ -42,7 +42,8 @@ BEGIN
     NEW.mapping_status := 'unmapped';
     NEW.mapping_approved_at := NULL;
     NEW.mapping_approved_by := NULL;
-  ELSIF NEW.external_account_code IS DISTINCT FROM OLD.external_account_code
+  ELSIF TG_OP='INSERT'
+     OR NEW.external_account_code IS DISTINCT FROM OLD.external_account_code
      OR OLD.mapping_status IS DISTINCT FROM 'approved' THEN
     NEW.mapping_status := 'approved';
     NEW.mapping_approved_at := now();
@@ -51,14 +52,47 @@ BEGIN
   RETURN NEW;
 END $$;
 
+DROP TRIGGER IF EXISTS trg_kleo_fixed_asset_mark_account_mapping_insert ON gl_accounts;
+CREATE TRIGGER trg_kleo_fixed_asset_mark_account_mapping_insert
+BEFORE INSERT ON gl_accounts
+FOR EACH ROW EXECUTE FUNCTION kleo_fixed_asset_mark_account_mapping();
+
+DROP TRIGGER IF EXISTS trg_kleo_fixed_asset_mark_account_mapping_update ON gl_accounts;
 DROP TRIGGER IF EXISTS trg_kleo_fixed_asset_mark_account_mapping ON gl_accounts;
-CREATE TRIGGER trg_kleo_fixed_asset_mark_account_mapping
+CREATE TRIGGER trg_kleo_fixed_asset_mark_account_mapping_update
 BEFORE UPDATE OF external_account_code ON gl_accounts
 FOR EACH ROW EXECUTE FUNCTION kleo_fixed_asset_mark_account_mapping();
 
--- Any change to the policy-defining fields invalidates a previous approval.
--- A new approval is accepted only when accounting data and a real manufacturer/
--- statutory maintenance reference are complete.
+-- Only the dedicated accounting/admin roles may approve the final combination
+-- of useful life, residual value, tax classification/rate and manufacturer
+-- maintenance policy. Role lookup is performed from the actor stored in
+-- updated_by so a generic manager PATCH cannot silently approve depreciation.
+CREATE OR REPLACE FUNCTION kleo_fixed_asset_actor_can_approve(p_actor text)
+RETURNS boolean LANGUAGE plpgsql STABLE AS $$
+DECLARE v_ok boolean := false;
+BEGIN
+  IF NULLIF(btrim(COALESCE(p_actor,'')),'') IS NULL THEN RETURN false; END IF;
+  IF to_regclass('public.users') IS NULL THEN RETURN false; END IF;
+
+  SELECT EXISTS(
+    SELECT 1 FROM users u
+    WHERE (
+      u.id::text=p_actor OR
+      lower(COALESCE(to_jsonb(u)->>'email',''))=lower(p_actor) OR
+      lower(COALESCE(to_jsonb(u)->>'login_name',''))=lower(p_actor)
+    )
+    AND (
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%accounting%' OR
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%bookkeeper%' OR
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%konyveles%' OR
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%könyvelés%' OR
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%admin%' OR
+      lower(COALESCE(to_jsonb(u)->>'role','')) LIKE '%rendszergazda%'
+    )
+  ) INTO v_ok;
+  RETURN COALESCE(v_ok,false);
+END $$;
+
 CREATE OR REPLACE FUNCTION kleo_fixed_asset_validate_policy_approval()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -66,6 +100,18 @@ DECLARE
   policy_changed boolean;
   maintenance_ready boolean;
 BEGIN
+  -- A new asset cannot be born approved because its manufacturer maintenance
+  -- plan cannot exist until the asset id exists. It always enters review first.
+  IF TG_OP='INSERT' THEN
+    IF NEW.depreciation_policy_status='approved' THEN
+      NEW.depreciation_policy_status := 'needs_review';
+      NEW.policy_review_reason := 'Új eszköz: a számviteli, TAO- és gyártói karbantartási adatok külön jóváhagyása szükséges.';
+    END IF;
+    NEW.depreciation_policy_approved_by := NULL;
+    NEW.depreciation_policy_approved_at := NULL;
+    RETURN NEW;
+  END IF;
+
   approval_requested := NEW.depreciation_policy_status='approved'
                         AND OLD.depreciation_policy_status IS DISTINCT FROM 'approved';
   policy_changed := OLD.depreciation_policy_status='approved'
@@ -89,6 +135,9 @@ BEGIN
   END IF;
 
   IF approval_requested THEN
+    IF NOT kleo_fixed_asset_actor_can_approve(NEW.updated_by) THEN
+      RAISE EXCEPTION 'Az amortizációs politika végleges jóváhagyását csak a Könyvelés vagy rendszergazda végezheti.' USING ERRCODE='42501';
+    END IF;
     IF COALESCE(NEW.useful_life_months,0) <= 0 THEN
       RAISE EXCEPTION 'A hasznos élettartam jóváhagyás előtt kötelező.' USING ERRCODE='23514';
     END IF;
@@ -119,7 +168,7 @@ BEGIN
       RAISE EXCEPTION 'A gyártói/jogszabályi karbantartási periódus, dokumentumhivatkozás, következő esedékesség és ellenőrzőlista jóváhagyás előtt kötelező.' USING ERRCODE='23514';
     END IF;
 
-    NEW.depreciation_policy_approved_by := COALESCE(NULLIF(NEW.updated_by,''),NULLIF(NEW.created_by,''),'authorized-user');
+    NEW.depreciation_policy_approved_by := NEW.updated_by;
     NEW.depreciation_policy_approved_at := now();
     NEW.policy_review_reason := NULL;
   ELSIF NEW.depreciation_policy_status IS DISTINCT FROM 'approved' THEN
@@ -132,16 +181,16 @@ END $$;
 
 DROP TRIGGER IF EXISTS trg_kleo_fixed_asset_validate_policy_approval ON fixed_assets;
 CREATE TRIGGER trg_kleo_fixed_asset_validate_policy_approval
-BEFORE UPDATE ON fixed_assets
+BEFORE INSERT OR UPDATE ON fixed_assets
 FOR EACH ROW EXECUTE FUNCTION kleo_fixed_asset_validate_policy_approval();
 
 -- Maintenance changes invalidate an already approved asset policy, forcing a
--- deliberate accounting re-approval after the manufacturer instruction changes.
+-- deliberate accounting re-approval after a manufacturer instruction changes.
 CREATE OR REPLACE FUNCTION kleo_fixed_asset_invalidate_policy_from_maintenance()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_asset_id uuid;
 BEGIN
-  v_asset_id := COALESCE(NEW.asset_id,OLD.asset_id);
+  IF TG_OP='DELETE' THEN v_asset_id := OLD.asset_id; ELSE v_asset_id := NEW.asset_id; END IF;
   UPDATE fixed_assets
      SET depreciation_policy_status='needs_review',
          depreciation_policy_approved_by=NULL,
@@ -149,7 +198,7 @@ BEGIN
          policy_review_reason='A karbantartási terv megváltozott; új könyvelői jóváhagyás szükséges.',
          updated_at=now()
    WHERE id=v_asset_id AND depreciation_policy_status='approved';
-  RETURN COALESCE(NEW,OLD);
+  IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
 END $$;
 
 DROP TRIGGER IF EXISTS trg_kleo_fixed_asset_invalidate_policy_from_maintenance ON fixed_asset_maintenance_plans;
@@ -242,9 +291,9 @@ BEGIN
       'Migrált master_equipment szervizperiódus – a gyártói kézikönyv pontos hivatkozásával jóváhagyandó',
       jsonb_build_array('Gyártói karbantartási kézikönyv szerinti feladatlista rögzítendő'),
       'Karbantartás',0,0,
-      CASE WHEN COALESCE(to_jsonb(e)->>'last_service_at','') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (to_jsonb(e)->>'last_service_at')::date ELSE NULL END,
+      CASE WHEN COALESCE(to_jsonb(e)->>'last_service_at','') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (to_jsonb(e)->>'last_service_at')::date ELSE NULL END,
       CASE
-        WHEN COALESCE(to_jsonb(e)->>'next_service_at','') ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (to_jsonb(e)->>'next_service_at')::date
+        WHEN COALESCE(to_jsonb(e)->>'next_service_at','') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN (to_jsonb(e)->>'next_service_at')::date
         ELSE (COALESCE(a.commissioned_at,a.purchase_date,CURRENT_DATE)
               + ((CASE WHEN COALESCE(to_jsonb(e)->>'service_interval_days','') ~ '^[0-9]+$'
                         THEN GREATEST((to_jsonb(e)->>'service_interval_days')::int,1) ELSE 1 END)::text || ' days')::interval)::date
@@ -261,8 +310,8 @@ BEGIN
   END IF;
 END $$;
 
--- Every legacy master-equipment row remains review-required until an authorized
--- user sets the actual useful life, residual value, TAO classification/rate and
+-- Every legacy master-equipment row remains review-required until an authorised
+-- accounting user sets the actual useful life, residual value, TAO data and
 -- replaces the migrated maintenance reference with the manufacturer source.
 UPDATE fixed_assets
 SET depreciation_policy_status='needs_review',
@@ -273,7 +322,7 @@ SET depreciation_policy_status='needs_review',
 WHERE source_master_equipment_id IS NOT NULL
   AND capitalization_journal_id IS NULL;
 
--- Readiness view for audit, UAT and accounting reconciliation.
+-- Readiness views for audit, UAT and accounting reconciliation.
 CREATE OR REPLACE VIEW fixed_asset_governance_readiness_v AS
 SELECT
   (SELECT COUNT(*)::int FROM gl_accounts
@@ -331,7 +380,7 @@ ON CONFLICT(role_key,menu_id) DO UPDATE SET
 INSERT INTO schema_migrations(version,description,applied_at)
 VALUES(
   '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2',
-  'Fixed assets: chart mapping gate, accounting/TAO/maintenance approval gate, legacy review migration, GL snapshot/export and accounting RBAC',
+  'Fixed assets: company chart mapping gate, accounting-only policy approval, legacy review migration, GL snapshot/export and accounting RBAC',
   now()
 )
 ON CONFLICT(version) DO UPDATE SET description=EXCLUDED.description,applied_at=now();
