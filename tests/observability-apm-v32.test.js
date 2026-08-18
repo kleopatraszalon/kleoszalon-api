@@ -28,7 +28,7 @@ test('APM covers every required operational production signal',()=>{
  assert.match(src,/inventory_warehouse_balances/);
  assert.match(src,/booking_communication_queue/);
  assert.match(src,/nav_invoice_queue/);
- assert.match(src,/cashier_shifts/);
+ assert.match(src,/cash_register_shifts/);
 });
 
 test('critical alerts are durable, deduplicated and automatically sent to admins',()=>{
@@ -51,4 +51,13 @@ test('Observability management API and worker are mounted through notifications'
  assert.match(notifications,/router\.use\("\/observability",requireManagement,observabilityRouter\)/);
  for(const endpoint of ['/history','/alerts','/deliveries','/run'])assert.ok(route.includes(`"${endpoint}"`));
  assert.match(route,/collectApmSnapshot/);
+});
+
+test('Release Control blocks GO when Observability APM is not fresh',()=>{
+ const release=read('src/routes/releaseControl.ts');
+ assert.match(release,/infrastructure\.observability/);
+ assert.match(release,/apm_metric_snapshots/);
+ assert.match(release,/apmSnapshotAgeMinutes <= 5/);
+ assert.match(release,/blocking:true/);
+ assert.match(release,/apm_last_snapshot_at/);
 });
