@@ -25,7 +25,7 @@ test('critical finance and system menus self-heal with parent visibility',()=>{
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
 });
 
-test('AI Exception CAPA Major Incident and Resilience executive menus self-heal analytics parent with management permissions',()=>{
+test('AI Exception CAPA Major Incident Resilience and GameDay executive menus self-heal analytics parent with management permissions',()=>{
   const src=read('src/services/executiveAiMenu.ts');
   for(const marker of [
     "VALUES('analytics','Statisztika és VIR'",
@@ -35,7 +35,8 @@ test('AI Exception CAPA Major Incident and Resilience executive menus self-heal 
     'analytics.exception_capa','CAPA központ','/finance/exception-command-center/capa',
     'analytics.major_incident','Major Incident / War Room','/finance/exception-command-center/major-incidents',
     'analytics.resilience_recovery','Resilience & Recovery','/finance/exception-command-center/resilience',
-    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident','analytics.resilience_recovery')",
+    'analytics.business_continuity_gameday','Üzletmenet-folytonossági GameDay','/finance/exception-command-center/gameday',
+    "m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident','analytics.resilience_recovery','analytics.business_continuity_gameday')",
     'clearShortCache("menu:")',
   ]) assert.ok(src.includes(marker),marker);
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);
