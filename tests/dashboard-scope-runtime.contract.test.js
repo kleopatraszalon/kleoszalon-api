@@ -31,6 +31,22 @@ test('dashboard tenant resolution repairs stale tenant id from the signed salon 
     'the recovery path must document that normal tenant/location checks still apply');
 });
 
+test('repeated authentication cannot erase a database-resolved tenant from the same request', () => {
+  const auth = read('src/middleware/auth.ts');
+  const scope = read('src/middleware/locationManagerScope.ts');
+  const dashboard = read('src/routes/dashboard.ts');
+  assert.match(scope, /if\(req\.user\)return void guard\(req,res,next,kind\)/,
+    'scoped middleware must reuse an already authenticated user');
+  assert.match(scope, /return requireAuth\(req,res,\(\)=>void guard\(req,res,next,kind\)\)/,
+    'scoped middleware authenticates before resolving tenant context');
+  assert.match(dashboard, /router\.get\("\/", requireAuth,/,
+    'dashboard currently applies an inner auth layer after the scope middleware');
+  assert.match(auth, /const sameAuthenticatedUser = previousUser\?\.id != null && decodedId != null && String\(previousUser\.id\) === String\(decodedId\)/,
+    'auth must only preserve enriched scope for the same verified user');
+  assert.match(auth, /tenant_id: preservedTenantId \?\? decoded\.tenant_id \?\? null/,
+    'trusted in-request tenant resolution must survive the inner dashboard authentication');
+});
+
 test('legacy dashboard tenant resolution still supports signed salon then membership then fallback', () => {
   const src = read('src/saas/tenantAccess.ts');
   const locationPos = src.indexOf('tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role)');
