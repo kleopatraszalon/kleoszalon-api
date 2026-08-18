@@ -41,6 +41,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Mark backend quality gate running
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"pending",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Backend strict quality gate running",context:"release-control/render-backend"}))')"
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -X POST --data "$body" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -92,6 +106,20 @@ jobs:
         run: |
           set -euo pipefail
           body="$(node -e 'process.stdout.write(JSON.stringify({state:"pending",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Quality gate passed; exact Render release verification pending",context:"release-control/render-backend"}))')"
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -X POST --data "$body" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+
+      - name: Mark backend quality gate failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"failure",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Backend strict quality gate failed before Render deploy",context:"release-control/render-backend"}))')"
           curl -fsS --retry 3 \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
