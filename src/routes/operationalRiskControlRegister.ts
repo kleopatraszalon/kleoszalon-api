@@ -6,10 +6,14 @@ import {
  startOperationalRiskScheduler,syncOperationalRiskRegister,testOperationalControl,updateOperationalRisk,upsertOperationalControl
 } from "../services/operationalRiskControlRegister";
 import {startOperationalRiskExceptionBridge,syncOperationalRiskExceptions} from "../services/operationalRiskExceptionBridge";
+import {reconcileStaleOperationalRiskSources,startOperationalRiskHardeningScheduler} from "../services/operationalRiskControlHardening";
 
 const router=Router();
-startOperationalRiskScheduler();
-startOperationalRiskExceptionBridge();
+if(process.env.NODE_ENV!=="test"){
+ startOperationalRiskScheduler();
+ startOperationalRiskExceptionBridge();
+ startOperationalRiskHardeningScheduler();
+}
 void ensureOperationalRiskControlSchema().catch(error=>console.error('[operational-risk] schema bootstrap failed',error));
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||'management-user');
 const location=(req:AuthRequest)=>String(req.query.location_id||req.user?.location_id||'').trim()||null;
@@ -18,8 +22,8 @@ const send=(error:any,res:any,next:any)=>String(error?.code||'')==='23514'?res.s
 router.use(async(_req,_res,next)=>{try{await ensureOperationalRiskControlSchema();next()}catch(error){next(error)}});
 
 router.get('/summary',async(req:AuthRequest,res,next)=>{try{res.json(await operationalRiskSummary(location(req)))}catch(error){next(error)}});
-router.post('/sync',async(_req:AuthRequest,res,next)=>{try{const risk=await syncOperationalRiskRegister();const exceptions=await syncOperationalRiskExceptions();res.json({...risk,exceptions})}catch(error){next(error)}});
-router.post('/governance-cycle',async(_req:AuthRequest,res,next)=>{try{const risk=await runOperationalRiskGovernanceCycle();const exceptions=await syncOperationalRiskExceptions();res.json({...risk,exceptions})}catch(error){next(error)}});
+router.post('/sync',async(_req:AuthRequest,res,next)=>{try{const risk=await syncOperationalRiskRegister();const stale_sources=await reconcileStaleOperationalRiskSources();const exceptions=await syncOperationalRiskExceptions();res.json({...risk,stale_sources,exceptions})}catch(error){next(error)}});
+router.post('/governance-cycle',async(_req:AuthRequest,res,next)=>{try{const risk=await runOperationalRiskGovernanceCycle();const stale_sources=await reconcileStaleOperationalRiskSources();const exceptions=await syncOperationalRiskExceptions();res.json({...risk,stale_sources,exceptions})}catch(error){next(error)}});
 router.get('/risks',async(req:AuthRequest,res,next)=>{try{res.json({items:await listOperationalRisks({...req.query,location_id:location(req)})})}catch(error){next(error)}});
 router.post('/risks',async(req:AuthRequest,res,next)=>{try{res.status(201).json(await createOperationalRisk({...req.body,location_id:req.body?.location_id||location(req)},actor(req)))}catch(error:any){send(error,res,next)}});
 router.get('/risks/:id',async(req:AuthRequest,res,next)=>{try{const detail=await getOperationalRisk(String(req.params.id));if(!visible(detail,location(req)))return res.status(404).json({message:'A risk nem található ebben a telephelyi hatókörben.'});res.json(detail)}catch(error:any){send(error,res,next)}});
