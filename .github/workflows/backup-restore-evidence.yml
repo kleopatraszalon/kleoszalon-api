@@ -86,7 +86,6 @@ jobs:
         env:
           SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
           BACKUP_EVIDENCE_ENVIRONMENT: ${{ steps.source.outputs.environment }}
-          PATH: /usr/lib/postgresql/17/bin:${{ env.PATH }}
         run: node tests/backup_restore_rehearsal.mjs
 
       - name: Upload backup restore evidence
