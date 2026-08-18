@@ -22,7 +22,8 @@ export async function ensureExecutiveAiMenu(){
         ('analytics.executive_ai','AI vezetői asszisztens','BrainCircuit','/finance/executive-ai',15),
         ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16),
         ('analytics.exception_intelligence','Exception Intelligence','ChartNoAxesCombined','/finance/exception-command-center/intelligence',17),
-        ('analytics.exception_capa','CAPA központ','ClipboardCheck','/finance/exception-command-center/capa',18)
+        ('analytics.exception_capa','CAPA központ','ClipboardCheck','/finance/exception-command-center/capa',18),
+        ('analytics.major_incident','Major Incident / War Room','MonitorPlay','/finance/exception-command-center/major-incidents',19)
       ) x(code,name,icon,route,order_index)
       ON CONFLICT(code) DO UPDATE SET
         name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
@@ -36,7 +37,7 @@ export async function ensureExecutiveAiMenu(){
         )
         SELECT r.role_key,m.id,true,false,true,false,true,true,true,false,'all_locations',now()
         FROM (VALUES('admin'),('manager')) r(role_key)
-        CROSS JOIN menus m WHERE m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa')
+        CROSS JOIN menus m WHERE m.code IN('analytics','analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident')
         ON CONFLICT(role_key,menu_id) DO UPDATE SET
           can_view=true,
           can_edit=EXCLUDED.can_edit,
@@ -50,7 +51,7 @@ export async function ensureExecutiveAiMenu(){
             can_approve=false,can_export=false,can_view_financial=false,updated_at=now()
         FROM menus m
         WHERE p.menu_id=m.id
-          AND m.code IN('analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa')
+          AND m.code IN('analytics.executive_ai','analytics.exception_center','analytics.exception_intelligence','analytics.exception_capa','analytics.major_incident')
           AND lower(p.role_key) NOT IN('admin','manager')`);
     }
 
