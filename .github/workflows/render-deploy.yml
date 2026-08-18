@@ -5,11 +5,33 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   automated-quality-gate:
     name: Unit / integration / E2E / build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: saas_uat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d saas_uat"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      PGPASSWORD: postgres
+      SAAS_UAT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/saas_uat
+      PGSSLMODE: disable
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,8 +45,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Unit, integration and contract tests
+      - name: Unit and contract tests
         run: npm test
+
+      - name: Financial integrity gate
+        run: npm run test:financial-integrity
+
+      - name: Workorder regression gate
+        run: npm run test:workorders
+
+      - name: Requirements quality gate
+        run: npm run requirements:check
+
+      - name: Prepare isolated SaaS tenant schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql "$SAAS_UAT_DATABASE_URL" <<'SQL'
+          CREATE TABLE users(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), role text);
+          CREATE TABLE locations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, city text, address text, is_active boolean DEFAULT true);
+          CREATE TABLE clients(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text, location_id uuid REFERENCES locations(id));
+          CREATE TABLE employees(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text, location_id uuid REFERENCES locations(id));
+          CREATE TABLE appointments(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id), client_id uuid, employee_id uuid, start_time timestamptz DEFAULT now(), end_time timestamptz DEFAULT now()+interval '1 hour');
+          CREATE TABLE work_orders(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id), client_id uuid, employee_id uuid, status text DEFAULT 'open');
+          CREATE TABLE product_stock_balances(id bigserial PRIMARY KEY, location_id uuid REFERENCES locations(id));
+          CREATE TABLE purchase_orders(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), location_id uuid REFERENCES locations(id));
+          SQL
+          psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_CORE_V1.sql
+          psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_TENANT_ISOLATION_V2.sql
+
+      - name: SaaS cross-tenant isolation gate
+        run: npm run test:saas-isolation
 
       - name: TypeScript production build
         run: npm run build
@@ -33,18 +84,25 @@ jobs:
     name: Manual approval + production deploy
     needs: automated-quality-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     environment: production-manual-approval
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
     steps:
+      - name: Require Render API deploy hook
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${RENDER_DEPLOY_HOOK_URL:-}" ]; then
+            echo "RENDER_API_DEPLOY_HOOK_URL secret is not configured." >&2
+            exit 1
+          fi
+
       - name: Trigger Render API deploy
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
         run: curl -fsS --retry 3 --max-time 30 -X POST "$RENDER_DEPLOY_HOOK_URL"
 
       - name: Wait for the actual new Render release
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -84,8 +142,7 @@ jobs:
           done
 
           if [ "$live" -ne 1 ]; then
-            echo "New Render API release did not expose the expected hotfix marker."
-            echo "Last daily-actions status/body:"
+            echo "New Render API release did not expose the expected release marker." >&2
             cat /tmp/daily-body.txt 2>/dev/null || true
             exit 1
           fi
@@ -94,7 +151,6 @@ jobs:
           node -e "const x=require('/tmp/wallboard.json'); console.log('WallBoard feed PASS; active-action=',!!x.action)"
 
       - name: Verify cashier API authentication boundary
-        if: env.RENDER_DEPLOY_HOOK_URL != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -106,6 +162,16 @@ jobs:
           fi
           echo "Cashier authentication boundary PASS ($code)"
 
-      - name: Render deploy hook is not configured
-        if: env.RENDER_DEPLOY_HOOK_URL == ''
-        run: echo "RENDER_API_DEPLOY_HOOK_URL secret is not configured; Render deploy skipped."
+      - name: Publish backend evidence to Release Control Center
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
+          oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
+          test -n "$oidc"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.backend",status:"pass",evidence:"npm test + requirements quality gate PASS"},{key:"build.backend",status:"pass",evidence:"TypeScript production build PASS"},{key:"tests.integration",status:"pass",evidence:"Workorder regression + live Render health/readiness/WallBoard/cashier smoke PASS"},{key:"tests.financial",status:"pass",evidence:"Financial integrity gate PASS"},{key:"tests.saas",status:"pass",evidence:"PostgreSQL 16 cross-tenant isolation UAT PASS"},{key:"tests.rbac",status:"pass",evidence:"RBAC fail-closed regression included in backend test suite PASS"}]}))')"
+          curl -fsS --retry 3 --max-time 30 \
+            -H "Authorization: Bearer $oidc" \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$API_BASE_URL/api/uat/release-control/evidence"
