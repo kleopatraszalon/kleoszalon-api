@@ -33,6 +33,7 @@ import {
   syncExceptionCapaCandidates,
   updateExceptionCapa,
 } from "../services/exceptionCapa";
+import { ensureExceptionCapaHardeningSchema } from "../services/exceptionCapaHardening";
 
 const router=Router();
 startExceptionCommandCenterScheduler();
@@ -41,12 +42,14 @@ startExceptionCapaScheduler();
 void ensureExceptionCommandCenterSchema().catch(error=>console.error("[exception-center] startup schema bootstrap failed",error));
 void ensureExceptionIntelligenceSchema().catch(error=>console.error("[exception-intelligence] startup schema bootstrap failed",error));
 void ensureExceptionCapaSchema().catch(error=>console.error("[exception-capa] startup schema bootstrap failed",error));
+void ensureExceptionCapaHardeningSchema().catch(error=>console.error("[exception-capa] state guard bootstrap failed",error));
 
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
 const loc=(req:AuthRequest)=>String(req.query.location_id||req.user?.location_id||"").trim()||null;
 const sendError=(error:any,res:any,next:any)=>error?.status?res.status(error.status).json({message:error.message}):next(error);
+const capaVisible=(detail:any,location:string|null)=>!location||!detail?.item?.location_id||String(detail.item.location_id)===location;
 
-router.use(async(_req,_res,next)=>{try{await ensureExceptionCommandCenterSchema();next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await ensureExceptionCommandCenterSchema();await ensureExceptionCapaHardeningSchema();next()}catch(error){next(error)}});
 
 router.get("/summary",async(req:AuthRequest,res,next)=>{try{res.json(await exceptionCenterSummary(loc(req)))}catch(error){next(error)}});
 router.get("/cases",async(req:AuthRequest,res,next)=>{try{res.json({items:await listExceptionCases({...req.query,location_id:loc(req)})})}catch(error){next(error)}});
@@ -66,10 +69,10 @@ router.put("/intelligence/escalation-rules/:severity",async(req:AuthRequest,res,
 router.post("/intelligence/brief/:type",async(req:AuthRequest,res,next)=>{try{const type=String(req.params.type);if(type!=="morning"&&type!=="evening")return res.status(400).json({message:"A brief típusa morning vagy evening lehet."});res.json(await sendExceptionExecutiveBrief(type))}catch(error){next(error)}});
 
 router.get("/intelligence/capa/summary",async(req:AuthRequest,res,next)=>{try{res.json(await exceptionCapaSummary(loc(req)))}catch(error){next(error)}});
-router.get("/intelligence/capa",async(req:AuthRequest,res,next)=>{try{res.json({items:await listExceptionCapas({...req.query,location_id:loc(req)})})}catch(error){next(error)}});
+router.get("/intelligence/capa",async(req:AuthRequest,res,next)=>{try{const location=loc(req);const rows=await listExceptionCapas({...req.query,location_id:null});const items=location?rows.filter((x:any)=>!x.location_id||String(x.location_id)===location):rows;res.json({items})}catch(error){next(error)}});
 router.post("/intelligence/capa/sync",async(_req:AuthRequest,res,next)=>{try{res.json(await syncExceptionCapaCandidates())}catch(error){next(error)}});
-router.get("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{res.json(await getExceptionCapa(String(req.params.id)))}catch(error:any){sendError(error,res,next)}});
-router.patch("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{res.json(await updateExceptionCapa(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
+router.get("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(detail)}catch(error:any){sendError(error,res,next)}});
+router.patch("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(await updateExceptionCapa(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendError(error,res,next)}});
 
 router.get("/export.csv",async(req:AuthRequest,res,next)=>{try{const csv=await exportExceptionCasesCsv({...req.query,location_id:loc(req)});res.setHeader("Content-Type","text/csv; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="kleo-exception-center-${new Date().toISOString().slice(0,10)}.csv"`);res.send(csv)}catch(error){next(error)}});
 
