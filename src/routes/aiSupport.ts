@@ -3,6 +3,8 @@ import axios from "axios";
 import db from "../db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
 import { requireFeature } from "../middleware/featureAccess";
+import { requireManagement } from "../middleware/requireRoles";
+import executiveAiRouter from "./executiveAi";
 
 const router = Router();
 
@@ -68,6 +70,8 @@ A Raktár oldalon elérhető: készletlista, telephely/központi készlet, nyit�
 A Munkalapoknál elérhető az életciklus: várakozik, megérkezett, folyamatban, befejezve, nem jelent meg, visszavonva; termék-anyagfelhasználás is rögzíthető.
 Ha a felhasználó azt kérdezi, hol talál valamit, adj konkrét menü- vagy útvonaljavaslatot. Ha a jelenlegi oldal kontextusa rendelkezésre áll, arra építs.
 Ne állítsd, hogy végrehajtottál műveletet. Ne kérj vagy jeleníts meg jelszót, bankkártyaadatot, API-kulcsot vagy más titkot. Ha nem tudod biztosan, mondd meg, és javasold a legvalószínűbb menüpontot.`;
+
+router.use("/executive", requireAuth, requireManagement, executiveAiRouter);
 
 router.get("/health", (_req, res) => res.json({ ok:true, configured:Boolean(process.env.OPENAI_API_KEY), model:process.env.OPENAI_MODEL||"gpt-5-mini", limits:limits() }));
 
