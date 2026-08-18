@@ -1,0 +1,2 @@
+Dashboard hotfix CI build trigger
+2026-08-18 12:29 Europe/Budapest
