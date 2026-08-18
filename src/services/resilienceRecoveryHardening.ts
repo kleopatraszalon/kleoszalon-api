@@ -35,7 +35,8 @@ export function ensureResilienceRecoveryHardeningSchema(){
         DECLARE commander text; mandatory_open integer; unverified integer; actions_open integer; incident_status text;
         BEGIN
           IF NEW.status='all_clear' THEN
-            SELECT incident_commander_key INTO commander FROM major_incidents WHERE id=NEW.incident_id;
+            SELECT incident_commander_key,status INTO commander,incident_status FROM major_incidents WHERE id=NEW.incident_id;
+            IF incident_status NOT IN ('monitoring','resolved') THEN RAISE EXCEPTION 'ALL CLEAR requires monitoring or resolved Major Incident state' USING ERRCODE='23514'; END IF;
             IF NULLIF(trim(COALESCE(commander,'')),'') IS NULL THEN RAISE EXCEPTION 'Incident commander is required for ALL CLEAR' USING ERRCODE='23514'; END IF;
             IF length(trim(COALESCE(NEW.all_clear_note,'')))<10 OR length(trim(COALESCE(NEW.all_clear_evidence->>'description','')))<5 THEN
               RAISE EXCEPTION 'ALL CLEAR requires note and evidence' USING ERRCODE='23514';
@@ -55,6 +56,24 @@ export function ensureResilienceRecoveryHardeningSchema(){
         END $$;
         DROP TRIGGER IF EXISTS trg_kleo_resilience_all_clear_guard ON resilience_recovery_sessions;
         CREATE TRIGGER trg_kleo_resilience_all_clear_guard BEFORE UPDATE OF status,all_clear_note,all_clear_evidence ON resilience_recovery_sessions FOR EACH ROW EXECUTE FUNCTION kleo_resilience_all_clear_guard();
+
+        CREATE OR REPLACE FUNCTION kleo_resilience_freeze_reactivation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE recovery_status text;
+        BEGIN
+          IF NEW.status='active' THEN
+            SELECT status INTO recovery_status FROM resilience_recovery_sessions WHERE incident_id=NEW.incident_id;
+            IF recovery_status IN ('all_clear','closed') THEN
+              NEW.status:='lifted';
+              NEW.lifted_at:=COALESCE(NEW.lifted_at,now());
+              NEW.lifted_by:=COALESCE(NEW.lifted_by,'system-resilience');
+              NEW.lift_reason:=COALESCE(NEW.lift_reason,'ALL CLEAR után a change-freeze nem aktiválható újra.');
+              NEW.lift_evidence:=CASE WHEN NEW.lift_evidence='{}'::jsonb THEN '{"description":"DB guard prevented change-freeze reactivation after ALL CLEAR."}'::jsonb ELSE NEW.lift_evidence END;
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$;
+        DROP TRIGGER IF EXISTS trg_kleo_resilience_freeze_reactivation_guard ON resilience_change_freezes;
+        CREATE TRIGGER trg_kleo_resilience_freeze_reactivation_guard BEFORE INSERT OR UPDATE OF status ON resilience_change_freezes FOR EACH ROW EXECUTE FUNCTION kleo_resilience_freeze_reactivation_guard();
       `);
     })().catch(error=>{schemaPromise=null;throw error});
   }
