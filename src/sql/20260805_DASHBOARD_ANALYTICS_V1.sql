@@ -1,5 +1,11 @@
 BEGIN;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version text PRIMARY KEY,
+  description text,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS management_daily_facts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   fact_date date NOT NULL,
@@ -34,16 +40,23 @@ CREATE INDEX IF NOT EXISTS management_daily_facts_position_idx
 WITH source AS (
   SELECT
     d::date fact_date,
-    e.id employee_id,
-    e.location_id,
-    e.position_id,
+    e.id::text::uuid employee_id,
+    e.location_id::text::uuid location_id,
+    CASE
+      WHEN e.position_id IS NOT NULL
+       AND e.position_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      THEN e.position_id::text::uuid
+      ELSE NULL::uuid
+    END position_id,
     mod(abs(hashtext(e.id::text || d::date::text))::bigint, 1000)::int seed,
     mod(abs(hashtext('a' || e.id::text || d::date::text))::bigint, 5)::int extra_appointments,
     mod(abs(hashtext('r' || e.id::text || d::date::text))::bigint, 42000)::int revenue_extra
   FROM employees e
   CROSS JOIN generate_series(CURRENT_DATE - INTERVAL '89 days', CURRENT_DATE, INTERVAL '1 day') d
   WHERE e.email LIKE 'demo.%@kleoszalon.hu'
+    AND e.id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     AND e.location_id IS NOT NULL
+    AND e.location_id::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     AND EXTRACT(ISODOW FROM d) BETWEEN 1 AND 6
 )
 INSERT INTO management_daily_facts(
