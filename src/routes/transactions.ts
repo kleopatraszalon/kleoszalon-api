@@ -62,6 +62,7 @@ import dailyActionsRouter from "./dailyActions";
 import dailyActionAutoSelectorRouter from "./dailyActionAutoSelector";
 import centralMasterDataRouter from "./centralMasterData";
 import workOrderFinanceScope from "../middleware/workOrderFinanceScope";
+import {enforceProcessIntegrityReleaseGate} from "../middleware/releaseControlProcessIntegrity";
 import db from "../db";
 import { requireAuth } from "../middleware/auth";
 import { requireManagement } from "../middleware/requireRoles";
@@ -187,7 +188,7 @@ router.use("/nav-test-uat",requireManagement,ensureNavInvoiceReady,requireFeatur
 router.use("/loyalty-automation",loyaltyAutomationRouter);
 router.use("/loyalty-program",requireManagement,loyaltyProgramRouter);
 router.use("/system-health",requireManagement,ensureFinanceReady,systemHealthRouter);
-router.use("/release-control",requireManagement,releaseControlRouter);
+router.use("/release-control",requireManagement,enforceProcessIntegrityReleaseGate,releaseControlRouter);
 router.use("/uat",requireManagement,uatTestCenterRouter);
 router.use("/uat-issues",requireManagement,uatIssuesRouter);
 router.use("/cashier/management-summary",ensureFinanceReady,requireFeature("management_dashboard"),requireMenuPermission("finance","can_view_financial"),managementSummaryRouter);
