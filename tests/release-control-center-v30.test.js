@@ -5,10 +5,11 @@ const fs=require('node:fs');
 const path=require('node:path');
 const read=p=>fs.readFileSync(path.join(process.cwd(),p),'utf8');
 
-test('Release Control Center is mounted behind management access',()=>{
+test('Release Control Center is mounted behind management and mandatory integrity gates',()=>{
  const tx=read('src/routes/transactions.ts');
  assert.match(tx,/import releaseControlRouter from "\.\/releaseControl"/);
- assert.match(tx,/router\.use\("\/release-control",requireManagement,releaseControlRouter\)/);
+ assert.match(tx,/import \{enforceProcessIntegrityReleaseGate\} from "\.\.\/middleware\/releaseControlProcessIntegrity"/);
+ assert.match(tx,/router\.use\("\/release-control",requireManagement,enforceProcessIntegrityReleaseGate,releaseControlRouter\)/);
 });
 
 test('Release Control Center keeps runtime and evidence gates separate',()=>{

@@ -229,10 +229,11 @@ export async function runBusinessProcessIntegrity(date:string,locationId:string|
 
   const financeStatus:ProcessIntegrityStatus=finance.status==="ok"?"ok":"critical";
   const stockStatus:ProcessIntegrityStatus=stock.status==="ok"?"ok":"critical";
+  const financeCounts:Record<string,number>={...(finance.counts||{})};
   const processes:ProcessSummary[]=[
-    {key:"finance",label:"Foglalás → munkalap → fizetés → settlement → pénztár → tranzakció → számla → NAV → főkönyv",status:financeStatus,entity_count:Number(finance.counts?.work_orders||0),exception_count:(finance.discrepancies||[]).length,chain:[
+    {key:"finance",label:"Foglalás → munkalap → fizetés → settlement → pénztár → tranzakció → számla → NAV → főkönyv",status:financeStatus,entity_count:Number(financeCounts.work_orders||0),exception_count:(finance.discrepancies||[]).length,chain:[
       ["booking_source_ok","Foglalás / forrás"],["work_orders","Munkalap"],["payment_ok","Fizetés"],["settlement_ok","Settlement"],["cashier_ok","Pénztár"],["ledger_ok","Pénzügyi tranzakció"],["invoice_ok","Számla"],["nav_ok","NAV"],["accounting_ok","Főkönyv"],
-    ].map(([key,label])=>({key,label,ok:Number(finance.counts?.[key]||0),total:Number(finance.counts?.work_orders||0)})),details:{amount_summary:finance.amount_summary}},
+    ].map(([key,label])=>({key,label,ok:Number(financeCounts[key]||0),total:Number(financeCounts.work_orders||0)})),details:{amount_summary:finance.amount_summary}},
     {key:"stock",label:"Nyitókészlet + mozgások = zárókészlet",status:stockStatus,entity_count:Number(stock.item_count||0),exception_count:Number(stock.discrepancy_count||0),chain:[{key:"stock",label:"Készletegyenlet",ok:Number(stock.item_count||0)-Number(stock.discrepancy_count||0),total:Number(stock.item_count||0)}],details:{total_abs_difference:stock.total_abs_difference}},
     {key:"procurement",label:"Beszerzés → jóváhagyás → bevételezés → készlet → bejövő számla → könyvelés",status:procurement.status,entity_count:procurement.entity_count,exception_count:procurement.exceptions.length,chain:procurement.chain},
     {key:"system",label:"Üzleti invariánsok és fail-closed kontrollok",status:system.status,entity_count:system.entity_count,exception_count:system.exceptions.length,chain:system.chain,details:{checks:system.checks}},

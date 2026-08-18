@@ -13,10 +13,13 @@ test('critical finance and system menus self-heal with parent visibility',()=>{
     'finance.reconciliation',
     'Pénzügyi egyeztető központ',
     '/finance/reconciliation',
+    'finance.transaction_trace',
+    'Tranzakció-életút',
+    '/finance/transaction-trace',
     'settings.system_health',
     'Rendszerállapot',
     '/admin/system-health',
-    "m.code IN('finance','finance.reconciliation','settings','settings.system_health')",
+    "m.code IN('finance','finance.reconciliation','finance.transaction_trace','settings','settings.system_health')",
     'clearShortCache("menu:")',
   ]) assert.ok(src.includes(marker),marker);
   assert.match(src,/VALUES\('admin'\),\('manager'\)/);

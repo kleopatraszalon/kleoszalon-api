@@ -23,10 +23,12 @@ test('compatibility layer does not replace the real analytics dashboard with har
     'compatibility layer must not fabricate zero financial analytics');
 });
 
-test('authentication request type preserves tenant_id when present in JWT',()=>{
+test('authentication request type preserves trusted tenant context and JWT tenant_id',()=>{
   const src=read('src/middleware/auth.ts');
   assert.match(src,/tenant_id\?:\s*number\s*\|\s*string\s*\|\s*null|tenant_id\?:\s*string\s*\|\s*number\s*\|\s*null/,
     'AuthRequest.user must expose tenant_id');
-  assert.match(src,/tenant_id:\s*decoded\.tenant_id\s*\?\?\s*null/,
-    'requireAuth must preserve decoded tenant_id');
+  assert.match(src,/const preservedTenantId = sameAuthenticatedUser \? previousUser\?\.tenant_id \?\? null : null/,
+    'requireAuth must preserve DB-validated in-request tenant context for the same authenticated user');
+  assert.match(src,/tenant_id:\s*preservedTenantId\s*\?\?\s*decoded\.tenant_id\s*\?\?\s*null/,
+    'requireAuth must fall back to the signed JWT tenant_id when no fresher validated tenant context exists');
 });
