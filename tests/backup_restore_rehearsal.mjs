@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const source = String(process.env.SOURCE_DATABASE_URL || '').trim();
 const restore = String(process.env.RESTORE_DATABASE_URL || '').trim();
-const environment = String(process.env.BACKUP_EVIDENCE_ENVIRONMENT || 'github-actions-postgresql16');
+const environment = String(process.env.BACKUP_EVIDENCE_ENVIRONMENT || 'github-actions-postgresql17');
 if (!source || !restore) throw new Error('SOURCE_DATABASE_URL and RESTORE_DATABASE_URL are required');
 
 const evidenceDir = path.resolve('evidence');
@@ -45,6 +45,7 @@ const evidence = {
   build_ref: process.env.GITHUB_SHA || 'local',
   environment,
   workflow: 'backup-restore-evidence',
+  postgres_major: 17,
   result: 'passed',
   source_recovery_point: sourcePoint,
   restored_at: new Date().toISOString(),
