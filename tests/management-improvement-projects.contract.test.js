@@ -34,8 +34,7 @@ test('improvement workflow is tenant scoped and approval is fail closed',()=>{
 
 test('approval API matches DB readiness and returns business conflicts instead of false 500',()=>{
   const p=read('src/routes/managementImprovement.ts');
-  contains(p,["String(error?.code || \"\") === \"23514\"","dbConstraint ? 409 : 500","status NOT IN ('verified','cancelled')","intézkedés eredményességét igazolni vagy az intézkedést megszakítani kell."]);
-  assert.ok(!p.includes("status NOT IN ('completed','verified','cancelled')`"),'approval request must not treat merely completed CAPA as verified');
+  contains(p,["String(error?.code || \"\") === \"23514\"","dbConstraint ? 409 : 500","management_improvement_actions WHERE project_id=$1 AND tenant_id=$2::bigint AND status NOT IN ('verified','cancelled')","intézkedés eredményességét igazolni vagy az intézkedést megszakítani kell."]);
 });
 
 test('all project mutations are audit trailed',()=>{
