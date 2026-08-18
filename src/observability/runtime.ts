@@ -41,6 +41,14 @@ function normalizedPath(rawUrl: string) {
     .slice(0, 240);
 }
 
+function shouldMeasureApi(rawUrl: string) {
+  const path = normalizedPath(rawUrl);
+  if (!path.startsWith("/api/")) return false;
+  if (/^\/api\/health(?:\/|$)/.test(path)) return false;
+  if (/^\/api\/transactions\/notifications\/observability(?:\/|$)/.test(path)) return false;
+  return true;
+}
+
 export function installHttpInstrumentation() {
   if (httpInstalled || process.env.APM_DISABLED === "1") return;
   httpInstalled = true;
@@ -53,7 +61,7 @@ export function installHttpInstrumentation() {
       const req = args[0] as http.IncomingMessage;
       const res = args[1] as http.ServerResponse;
       const rawUrl = String(req?.url || "");
-      if (rawUrl.startsWith("/api/")) {
+      if (shouldMeasureApi(rawUrl)) {
         const started = process.hrtime.bigint();
         let recorded = false;
         const record = () => {
@@ -91,8 +99,8 @@ export function getApiWindow(windowMinutes = 15) {
   const durations = rows.map(x => x.duration_ms);
   const count4xx = rows.filter(x => x.status >= 400 && x.status < 500).length;
   const count5xx = rows.filter(x => x.status >= 500).length;
-  const settlementFailures = rows.filter(x => /\/(settle|settlement)(?:\/|$)/i.test(x.path) && x.status >= 400).length;
-  const payrollErrors = rows.filter(x => /\/payroll(?:\/|$)/i.test(x.path) && x.status >= 400).length;
+  const settlementFailures = rows.filter(x => /\/(settle|settlement)(?:\/|$)/i.test(x.path) && x.status >= 500).length;
+  const payrollErrors = rows.filter(x => /\/payroll(?:\/|$)/i.test(x.path) && x.status >= 500).length;
   const errorRoutes = new Map<string, number>();
   for (const row of rows) if (row.status >= 400) errorRoutes.set(`${row.method} ${row.path}`, (errorRoutes.get(`${row.method} ${row.path}`) || 0) + 1);
   return {
