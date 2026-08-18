@@ -1,0 +1,86 @@
+name: P0 Render deploy guard
+
+on:
+  workflow_run:
+    workflows: ["Render deploy"]
+    types: [requested, in_progress]
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+
+jobs:
+  guard-production-deploy:
+    name: Block Render deploy while P0 is open
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify P0 state and cancel unsafe production deploy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = context.payload.workflow_run;
+            const failures = [];
+
+            if (!run || run.name !== 'Render deploy') {
+              core.notice('Not a Render deploy workflow_run event.');
+              return;
+            }
+
+            try {
+              const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+              if (!branch.data.protected) {
+                failures.push('P0/4 main branch protected=false');
+              } else {
+                const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
+                if (!protection.data.required_pull_request_reviews) {
+                  failures.push('P0/4 pull-request review is not required');
+                }
+                if (!protection.data.required_status_checks) {
+                  failures.push('P0/4 required status checks are not configured');
+                }
+                if (protection.data.allow_force_pushes?.enabled) {
+                  failures.push('P0/4 force pushes are enabled');
+                }
+              }
+            } catch (error) {
+              failures.push(`P0/4 branch protection cannot be proven (${error.status || error.message})`);
+            }
+
+            for (const item of [
+              { number: 270, label: 'P0/1 backup/restore' },
+              { number: 62, label: 'P0/2 credential rotation' },
+              { number: 212, label: 'P0/3 NAV TEST' },
+            ]) {
+              try {
+                const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
+                if (issue.data.state !== 'closed') {
+                  failures.push(`${item.label} issue #${item.number} is still open`);
+                }
+              } catch (error) {
+                failures.push(`${item.label} issue #${item.number} cannot be verified`);
+              }
+            }
+
+            core.summary.addHeading('P0 production deployment guard');
+            core.summary.addRaw(`Candidate Render workflow run: ${run.id}\n`);
+            core.summary.addRaw(`Candidate SHA: ${run.head_sha}\n`);
+
+            if (!failures.length) {
+              core.summary.addRaw('All four P0 controls are proven closed. Render deploy is allowed.\n');
+              await core.summary.write();
+              return;
+            }
+
+            core.summary.addHeading('Deployment blocked', 2).addList(failures);
+            await core.summary.write();
+
+            if (run.status !== 'completed') {
+              await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+              core.notice(`Cancelled unsafe Render deploy workflow run ${run.id}`);
+            }
+
+            core.setFailed(`Production deploy blocked by ${failures.length} unresolved P0 control(s).`);
