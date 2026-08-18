@@ -136,6 +136,21 @@ async function bootstrap(){
       ) THEN
         RAISE EXCEPTION 'A pending jóváhagyási állapothoz függő jóváhagyási rekord szükséges.' USING ERRCODE='23514';
       END IF;
+      IF NEW.approval_state='pending' AND EXISTS(
+        SELECT 1 FROM management_improvement_actions a
+         WHERE a.project_id=NEW.id AND a.tenant_id=NEW.tenant_id
+           AND a.action_type IN ('correction','corrective','preventive')
+           AND a.status NOT IN ('verified','cancelled')
+      ) THEN
+        RAISE EXCEPTION 'Jóváhagyás csak igazolt vagy megszakított CAPA intézkedésekkel indítható.' USING ERRCODE='23514';
+      END IF;
+      IF NEW.approval_state='pending' AND NOT EXISTS(
+        SELECT 1 FROM management_improvement_kpis k
+         WHERE k.project_id=NEW.id AND k.tenant_id=NEW.tenant_id
+           AND k.before_value IS NOT NULL AND k.after_value IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Jóváhagyás előtt legalább egy teljes előtte/utána KPI szükséges.' USING ERRCODE='23514';
+      END IF;
       IF NEW.approval_state='approved' AND NOT EXISTS(
         SELECT 1 FROM management_improvement_approvals a
          WHERE a.project_id=NEW.id AND a.tenant_id=NEW.tenant_id AND a.decision='approved'
