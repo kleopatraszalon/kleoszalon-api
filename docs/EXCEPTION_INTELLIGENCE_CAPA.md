@@ -90,6 +90,25 @@ Elutasítás engedélyezett a megfelelő állapotokból; auditált indok kötele
 - verified állapothoz strukturált verification evidence kötelező;
 - minden státuszváltás append-only `exception_capa_events` auditnaplóba kerül.
 
+## CAPA → Fejlesztési projekt híd
+
+A jóváhagyott CAPA rekord egy vezetői művelettel teljes **Fejlesztési projektté** alakítható. A híd nem hagy jóvá automatikusan fejlesztési projektet és nem kerüli meg a CAPA/KPI/evidencia approval gate-et.
+
+A projektindítás csak `approved`, `in_progress`, `verification` vagy `verified` CAPA állapotból engedélyezett. `proposed` vagy `rejected` CAPA nem emelhető át.
+
+Az átemeléskor a rendszer:
+
+- tenant- és telephely-hatókört ellenőriz;
+- idempotens `exception_capa_improvement_links` kapcsolatot hoz létre;
+- `active` állapotú fejlesztési projektet nyit, külön formális projekt-jóváhagyás nélkül;
+- átveszi a probléma-meghatározást, gyökérok-hipotézist, javító és megelőző intézkedést;
+- két külön management CAPA intézkedést hoz létre (`corrective`, `preventive`);
+- létrehozza a `Kapcsolt Exception case-ek száma` előtte KPI-t, 0 célértékkel; az utána értéket embernek kell igazolnia;
+- strukturált forrás-evidenciát rögzít az `analysis_data.evidence` alatt;
+- a forrás CAPA snapshotját és a létrehozott projektet mindkét auditláncban összekapcsolja.
+
+A kapcsolat capa + tenant alapon egyedi, ezért ismételt indítás nem hoz létre duplikált projektet.
+
 ## API
 
 Base:
@@ -112,6 +131,9 @@ Base:
 - `POST /intelligence/capa/sync`
 - `GET /intelligence/capa/:id`
 - `PATCH /intelligence/capa/:id`
+- `POST /intelligence/capa/:id/promote` – jóváhagyott CAPA átemelése Fejlesztési projektbe; idempotens.
+
+A CAPA detail válasz `improvement_link` mezője jelzi, ha a projekt már létrejött.
 
 Minden endpoint a parent routeren keresztül management (`admin` / `manager`) védelem alatt áll.
 
@@ -136,5 +158,8 @@ Minimum ellenőrizendő:
 - CAPA automatikusan csak proposed lehet;
 - tiltott CAPA státuszváltás 409;
 - verified evidence nélkül 400;
+- proposed/rejected CAPA nem emelhető fejlesztési projektté;
+- ugyanaz a CAPA ugyanabban a tenantben nem hoz létre második projektet;
+- CAPA → projekt kapcsolat mindkét auditláncban megjelenik;
 - admin/manager access; más szerepkör fail-closed;
 - frontend route sorrendben a specifikus Intelligence/CAPA route a generic Exception route előtt van.

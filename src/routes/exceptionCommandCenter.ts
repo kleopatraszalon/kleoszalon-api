@@ -35,6 +35,11 @@ import {
 } from "../services/exceptionCapa";
 import { ensureExceptionCapaHardeningSchema } from "../services/exceptionCapaHardening";
 import {
+  ensureExceptionCapaImprovementBridge,
+  getExceptionCapaImprovementLink,
+  promoteExceptionCapaToImprovement,
+} from "../services/exceptionCapaImprovement";
+import {
   addMajorIncidentAction,
   addMajorIncidentUpdate,
   ensureMajorIncidentSchema,
@@ -48,6 +53,7 @@ import {
 } from "../services/majorIncidentWarRoom";
 import { ensureMajorIncidentHardeningSchema } from "../services/majorIncidentWarRoomHardening";
 import { runMajorIncidentWarRoomWatchdog, startMajorIncidentWarRoomWatchdog } from "../services/majorIncidentWarRoomWatchdog";
+import { locationBelongsToTenant, resolveTenantIdentity } from "../saas/tenantAccess";
 
 const router=Router();
 startExceptionCommandCenterScheduler();
@@ -59,18 +65,22 @@ void ensureExceptionCommandCenterSchema().catch(error=>console.error("[exception
 void ensureExceptionIntelligenceSchema().catch(error=>console.error("[exception-intelligence] startup schema bootstrap failed",error));
 void ensureExceptionCapaSchema().catch(error=>console.error("[exception-capa] startup schema bootstrap failed",error));
 void ensureExceptionCapaHardeningSchema().catch(error=>console.error("[exception-capa] state guard bootstrap failed",error));
+void ensureExceptionCapaImprovementBridge().catch(error=>console.error("[exception-capa] improvement bridge bootstrap failed",error));
 void ensureMajorIncidentSchema().catch(error=>console.error("[major-incident] startup schema bootstrap failed",error));
 void ensureMajorIncidentHardeningSchema().catch(error=>console.error("[major-incident] state guard bootstrap failed",error));
 
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||"management-user");
+const actorId=(req:AuthRequest)=>String(req.user?.id||"").trim()||null;
+const requestIp=(req:AuthRequest)=>String(req.ip||req.socket?.remoteAddress||"").trim()||null;
 const loc=(req:AuthRequest)=>String(req.query.location_id||req.user?.location_id||"").trim()||null;
 const sendError=(error:any,res:any,next:any)=>error?.status?res.status(error.status).json({message:error.message}):next(error);
 const sendGovernanceError=(error:any,res:any,next:any)=>String(error?.code||"")==="23514"?res.status(409).json({message:error?.message||"A governance szabály megakadályozta a műveletet.",code:"capa_governance_conflict"}):sendError(error,res,next);
 const sendMajorIncidentGovernanceError=(error:any,res:any,next:any)=>String(error?.code||"")==="23514"?res.status(409).json({message:error?.message||"A Major Incident governance szabály megakadályozta a műveletet.",code:"major_incident_governance_conflict"}):sendError(error,res,next);
 const capaVisible=(detail:any,location:string|null)=>!location||!detail?.item?.location_id||String(detail.item.location_id)===location;
 const incidentVisible=(detail:any,location:string|null)=>!location||!detail?.item?.location_id||String(detail.item.location_id)===location;
+const tenantId=async(req:AuthRequest)=>{const tenant=await resolveTenantIdentity(req);if(!tenant)throw Object.assign(new Error("A tenant nem azonosítható."),{status:403});return String(tenant.id)};
 
-router.use(async(_req,_res,next)=>{try{await ensureExceptionCommandCenterSchema();await ensureExceptionCapaHardeningSchema();await ensureMajorIncidentHardeningSchema();next()}catch(error){next(error)}});
+router.use(async(_req,_res,next)=>{try{await ensureExceptionCommandCenterSchema();await ensureExceptionCapaHardeningSchema();await ensureExceptionCapaImprovementBridge();await ensureMajorIncidentHardeningSchema();next()}catch(error){next(error)}});
 
 router.get("/summary",async(req:AuthRequest,res,next)=>{try{res.json(await exceptionCenterSummary(loc(req)))}catch(error){next(error)}});
 router.get("/cases",async(req:AuthRequest,res,next)=>{try{res.json({items:await listExceptionCases({...req.query,location_id:loc(req)})})}catch(error){next(error)}});
@@ -102,8 +112,17 @@ router.post("/intelligence/major-incidents/:id/updates",async(req:AuthRequest,re
 router.get("/intelligence/capa/summary",async(req:AuthRequest,res,next)=>{try{res.json(await exceptionCapaSummary(loc(req)))}catch(error){next(error)}});
 router.get("/intelligence/capa",async(req:AuthRequest,res,next)=>{try{const location=loc(req);const rows=await listExceptionCapas({...req.query,location_id:null});const items=location?rows.filter((x:any)=>!x.location_id||String(x.location_id)===location):rows;res.json({items})}catch(error){next(error)}});
 router.post("/intelligence/capa/sync",async(_req:AuthRequest,res,next)=>{try{res.json(await syncExceptionCapaCandidates())}catch(error){next(error)}});
-router.get("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(detail)}catch(error:any){sendError(error,res,next)}});
+router.get("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});const tenant=await tenantId(req);const improvement_link=await getExceptionCapaImprovementLink(String(req.params.id),tenant);res.json({...detail,improvement_link})}catch(error:any){sendError(error,res,next)}});
 router.patch("/intelligence/capa/:id",async(req:AuthRequest,res,next)=>{try{const detail=await getExceptionCapa(String(req.params.id));if(!capaVisible(detail,loc(req)))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});res.json(await updateExceptionCapa(String(req.params.id),req.body||{},actor(req)))}catch(error:any){sendGovernanceError(error,res,next)}});
+router.post("/intelligence/capa/:id/promote",async(req:AuthRequest,res,next)=>{try{
+  const capaId=String(req.params.id);const detail=await getExceptionCapa(capaId);const scope=loc(req);
+  if(!capaVisible(detail,scope))return res.status(404).json({message:"A CAPA rekord nem található ebben a telephelyi hatókörben."});
+  const tenant=await tenantId(req);const sourceLocation=String(detail?.item?.location_id||"").trim()||null;const requestedLocation=String(req.body?.location_id||sourceLocation||scope||"").trim()||null;
+  if(sourceLocation&&!(await locationBelongsToTenant(sourceLocation,tenant)))return res.status(404).json({message:"A CAPA forrás-telephelye nem érhető el ebben a vállalatban."});
+  if(requestedLocation&&!(await locationBelongsToTenant(requestedLocation,tenant)))return res.status(403).json({message:"A kiválasztott projekt-telephely nem tartozik ehhez a vállalathoz."});
+  const result=await promoteExceptionCapaToImprovement({capaId,tenantId:tenant,actor:actor(req),actorUserId:actorId(req),requestIp:requestIp(req),locationId:requestedLocation});
+  res.status(result.created?201:200).json(result);
+}catch(error:any){sendGovernanceError(error,res,next)}});
 
 router.get("/export.csv",async(req:AuthRequest,res,next)=>{try{const csv=await exportExceptionCasesCsv({...req.query,location_id:loc(req)});res.setHeader("Content-Type","text/csv; charset=utf-8");res.setHeader("Content-Disposition",`attachment; filename="kleo-exception-center-${new Date().toISOString().slice(0,10)}.csv"`);res.send(csv)}catch(error){next(error)}});
 
