@@ -24,6 +24,19 @@ Besorolás:
 
 A detektor 3 percenként fut Europe/Budapest időzónában.
 
+## War Room heartbeat watchdog
+
+A watchdog 5 percenként ellenőrzi az aktív SEV1/SEV2 incidenseket.
+
+Riasztási szabályok:
+- SEV1 commander hiány: 15 perc;
+- SEV2 commander hiány: 30 perc;
+- SEV1 War Room update freshness: maximum 30 perc;
+- SEV2 War Room update freshness: maximum 60 perc;
+- lejárt Critical/High War Room akció: azonnal riasztási jelölt.
+
+A watchdog riasztások 60 perces deduplikációs ablakkal készülnek, bekerülnek az append-only incident event logba és a belső vezetői e-mail auditba.
+
 ## War Room szerepkörök
 
 - Incident Commander: az incidens döntési és koordinációs felelőse.
@@ -68,6 +81,17 @@ A Major Incident eseménytörténet és War Room update napló append-only.
 
 SEV1/SEV2 deklarálás és súlyosság-emelkedés esetén a rendszer a konfigurált admin/vezetői címzetteknek belső riasztást küld. A War Room `stakeholder` update naplóbejegyzés, nem automatikus külső üzenetküldés.
 
+## Release Control policy
+
+A `business.major_incident` blocking gate a Release Control része.
+
+NO-GO:
+- bármely SEV1, amíg nincs `postmortem_closed` vagy `dismissed` állapotban;
+- SEV2 `open`, `mitigating` vagy `monitoring` állapotban;
+- aktív SEV1/SEV2 incidenshez tartozó lejárt Critical/High War Room akció.
+
+A SEV1 szabály szándékosan a post-mortem lezárásig tartja a kaput zárva, hogy kritikus incidens után ne lehessen bizonyíték és tanulság-rögzítés nélkül új release-t GO-ra állítani.
+
 ## API
 
 Base:
@@ -76,6 +100,7 @@ Base:
 - `GET /summary`
 - `GET /`
 - `POST /sync`
+- `POST /watchdog`
 - `GET /:id`
 - `PATCH /:id`
 - `POST /:id/actions`
