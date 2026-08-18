@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -40,13 +40,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install PostgreSQL 17 client tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
+
       - name: Prepare isolated restore target and PR fixture
         shell: bash
         run: |
           set -euo pipefail
-          PGPASSWORD=postgres createdb -h localhost -U postgres kleo_restore_target
+          PGPASSWORD=postgres /usr/lib/postgresql/17/bin/createdb -h localhost -U postgres kleo_restore_target
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PGPASSWORD=postgres psql -h localhost -U postgres -d kleo_backup_fixture -v ON_ERROR_STOP=1 -c "CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id)); INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon'); INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');"
+            PGPASSWORD=postgres /usr/lib/postgresql/17/bin/psql -h localhost -U postgres -d kleo_backup_fixture -v ON_ERROR_STOP=1 -c "CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id)); INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon'); INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');"
           fi
 
       - name: Resolve source without exposing secret
@@ -58,7 +71,7 @@ jobs:
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "url=${LOCAL_SOURCE_URL}" >> "$GITHUB_OUTPUT"
-            echo "environment=github-actions-postgresql16-rehearsal" >> "$GITHUB_OUTPUT"
+            echo "environment=github-actions-postgresql17-rehearsal" >> "$GITHUB_OUTPUT"
           else
             if [ -z "${PRODUCTION_BACKUP_SOURCE:-}" ]; then
               echo "BACKUP_SOURCE_DATABASE_URL is not configured for scheduled/manual production evidence" >&2
@@ -73,6 +86,7 @@ jobs:
         env:
           SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
           BACKUP_EVIDENCE_ENVIRONMENT: ${{ steps.source.outputs.environment }}
+          PATH: /usr/lib/postgresql/17/bin:${{ env.PATH }}
         run: node tests/backup_restore_rehearsal.mjs
 
       - name: Upload backup restore evidence
@@ -90,12 +104,39 @@ jobs:
           response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
           oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
           test -n "$oidc"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production backup dump + isolated PostgreSQL restore + consistency checks PASS; artifact requirements-evidence-backup-restore"}]}))')"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production backup dump + isolated PostgreSQL 17 restore + consistency checks PASS; artifact requirements-evidence-backup-restore"}]}))')"
           curl -fsS --retry 3 --max-time 30 \
             -H "Authorization: Bearer $oidc" \
             -H 'Content-Type: application/json' \
             --data "$payload" \
             "$API_BASE_URL/api/uat/release-control/evidence"
+
+      - name: Close backup P0 after successful production evidence
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = 270;
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            if (issue.data.state !== 'closed') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `Successful production backup dump + isolated PostgreSQL 17 restore + consistency evidence: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Closing P0.`
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed',
+                state_reason: 'completed'
+              });
+            }
 
   alert-on-failure:
     if: ${{ always() && needs.restore-evidence.result == 'failure' && github.event_name != 'pull_request' }}
