@@ -34,6 +34,7 @@ export function ensureTransactionTraceSigningSchema(){
 
 function payload(trace:any){return `KLEO-TRACE-PROOF-V1|${trace.trace_id}|${Number(trace.last_sequence||0)}|${String(trace.last_hash||"")}`}
 function hmac(value:string,key:string){return crypto.createHmac("sha256",key).update(value,"utf8").digest("hex")}
+function safeSignatureEqual(expected:string,actual:unknown){const candidate=String(actual||"");if(!/^[a-f0-9]{64}$/i.test(expected)||!/^[a-f0-9]{64}$/i.test(candidate))return false;const a=Buffer.from(expected,"hex"),b=Buffer.from(candidate,"hex");return a.length===b.length&&crypto.timingSafeEqual(a,b)}
 
 export async function signTraceProof(traceId:string,signedBy="system"){
  await ensureTransactionTraceSigningSchema();const key=secret();
@@ -55,7 +56,7 @@ export async function verifyTraceProofSignature(traceId:string){
  if(!row)return{configured:Boolean(key),status:key?"missing":"unsigned",valid:false,current:false,message:key?"Ehhez a trace-hez még nincs HMAC proof checkpoint.":"TRANSACTION_TRACE_HMAC_KEY nincs konfigurálva.",key_id:kid};
  const current=Number(row.trace_sequence)===Number(trace.last_sequence)&&String(row.trace_hash)===String(trace.last_hash||"");
  if(!key)return{configured:false,status:"unsigned",valid:false,current,message:"A tárolt HMAC aláírás kulcs nélkül nem ellenőrizhető.",...row};
- const expected=hmac(payload({...trace,last_sequence:row.trace_sequence,last_hash:row.trace_hash}),key);const valid=crypto.timingSafeEqual(Buffer.from(expected,"hex"),Buffer.from(String(row.signature),"hex"));
+ const expected=hmac(payload({...trace,last_sequence:row.trace_sequence,last_hash:row.trace_hash}),key),valid=safeSignatureEqual(expected,row.signature);
  return{configured:true,status:valid&&current?"verified":valid?"stale":"broken",valid,current,message:valid&&current?"A külső kulccsal aláírt proof checkpoint érvényes és a trace aktuális állapotára vonatkozik.":valid?"Az aláírás érvényes, de a trace azóta új eseménnyel bővült.":"A HMAC proof checkpoint érvénytelen; a bizonyítási lánc vizsgálata szükséges.",...row};
 }
 
@@ -66,4 +67,4 @@ export async function signRecentTraceProofs(limit=500){
  return{configured:true,signed,failed,generated_at:new Date().toISOString()};
 }
 
-export function startTraceProofSigningMaintenance(){if(started||process.env.TRANSACTION_TRACE_DISABLED==='1'||process.env.NODE_ENV==='test')return;started=true;cron.schedule('45 2 * * *',()=>{void signRecentTraceProofs(800).catch(error=>console.error('[transaction-trace] proof signing failed',error))},{timezone:TZ});const timer=setTimeout(()=>{void signRecentTraceProofs(500).catch(error=>console.error('[transaction-trace] initial proof signing failed',error))},105_000);timer.unref?.();console.log('[transaction-trace] HMAC proof signing scheduled 02:45 Europe/Budapest')}
+export function startTraceProofSigningMaintenance(){if(started||process.env.TRANSACTION_TRACE_DISABLED==='1'||process.env.NODE_ENV==='test')return;started=true;cron.schedule('*/15 * * * *',()=>{void signRecentTraceProofs(1000).catch(error=>console.error('[transaction-trace] proof signing failed',error))},{timezone:TZ});const timer=setTimeout(()=>{void signRecentTraceProofs(500).catch(error=>console.error('[transaction-trace] initial proof signing failed',error))},105_000);timer.unref?.();console.log('[transaction-trace] HMAC proof signing scheduled every 15 minutes')}
