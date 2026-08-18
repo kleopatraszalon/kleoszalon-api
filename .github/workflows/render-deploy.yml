@@ -68,7 +68,7 @@ jobs:
             && wallboard.version === '1.0'
             && Object.prototype.hasOwnProperty.call(wallboard, 'action')
             && dailyCode === '200'
-            && /^api500-daily-actions-(?:v1|empty-v1)$/.test(dailyMarker);
+            && /^api500-daily-actions-(?:v1|v2|empty-v1|empty-v2)$/.test(dailyMarker);
           process.exit(ok ? 0 : 1);
           NODE
             then
