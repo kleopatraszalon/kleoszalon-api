@@ -133,16 +133,16 @@ jobs:
               live=1
               printf '%s\n' "$ready" > /tmp/ready.json
               printf '%s\n' "$wallboard" > /tmp/wallboard.json
-              echo "Render release marker PASS: $daily_marker"
+              echo "Render health/readiness marker PASS: $daily_marker"
               break
             fi
 
-            echo "Waiting for actual new Render release ($attempt/60): daily=$daily_code marker=${daily_marker:-missing}"
+            echo "Waiting for healthy Render release ($attempt/60): daily=$daily_code marker=${daily_marker:-missing}"
             sleep 10
           done
 
           if [ "$live" -ne 1 ]; then
-            echo "New Render API release did not expose the expected release marker." >&2
+            echo "Render API did not become healthy after deploy trigger." >&2
             cat /tmp/daily-body.txt 2>/dev/null || true
             exit 1
           fi
@@ -170,8 +170,34 @@ jobs:
           oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
           test -n "$oidc"
           payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.backend",status:"pass",evidence:"npm test + requirements quality gate PASS"},{key:"build.backend",status:"pass",evidence:"TypeScript production build PASS"},{key:"tests.integration",status:"pass",evidence:"Workorder regression + live Render health/readiness/WallBoard/cashier smoke PASS"},{key:"tests.financial",status:"pass",evidence:"Financial integrity gate PASS"},{key:"tests.saas",status:"pass",evidence:"PostgreSQL 16 cross-tenant isolation UAT PASS"},{key:"tests.rbac",status:"pass",evidence:"RBAC fail-closed regression included in backend test suite PASS"}]}))')"
-          curl -fsS --retry 3 --max-time 30 \
-            -H "Authorization: Bearer $oidc" \
-            -H 'Content-Type: application/json' \
-            --data "$payload" \
-            "$API_BASE_URL/api/uat/release-control/evidence"
+
+          accepted=0
+          for attempt in $(seq 1 60); do
+            rm -f /tmp/release-evidence.json
+            code="$(curl -sS --max-time 30 -o /tmp/release-evidence.json -w '%{http_code}' \
+              -H "Authorization: Bearer $oidc" \
+              -H 'Content-Type: application/json' \
+              --data "$payload" \
+              "$API_BASE_URL/api/uat/release-control/evidence" || true)"
+            if [ "$code" = "200" ]; then
+              accepted=1
+              echo "Release evidence accepted for exact running SHA $GITHUB_SHA"
+              cat /tmp/release-evidence.json
+              break
+            fi
+            if [ "$code" = "409" ]; then
+              current="$(node -e "const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/release-evidence.json','utf8'));process.stdout.write(String(x.current_release_ref||''))}catch{}")"
+              echo "Waiting for exact Render SHA ($attempt/60): expected=$GITHUB_SHA current=${current:-unknown}"
+              sleep 10
+              continue
+            fi
+            echo "Release evidence submission failed with HTTP $code" >&2
+            cat /tmp/release-evidence.json >&2 || true
+            exit 1
+          done
+
+          if [ "$accepted" -ne 1 ]; then
+            echo "Render did not expose the workflow commit $GITHUB_SHA before release-evidence timeout." >&2
+            cat /tmp/release-evidence.json >&2 || true
+            exit 1
+          fi
