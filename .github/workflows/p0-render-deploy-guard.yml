@@ -37,7 +37,7 @@ jobs:
               }
               const contexts = branch.data.protection?.required_status_checks?.contexts || [];
               if (!contexts.includes('p0/production-readiness')) {
-                failures.push('P0/4 required status check p0/production-readiness is missing');
+                failures.push('P0/4 required p0/production-readiness check is missing');
               }
             } catch (error) {
               failures.push(`P0/4 readable branch protection metadata cannot be proven (${error.status || error.message})`);
@@ -47,7 +47,7 @@ jobs:
               { number: 270, label: 'P0/1 backup/restore' },
               { number: 62, label: 'P0/2 credential rotation' },
               { number: 212, label: 'P0/3 NAV TEST' },
-              { number: 320, label: 'P0/4 branch governance' },
+              { number: 320, label: 'P0/4 branch governance evidence' },
             ]) {
               try {
                 const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
