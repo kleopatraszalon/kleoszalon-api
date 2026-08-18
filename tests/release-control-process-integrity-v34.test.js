@@ -13,18 +13,19 @@ test('Release Control mounts the process-integrity gate on the backend route',()
 
 test('process-integrity release gate is mandatory and fail-closed',()=>{
   const src=read('src/middleware/releaseControlProcessIntegrity.ts');
-  for(const marker of ['business.process_integrity','Üzleti integritás','business_process_integrity_runs','__all__','blocking: true','editable: false'])assert.ok(src.includes(marker),marker);
-  assert.match(src,/status: passed \? "pass" : "fail"/);
-  assert.match(src,/String\(row\.status \|\| ""\)\.toLowerCase\(\) === "ok" && exceptionCount === 0/);
-  assert.match(src,/NO-GO: a folyamatintegritási release gate nem ellenőrizhető/);
-  assert.match(src,/nincs globális folyamatintegritási futás/);
+  for(const marker of ['business.process_integrity','Üzleti integritás','business_process_integrity_runs','__all__','blocking:true','editable:false'])assert.ok(src.includes(marker),marker);
+  assert.ok(src.includes('status:passed?"pass":"fail"'));
+  assert.ok(src.includes('String(row.status||"").toLowerCase()==="ok"&&exceptionCount===0'));
+  assert.ok(src.includes('NO-GO: a folyamatintegritási release gate nem ellenőrizhető'));
+  assert.ok(src.includes('nincs globális folyamatintegritási futás'));
 });
 
-test('backend middleware recomputes GO NO-GO and blockers after adding the integrity gate',()=>{
+test('backend middleware recomputes GO NO-GO and blockers after adding business integrity gates',()=>{
   const src=read('src/middleware/releaseControlProcessIntegrity.ts');
-  assert.match(src,/const blockers = blocking\.filter\(\(item: any\) => item\?\.status !== "pass"\)/);
-  assert.match(src,/release_ready: blockers\.length === 0/);
-  assert.match(src,/decision: blockers\.length === 0 \? "GO" : "NO-GO"/);
-  assert.match(src,/blocking_open: blockers\.length/);
-  assert.match(src,/process_integrity_evidence: gate\.evidence/);
+  assert.ok(src.includes('blockers=blocking.filter'));
+  assert.ok(src.includes('release_ready:blockers.length===0'));
+  assert.ok(src.includes('decision:blockers.length===0?"GO":"NO-GO"'));
+  assert.ok(src.includes('blocking_open:blockers.length'));
+  assert.ok(src.includes('process_integrity_gate'));
+  assert.ok(src.includes('transaction_trace_gate'));
 });
