@@ -34,7 +34,7 @@ test('replacement is case-insensitive and removes duplicates',()=>{
   );
 });
 
-test('production start preloads recipient normalization before the API server',()=>{
+test('production start migrates schema and preloads recipient normalization before the API server',()=>{
   const pkg=JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
-  assert.equal(pkg.scripts.start,'node -r ./scripts/workorder-recipient-env.cjs dist/server.js');
+  assert.equal(pkg.scripts.start,'npm run migrate && node -r ./scripts/workorder-recipient-env.cjs dist/server.js');
 });
