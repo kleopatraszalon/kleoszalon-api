@@ -4,6 +4,7 @@ import alertRuleAdminRouter from "./alertRuleAdmin";
 import observabilityRouter from "./observability";
 import businessReconciliationRouter from "./businessReconciliation";
 import exceptionCommandCenterRouter from "./exceptionCommandCenter";
+import businessContinuityGameDayRouter from "./businessContinuityGameDay";
 import { requireManagement } from "../middleware/requireRoles";
 import { startAlertRuleScheduler } from "../services/alertRuleEngine";
 import { startObservabilityWorker } from "../services/observabilityApm";
@@ -20,6 +21,7 @@ void ensureTransactionTraceForensicsSchema().catch(error=>console.error('[transa
 void ensureExceptionCommandCenterSchema().catch(error=>console.error('[exception-center] startup schema bootstrap failed',error));
 router.use("/observability",requireManagement,observabilityRouter);
 router.use("/reconciliation",requireManagement,businessReconciliationRouter);
+router.use("/gameday",requireManagement,businessContinuityGameDayRouter);
 router.use("/exceptions",requireManagement,exceptionCommandCenterRouter);
 router.use("/alert-rules",alertRuleAdminRouter);
 router.use("/",legacyNotificationsRouter);
