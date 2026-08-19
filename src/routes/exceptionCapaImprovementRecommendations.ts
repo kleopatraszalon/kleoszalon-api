@@ -15,12 +15,19 @@ import {
   getExceptionCapaManagementQueueSummary,
   listExceptionCapaManagementQueue,
 } from "../services/exceptionCapaManagementQueue";
+import {
+  ensureExceptionCapaManagementWatchdogSchema,
+  runExceptionCapaManagementWatchdog,
+  startExceptionCapaManagementWatchdog,
+} from "../services/exceptionCapaManagementWatchdog";
 import {locationBelongsToTenant,resolveTenantIdentity,tenantLocationIds} from "../saas/tenantAccess";
 
 const router=Router();
 startExceptionCapaImprovementRecommendationScheduler();
+startExceptionCapaManagementWatchdog();
 void ensureExceptionCapaImprovementRecommendationSchema().catch(error=>console.error('[exception-capa] improvement recommendation schema bootstrap failed',error));
 void ensureExceptionCapaManagementQueueSchema().catch(error=>console.error('[exception-capa] management workqueue schema bootstrap failed',error));
+void ensureExceptionCapaManagementWatchdogSchema().catch(error=>console.error('[exception-capa] management watchdog schema bootstrap failed',error));
 
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||'management-user');
 const loc=(req:AuthRequest)=>String(req.query.location_id||req.body?.location_id||req.user?.location_id||'').trim()||null;
@@ -66,6 +73,10 @@ router.get('/intelligence/capa/improvement-workqueue',async(req:AuthRequest,res,
     status:String(req.query.status||''),severity:String(req.query.severity||''),owner:String(req.query.owner||''),q:String(req.query.q||''),
     locationId:requested,onlyOverdue:String(req.query.overdue||'')==='1',onlyUnassigned:String(req.query.unassigned||'')==='1',limit:Number(req.query.limit||100),
   }));
+}catch(error:any){sendError(error,res,next)}});
+
+router.post('/intelligence/capa/improvement-workqueue/watchdog',async(req:AuthRequest,res,next)=>{try{
+  await workqueueScope(req);res.json(await runExceptionCapaManagementWatchdog());
 }catch(error:any){sendError(error,res,next)}});
 
 router.post('/intelligence/capa/:id/improvement-workqueue/assign',async(req:AuthRequest,res,next)=>{try{
