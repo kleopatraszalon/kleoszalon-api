@@ -118,7 +118,9 @@ jobs:
             daily_marker="$(tr -d '\r' < /tmp/daily-headers.txt 2>/dev/null | awk -F': ' 'tolower($1)=="x-kleo-hotfix"{print $2}' | tail -1)"
             if HEALTH="$health" READY="$ready" WALLBOARD="$wallboard" DAILY_CODE="$daily_code" DAILY_MARKER="$daily_marker" node - <<'NODE'
           const health=JSON.parse(process.env.HEALTH||'{}'), ready=JSON.parse(process.env.READY||'{}'), wallboard=JSON.parse(process.env.WALLBOARD||'{}');
-          const ok=health.ok===true&&health.db?.ok===true&&ready.ok===true&&wallboard.version==='1.0'&&Object.prototype.hasOwnProperty.call(wallboard,'action')&&process.env.DAILY_CODE==='200'&&/^api500-daily-actions-(?:v1|v2|empty-v1|empty-v2)$/.test(process.env.DAILY_MARKER||'');
+          const dailyMarker=process.env.DAILY_MARKER||'';
+          const dailyHealthy=/^api500-daily-actions-(?:v1|v2)$/.test(dailyMarker);
+          const ok=health.ok===true&&health.db?.ok===true&&ready.ok===true&&wallboard.version==='1.0'&&Object.prototype.hasOwnProperty.call(wallboard,'action')&&process.env.DAILY_CODE==='200'&&dailyHealthy;
           process.exit(ok?0:1);
           NODE
             then
