@@ -61,11 +61,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # A pull request cannot repair an already-broken live endpoint until it can
+      # merge and deploy. Therefore live-production smoke remains visible on PRs,
+      # but is advisory there. On push to main and manual release validation it is
+      # strict and blocks the release if production is unhealthy.
       - name: API liveness
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/health
 
       - name: Public daily actions integration
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/daily-actions
 
       - name: Public booking integration
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: curl --fail --silent --show-error --retry 3 --retry-delay 3 https://kleoszalon-api-1.onrender.com/api/public/marketing/booking/health
+
+      - name: Production smoke policy
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Live production smoke is advisory on pull requests to avoid repair deadlocks."
+          else
+            echo "Live production smoke is strict on main/release validation."
+          fi
