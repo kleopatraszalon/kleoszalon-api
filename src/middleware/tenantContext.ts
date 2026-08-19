@@ -8,22 +8,27 @@ export interface TenantAuthRequest extends AuthRequest {
 }
 
 /**
- * Resolve tenant context strictly from an explicit, active tenant_users membership.
- * A JWT tenant_id may narrow the membership selection, but it can never create or
- * imply membership. Missing membership fails closed with 403.
+ * Resolve tenant context only from explicit ownership:
+ *  - active tenant_users membership for normal/system users, or
+ *  - an authenticated employee whose tenant is proven through employees.tenant_id
+ *    or the employee's assigned location tenant.
+ *
+ * A JWT tenant_id may narrow the selection but can never create membership.
+ * There is deliberately no default/Kleopatra fallback.
  */
 export async function requireTenantContext(req:TenantAuthRequest,res:Response,next:NextFunction){
   try{
     await ensureSaasCore();
-    const authUser=req.user as (NonNullable<AuthRequest["user"]>&{tenant_id?:string|number|null})|undefined;
+    const authUser=req.user;
     const tokenTenantId=authUser?.tenant_id?String(authUser.tenant_id):"";
     const userId=authUser?.id!=null?String(authUser.id):"";
+    const employeeId=authUser?.employee_id!=null?String(authUser.employee_id):"";
 
     if(!userId){
       return res.status(403).json({ok:false,code:"TENANT_ACCESS_DENIED",error:"A felhasználóhoz nincs aktív SaaS tenant-hozzáférés rendelve."});
     }
 
-    const {rows}=await db.query(
+    const membership=await db.query(
       `SELECT t.id::text AS id,t.slug,t.name,t.status,tu.tenant_role
          FROM tenant_users tu
          JOIN tenants t ON t.id=tu.tenant_id
@@ -35,7 +40,23 @@ export async function requireTenantContext(req:TenantAuthRequest,res:Response,ne
         LIMIT 1`,
       [userId,tokenTenantId]
     );
-    const tenant=rows[0];
+    let tenant=membership.rows[0];
+
+    if(!tenant&&employeeId){
+      const employeeTenant=await db.query(
+        `SELECT t.id::text AS id,t.slug,t.name,t.status,'member'::text AS tenant_role
+           FROM employees e
+           LEFT JOIN locations l ON l.id::text=e.location_id::text
+           JOIN tenants t ON t.id=COALESCE(e.tenant_id,l.tenant_id)
+          WHERE e.id::text=$1
+            AND COALESCE(e.active,true)=true
+            AND t.status IN ('active','trial')
+            AND ($2='' OR t.id::text=$2)
+          LIMIT 1`,
+        [employeeId,tokenTenantId]
+      );
+      tenant=employeeTenant.rows[0];
+    }
 
     if(!tenant){
       return res.status(403).json({ok:false,code:"TENANT_ACCESS_DENIED",error:"A felhasználóhoz nincs aktív SaaS tenant-hozzáférés rendelve."});
