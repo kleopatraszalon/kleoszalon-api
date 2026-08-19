@@ -14,6 +14,7 @@ test('P0 secret rotation evidence requires complete provider-side attestation an
     'node scripts/security-secret-leak-guard.js',
     '/api/health/ready',
     "issue_number=62",
+    'No secret values are stored in this evidence.',
   ]) {
     expect(workflow).toContain(required);
   }
