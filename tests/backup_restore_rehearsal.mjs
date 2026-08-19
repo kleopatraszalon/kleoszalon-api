@@ -60,3 +60,5 @@ const evidence = {
 };
 fs.writeFileSync(path.join(evidenceDir, 'requirements-evidence-backup-restore.json'), JSON.stringify(evidence, null, 2));
 console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceTables} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes}`);
+
+// P0 production-evidence trigger: no runtime behavior change.

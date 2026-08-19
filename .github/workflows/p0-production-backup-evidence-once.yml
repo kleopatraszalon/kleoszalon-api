@@ -1,0 +1,110 @@
+name: P0 production backup evidence once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/p0-production-backup-evidence-once.yml'
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  production-backup-restore-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kleo_restore_target
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kleo_restore_target"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_restore_target
+      API_BASE_URL: https://kleoszalon-api-1.onrender.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 client tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
+
+      - name: Resolve production source without exposing secret
+        id: source
+        shell: bash
+        env:
+          PRODUCTION_BACKUP_SOURCE: ${{ secrets.BACKUP_SOURCE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PRODUCTION_BACKUP_SOURCE:-}" ]; then
+            echo "BACKUP_SOURCE_DATABASE_URL is not configured" >&2
+            exit 1
+          fi
+          echo "::add-mask::${PRODUCTION_BACKUP_SOURCE}"
+          echo "url=${PRODUCTION_BACKUP_SOURCE}" >> "$GITHUB_OUTPUT"
+
+      - name: Run production dump, isolated restore and consistency checks
+        env:
+          SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
+          BACKUP_EVIDENCE_ENVIRONMENT: production-backup-isolated-restore
+        run: node tests/backup_restore_rehearsal.mjs
+
+      - name: Upload production backup restore evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-production-backup-restore-${{ github.sha }}
+          path: evidence/requirements-evidence-backup-restore.json
+          retention-days: 90
+
+      - name: Publish production restore evidence to Release Control Center
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
+          oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
+          test -n "$oidc"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production PostgreSQL 17 backup dump + isolated restore + table/row consistency checks PASS; one-shot P0 evidence"}]}))')"
+          curl -fsS --retry 3 --max-time 30 \
+            -H "Authorization: Bearer $oidc" \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$API_BASE_URL/api/uat/release-control/evidence"
+
+      - name: Close P0 backup issue after successful evidence
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = 270;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `Production PostgreSQL 17 backup dump + isolated restore + consistency evidence PASS: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. P0/1 closed with production evidence.`
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed',
+              state_reason: 'completed'
+            });
