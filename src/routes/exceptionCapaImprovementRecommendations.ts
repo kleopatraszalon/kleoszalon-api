@@ -76,7 +76,7 @@ router.get('/intelligence/capa/improvement-workqueue',async(req:AuthRequest,res,
 }catch(error:any){sendError(error,res,next)}});
 
 router.post('/intelligence/capa/improvement-workqueue/watchdog',async(req:AuthRequest,res,next)=>{try{
-  await workqueueScope(req);res.json(await runExceptionCapaManagementWatchdog());
+  const{locations}=await workqueueScope(req);res.json(await runExceptionCapaManagementWatchdog(locations));
 }catch(error:any){sendError(error,res,next)}});
 
 router.post('/intelligence/capa/:id/improvement-workqueue/assign',async(req:AuthRequest,res,next)=>{try{
