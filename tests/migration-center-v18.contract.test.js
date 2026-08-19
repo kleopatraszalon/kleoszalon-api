@@ -25,13 +25,15 @@ test('Migration Center v18 exposes staging, duplicate handling, apply, rollback 
   }
 });
 
-test('Migration Center v18 is tenant-admin scoped and mounted without removing legacy VIR routes',()=>{
+test('Migration Center v18 is tenant-admin scoped and mounted without changing canonical VIR routing',()=>{
   assert.ok(route.includes('requireTenantContext'));
   assert.ok(route.includes('requireTenantRole("owner","admin")'));
   assert.ok(route.includes('tenant_id'));
   assert.ok(vir.includes('migrationCenterRouter'));
-  assert.ok(vir.includes('legacyVirRouter'));
-  assert.ok(vir.includes('/migration-center'));
+  assert.ok(vir.includes('router.use("/migration-center", migrationCenterRouter)'));
+  assert.ok(vir.includes('router.use(requireAuth)'));
+  assert.ok(vir.includes('fitnessLockerRouter'));
+  assert.ok(vir.includes('appointment_services'));
 });
 
 test('appointments remain preview-only until relational resolution is implemented',()=>{
