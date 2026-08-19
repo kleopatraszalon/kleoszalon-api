@@ -62,3 +62,4 @@ fs.writeFileSync(path.join(evidenceDir, 'requirements-evidence-backup-restore.js
 console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceTables} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes}`);
 
 // P0 production-evidence trigger: no runtime behavior change.
+// Status-instrumented rerun trigger: no runtime behavior change.
