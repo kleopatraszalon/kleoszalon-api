@@ -19,10 +19,13 @@ const NAV_TEST_UAT_AUDIENCE="kleoszalon-nav-test-uat";
 const NAV_TEST_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/nav-real-test-uat.yml@refs/heads/main";
 
 function authCookieOptions() {
+  const production = process.env.NODE_ENV === "production";
   return {
     httpOnly: true,
-    sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    // Frontend and API are separate Render origins. Production therefore needs
+    // SameSite=None; CSRF protection is enforced by the authenticated middleware.
+    sameSite: (production ? "none" : "lax") as "none" | "lax",
+    secure: production,
     path: "/",
   };
 }
@@ -32,6 +35,7 @@ function setAuthCookie(res: Response, token: string) {
     ...authCookieOptions(),
     maxAge: 8 * 60 * 60 * 1000,
   });
+  res.setHeader("Cache-Control", "no-store");
 }
 
 function clearAuthCookie(res: Response) {
@@ -154,6 +158,7 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   return res.json({
     success: true,
     account_type: "staff",
+    // Transitional compatibility only. Removed after the cookie-only frontend is deployed.
     token,
     role,
     location_id: employee.location_id,
@@ -314,6 +319,7 @@ router.post("/login", async (req: Request, res: Response) => {
       full_name: user.full_name ?? null,
       email: user.email ?? null,
       login_name: user.login_name ?? null,
+      // Transitional compatibility only. Removed after the cookie-only frontend is deployed.
       token,
     });
   } catch (err) {

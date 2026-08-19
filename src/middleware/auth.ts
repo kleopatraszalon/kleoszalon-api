@@ -16,6 +16,59 @@ export interface AuthRequest extends Request {
   };
 }
 
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const DEFAULT_BROWSER_ORIGINS = [
+  "https://kleoszalon-frontend.onrender.com",
+  "https://weblap-o3g6.onrender.com",
+  "https://kleoszalon-api-1.onrender.com",
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+  "http://127.0.0.1:5173",
+];
+
+function normalizeOrigin(value: unknown): string {
+  return String(value ?? "").trim().replace(/^["']|["']$/g, "").replace(/\/$/, "");
+}
+
+function trustedBrowserOrigins(): Set<string> {
+  const configured = String(process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  return new Set([...DEFAULT_BROWSER_ORIGINS.map(normalizeOrigin), ...configured]);
+}
+
+function bearerHeader(req: Request): string {
+  const value = String(req.headers.authorization ?? "").trim();
+  return /^Bearer\s+/i.test(value) ? value : "";
+}
+
+/**
+ * CSRF applies only when the browser authenticates through the HttpOnly cookie.
+ * Explicit Bearer clients are not ambient-authority requests and remain usable
+ * for GitHub UAT and other non-browser integrations.
+ */
+export function browserCookieMutationAllowed(req: Request): boolean {
+  if (SAFE_METHODS.has(String(req.method || "GET").toUpperCase())) return true;
+  if (bearerHeader(req)) return true;
+
+  const cookieToken = (req as any).cookies?.token;
+  if (typeof cookieToken !== "string" || !cookieToken.trim()) return true;
+
+  const fetchSite = String(req.headers["sec-fetch-site"] ?? "").trim().toLowerCase();
+  if (fetchSite === "cross-site") return false;
+
+  const origin = normalizeOrigin(req.headers.origin);
+  if (origin) return trustedBrowserOrigins().has(origin);
+
+  // Modern same-origin browser requests expose Sec-Fetch-Site. Requests with an
+  // ambient auth cookie but no verifiable browser origin fail closed.
+  return fetchSite === "same-origin";
+}
+
 /**
  * Authentication tokens are accepted only from transport locations that are
  * intended for credentials: the Authorization header or the HttpOnly cookie.
@@ -51,6 +104,13 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   if (!token) {
     return res.status(401).json({
       error: "Nincs belépés. Kérjük, jelentkezz be újra.",
+    });
+  }
+
+  if (!browserCookieMutationAllowed(req)) {
+    return res.status(403).json({
+      error: "A böngészős kérés eredete nem engedélyezett.",
+      code: "CSRF_ORIGIN_REJECTED",
     });
   }
 
