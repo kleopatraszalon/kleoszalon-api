@@ -5,6 +5,7 @@ import path from 'node:path';
 const source = String(process.env.SOURCE_DATABASE_URL || '').trim();
 const restore = String(process.env.RESTORE_DATABASE_URL || '').trim();
 const environment = String(process.env.BACKUP_EVIDENCE_ENVIRONMENT || 'github-actions-postgresql17');
+const pgClientDockerImage = String(process.env.PG_CLIENT_DOCKER_IMAGE || '').trim();
 if (!source || !restore) throw new Error('SOURCE_DATABASE_URL and RESTORE_DATABASE_URL are required');
 
 const evidenceDir = path.resolve('evidence');
@@ -13,16 +14,58 @@ const dumpPath = path.join(evidenceDir, 'kleo-backup.dump');
 const started = Date.now();
 const sourcePoint = new Date().toISOString();
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts }).trim();
-const scalar = (url, sql) => run('psql', [url, '-Atqc', sql]);
+const run = (cmd, args, opts = {}) => execFileSync(cmd, args, {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  encoding: 'utf8',
+  ...opts,
+}).trim();
+
+const dockerPg = (url, shellCommand, extraEnv = {}) => run(
+  'docker',
+  [
+    'run', '--rm', '--network', 'host',
+    '-v', `${evidenceDir}:/evidence`,
+    '-e', 'PG_TARGET_URL',
+    ...Object.keys(extraEnv).flatMap((key) => ['-e', key]),
+    pgClientDockerImage,
+    'sh', '-lc', shellCommand,
+  ],
+  {
+    env: {
+      ...process.env,
+      PG_TARGET_URL: url,
+      ...extraEnv,
+    },
+  },
+);
+
+const scalar = (url, sql) => {
+  if (!pgClientDockerImage) return run('psql', [url, '-Atqc', sql]);
+  return dockerPg(url, 'psql "$PG_TARGET_URL" -Atqc "$PG_SQL"', { PG_SQL: sql });
+};
 
 // Never print connection strings. The dump is custom-format so restore failures are explicit.
-run('pg_dump', ['--format=custom', '--no-owner', '--no-acl', '--file', dumpPath, source]);
+if (pgClientDockerImage) {
+  dockerPg(
+    source,
+    'pg_dump --format=custom --no-owner --no-acl --file=/evidence/kleo-backup.dump "$PG_TARGET_URL"',
+  );
+} else {
+  run('pg_dump', ['--format=custom', '--no-owner', '--no-acl', '--file', dumpPath, source]);
+}
+
 const dumpBytes = fs.statSync(dumpPath).size;
 if (dumpBytes <= 0) throw new Error('Backup dump is empty');
 
 // RESTORE_DATABASE_URL points to an isolated disposable database prepared by the workflow.
-run('pg_restore', ['--no-owner', '--no-acl', '--exit-on-error', '--dbname', restore, dumpPath]);
+if (pgClientDockerImage) {
+  dockerPg(
+    restore,
+    'pg_restore --no-owner --no-acl --exit-on-error --dbname "$PG_TARGET_URL" /evidence/kleo-backup.dump',
+  );
+} else {
+  run('pg_restore', ['--no-owner', '--no-acl', '--exit-on-error', '--dbname', restore, dumpPath]);
+}
 
 const sourceTables = Number(scalar(source, `SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`));
 const restoredTables = Number(scalar(restore, `SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'`));
@@ -46,6 +89,7 @@ const evidence = {
   environment,
   workflow: 'backup-restore-evidence',
   postgres_major: 17,
+  pg_client_mode: pgClientDockerImage ? `docker:${pgClientDockerImage}` : 'local',
   result: 'passed',
   source_recovery_point: sourcePoint,
   restored_at: new Date().toISOString(),
@@ -59,7 +103,4 @@ const evidence = {
   ]
 };
 fs.writeFileSync(path.join(evidenceDir, 'requirements-evidence-backup-restore.json'), JSON.stringify(evidence, null, 2));
-console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceTables} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes}`);
-
-// P0 production-evidence trigger: no runtime behavior change.
-// Status-instrumented rerun trigger: no runtime behavior change.
+console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceTables} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes} pg_client=${evidence.pg_client_mode}`);
