@@ -18,8 +18,9 @@ test('public booking router exposes opaque NBA touch and attribution endpoints',
   assert.ok(publicRoute.includes('never return customer/job details')||publicRoute.includes('never return CRM'));
 });
 
-test('booking attribution is fail closed on job, window, client and appointment state',()=>{
-  for(const marker of ['JOB_NOT_TRACKABLE','ATTRIBUTION_WINDOW_EXPIRED','CLIENT_MISMATCH','APPOINTMENT_NOT_CONVERTED'])assert.ok(service.includes(marker),marker);
+test('booking attribution is fail closed on job, window, creation time, client and appointment state',()=>{
+  for(const marker of ['JOB_NOT_TRACKABLE','ATTRIBUTION_WINDOW_EXPIRED','APPOINTMENT_PRECEDES_CAMPAIGN','CLIENT_MISMATCH','APPOINTMENT_NOT_CONVERTED'])assert.ok(service.includes(marker),marker);
+  assert.ok(service.includes('appointmentCreatedAt<sentAt'));
   assert.ok(service.includes('String(appointment.client_id)!==String(job.client_id)'));
   assert.ok(service.includes('30*86400000'));
 });
