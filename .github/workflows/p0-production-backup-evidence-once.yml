@@ -1,4 +1,5 @@
 name: P0 production backup evidence once
+# Trigger 2026-08-19: rerun after exported-snapshot consistency fix.
 
 on:
   push:
