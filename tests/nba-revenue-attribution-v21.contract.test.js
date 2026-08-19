@@ -20,6 +20,7 @@ test('public booking router exposes opaque NBA touch and attribution endpoints',
 
 test('booking attribution is fail closed on job, window, creation time, client and appointment state',()=>{
   for(const marker of ['JOB_NOT_TRACKABLE','ATTRIBUTION_WINDOW_EXPIRED','APPOINTMENT_PRECEDES_CAMPAIGN','CLIENT_MISMATCH','APPOINTMENT_NOT_CONVERTED'])assert.ok(service.includes(marker),marker);
+  assert.ok(service.includes('a.created_at'));
   assert.ok(service.includes('appointmentCreatedAt<sentAt'));
   assert.ok(service.includes('String(appointment.client_id)!==String(job.client_id)'));
   assert.ok(service.includes('30*86400000'));
