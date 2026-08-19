@@ -5,6 +5,8 @@ import db from "./db";
 
 const MIGRATION_LOCK_KEY_A = 20260819;
 const MIGRATION_LOCK_KEY_B = 1;
+const MIGRATION_STATEMENT_TIMEOUT_MS = Math.max(30000, Number(process.env.PG_MIGRATION_STATEMENT_TIMEOUT_MS ?? 300000));
+const MIGRATION_LOCK_TIMEOUT_MS = Math.max(5000, Number(process.env.PG_MIGRATION_LOCK_TIMEOUT_MS ?? 60000));
 
 function sha256(content: string) {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
@@ -23,6 +25,14 @@ function resolveMigrationDir() {
   return found;
 }
 
+async function configureMigrationSession(client: any) {
+  // The normal API pool intentionally uses an ~8s statement timeout. Schema
+  // migrations are startup work and can legitimately take longer on production
+  // tables, so they must not inherit the request-path timeout.
+  await client.query("SELECT set_config('statement_timeout',$1,false)", [`${MIGRATION_STATEMENT_TIMEOUT_MS}ms`]);
+  await client.query("SELECT set_config('lock_timeout',$1,false)", [`${MIGRATION_LOCK_TIMEOUT_MS}ms`]);
+}
+
 async function ensureMigrationLedger(client: any) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -38,6 +48,8 @@ export async function runMigrations() {
   const client = await db.connect();
   let locked = false;
   try {
+    await configureMigrationSession(client);
+    console.log(`[migration] session timeout=${MIGRATION_STATEMENT_TIMEOUT_MS}ms lock_timeout=${MIGRATION_LOCK_TIMEOUT_MS}ms`);
     await client.query("SELECT pg_advisory_lock($1,$2)", [MIGRATION_LOCK_KEY_A, MIGRATION_LOCK_KEY_B]);
     locked = true;
     await ensureMigrationLedger(client);
@@ -78,6 +90,7 @@ export async function runMigrations() {
       }
 
       console.log(`[migration] applying: ${file}`);
+      const startedAt = Date.now();
       await client.query("BEGIN");
       try {
         await client.query(sql);
@@ -88,9 +101,10 @@ export async function runMigrations() {
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK").catch(() => undefined);
+        console.error(`[migration] failed: ${file} after ${Date.now() - startedAt}ms`);
         throw error;
       }
-      console.log(`[migration] applied: ${file}`);
+      console.log(`[migration] applied: ${file} (${Date.now() - startedAt}ms)`);
     }
   } finally {
     if (locked) {
