@@ -6,6 +6,10 @@ on:
       - 'tests/backup_restore_rehearsal.mjs'
       - 'docs/requirements/**'
       - '.github/workflows/backup-restore-evidence.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/backup-restore-evidence.yml'
   workflow_dispatch:
   schedule:
     - cron: '15 1 * * *'
@@ -84,7 +88,7 @@ jobs:
             echo "environment=github-actions-postgresql17-rehearsal" >> "$GITHUB_OUTPUT"
           else
             if [ -z "${PRODUCTION_BACKUP_SOURCE:-}" ]; then
-              echo "BACKUP_SOURCE_DATABASE_URL is not configured for scheduled/manual production evidence" >&2
+              echo "BACKUP_SOURCE_DATABASE_URL is not configured for scheduled/manual/production evidence" >&2
               exit 1
             fi
             echo "::add-mask::${PRODUCTION_BACKUP_SOURCE}"
@@ -136,7 +140,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                body: `Successful production PostgreSQL 17 exported-snapshot backup + isolated restore + snapshot-consistent table/row evidence: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Closing P0.`
+                body: `Successful canonical production PostgreSQL 17 exported-snapshot backup + isolated restore + snapshot-consistent table/row evidence: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Release Control accepted backup.restore. Closing P0.`
               });
               await github.rest.issues.update({
                 owner: context.repo.owner,
