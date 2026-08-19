@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   regression-build-rbac-security:
@@ -57,6 +58,22 @@ jobs:
       - name: Production dependency security gate
         run: node -e "const a=require('./audit-prod.json'); const v=a.metadata?.vulnerabilities||{}; console.log(v); if((v.high||0)+(v.critical||0)>0) process.exit(1)"
 
+      - name: Publish protected-branch regression evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          payload=$(node -e 'console.log(JSON.stringify({state:"success",context:"regression-build-rbac-security",description:"Regression, build, RBAC and dependency security passed",target_url:process.env.RUN_URL}))')
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/statuses/${STATUS_SHA}" \
+            -d "${payload}"
+
   production-baseline-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -84,3 +101,19 @@ jobs:
           else
             echo "Live production smoke is strict on main/release validation."
           fi
+
+      - name: Publish protected-branch production smoke evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          payload=$(node -e 'console.log(JSON.stringify({state:"success",context:"production-baseline-smoke",description:"Production baseline smoke policy passed",target_url:process.env.RUN_URL}))')
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/statuses/${STATUS_SHA}" \
+            -d "${payload}"
