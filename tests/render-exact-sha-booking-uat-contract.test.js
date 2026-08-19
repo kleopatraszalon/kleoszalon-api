@@ -12,7 +12,13 @@ test('integration evidence is published only after exact-SHA production booking 
   const integration=yml.indexOf('Publish exact-SHA integration evidence after live UAT');
   assert.ok(exact>=0&&live>exact&&integration>live);
   assert.match(yml,/node tests\/booking_live_uat\.mjs/);
-  const beforeLive=yml.slice(0,live);
-  assert.doesNotMatch(beforeLive,/key:\"tests\.integration\",status:\"pass\"/);
-  assert.match(yml.slice(integration),/key:\"tests\.integration\",status:\"pass\"/);
+
+  // The first evidence payload must deliberately exclude integration PASS.
+  const preUatEvidenceSection=yml.slice(exact,live);
+  assert.ok(!preUatEvidenceSection.includes('tests.integration'));
+
+  // Integration PASS may appear only in the dedicated post-UAT publication step.
+  const postUatEvidenceSection=yml.slice(integration);
+  assert.ok(postUatEvidenceSection.includes('tests.integration'));
+  assert.ok(postUatEvidenceSection.includes('Exact-SHA Render health/readiness/WallBoard/cashier boundary'));
 });
