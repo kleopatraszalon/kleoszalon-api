@@ -158,6 +158,8 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   return res.json({
     success: true,
     account_type: "staff",
+    // Transitional compatibility only. Removed after the cookie-only frontend is deployed.
+    token,
     role,
     location_id: employee.location_id,
     location_name: employee.location_name ?? null,
@@ -317,6 +319,8 @@ router.post("/login", async (req: Request, res: Response) => {
       full_name: user.full_name ?? null,
       email: user.email ?? null,
       login_name: user.login_name ?? null,
+      // Transitional compatibility only. Removed after the cookie-only frontend is deployed.
+      token,
     });
   } catch (err) {
     console.error("[AUTH] /api/login hiba:", err);
