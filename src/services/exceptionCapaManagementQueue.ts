@@ -1,10 +1,17 @@
+import cron from "node-cron";
 import db from "../db";
 import { sendEmail } from "../mailer";
+import { ensureSaasCore } from "../saas/ensureSaasCore";
 import { ensureExceptionCapaImprovementRecommendationSchema } from "./exceptionCapaImprovementRecommendation";
 
 let schemaPromise: Promise<void> | null = null;
+let escalationStarted = false;
+let escalationInFlight: Promise<any> | null = null;
 const safe = (value: unknown) => String(value ?? "").trim();
 const emailLike = (value: unknown) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safe(value));
+const ESCALATION_ENABLED = process.env.CAPA_MANAGEMENT_ESCALATION_ENABLED === "1";
+const ESCALATION_COOLDOWN_MINUTES = Math.max(60, Number(process.env.CAPA_MANAGEMENT_ESCALATION_COOLDOWN_MINUTES || 360));
+const ACK_GRACE_HOURS = Math.max(1, Number(process.env.CAPA_MANAGEMENT_ACK_GRACE_HOURS || 4));
 
 export type CapaManagementQueueFilters = {
   status?: string | null;
@@ -20,6 +27,7 @@ export type CapaManagementQueueFilters = {
 export async function ensureExceptionCapaManagementQueueSchema() {
   if (!schemaPromise) {
     schemaPromise = (async () => {
+      await ensureSaasCore();
       await ensureExceptionCapaImprovementRecommendationSchema();
       await db.query(`
         ALTER TABLE exception_capa_improvement_recommendations
@@ -44,6 +52,8 @@ export async function ensureExceptionCapaManagementQueueSchema() {
         );
         CREATE INDEX IF NOT EXISTS exception_capa_management_notifications_idx
           ON exception_capa_management_notifications(capa_id,notification_type,created_at DESC);
+        CREATE INDEX IF NOT EXISTS exception_capa_management_notification_cooldown_idx
+          ON exception_capa_management_notifications(capa_id,recipient,notification_type,created_at DESC);
       `);
     })().catch(error => {
       schemaPromise = null;
@@ -102,6 +112,7 @@ const queueSelect = `
     r.acknowledged_by,
     r.acknowledged_at,
     r.management_note,
+    r.last_management_notice_at,
     r.last_evaluated_at,
     c.title,
     c.status capa_status,
@@ -149,7 +160,7 @@ export async function listExceptionCapaManagementQueue(locationIds: string[], fi
 
 export async function getExceptionCapaManagementQueueSummary(locationIds: string[]) {
   await ensureExceptionCapaManagementQueueSchema();
-  if (!locationIds.length) return { total: 0, recommended: 0, monitoring: 0, dismissed: 0, critical: 0, high: 0, overdue: 0, unassigned: 0, needs_ack: 0, ready_to_promote: 0, linked_projects: 0 };
+  if (!locationIds.length) return { total: 0, recommended: 0, monitoring: 0, dismissed: 0, critical: 0, high: 0, overdue: 0, unassigned: 0, needs_ack: 0, ready_to_promote: 0, linked_projects: 0, escalation_enabled: ESCALATION_ENABLED };
   const { rows } = await db.query(`
     SELECT
       count(*)::int total,
@@ -169,7 +180,7 @@ export async function getExceptionCapaManagementQueueSummary(locationIds: string
     LEFT JOIN exception_capa_improvement_links l ON l.capa_id=c.id
     WHERE rc.location_id::text = ANY($1::text[])
   `, [locationIds]);
-  return rows[0] || {};
+  return { ...(rows[0] || {}), escalation_enabled: ESCALATION_ENABLED, escalation_cooldown_minutes: ESCALATION_COOLDOWN_MINUTES, acknowledgement_grace_hours: ACK_GRACE_HOURS };
 }
 
 async function managementEvent(capaId: string, eventType: string, actor: string, message: string, evidence: any) {
@@ -178,6 +189,25 @@ async function managementEvent(capaId: string, eventType: string, actor: string,
 
 async function recordNotification(capaId: string, recipient: string, type: string, status: "sent" | "failed" | "logged", error?: unknown) {
   await db.query(`INSERT INTO exception_capa_management_notifications(capa_id,recipient,notification_type,status,error_text) VALUES($1::uuid,$2,$3,$4,$5)`, [capaId, recipient, type, status, error ? String(error).slice(0, 1500) : null]);
+}
+
+async function notificationCoolingDown(capaId: string, recipient: string, type: string) {
+  const { rows } = await db.query(`SELECT 1 FROM exception_capa_management_notifications
+    WHERE capa_id=$1::uuid AND lower(recipient)=lower($2) AND notification_type=$3
+      AND created_at > now()-($4::int*interval '1 minute') LIMIT 1`, [capaId, recipient, type, ESCALATION_COOLDOWN_MINUTES]);
+  return Boolean(rows[0]);
+}
+
+async function tenantManagementRecipients(locationId: string) {
+  const { rows } = await db.query(`SELECT DISTINCT lower(trim(u.email)) email
+    FROM locations l
+    JOIN tenant_users tu ON tu.tenant_id=l.tenant_id AND tu.active=true
+    JOIN users u ON u.id::text=tu.user_id
+    WHERE l.id::text=$1
+      AND NULLIF(trim(COALESCE(u.email,'')),'') IS NOT NULL
+      AND (lower(COALESCE(tu.tenant_role,'')) IN('owner','admin','manager') OR lower(COALESCE(u.role::text,'')) ~ '(admin|manager)')
+    ORDER BY 1 LIMIT 50`, [locationId]);
+  return rows.map((row: any) => safe(row.email).toLowerCase()).filter(emailLike);
 }
 
 async function notifyAssignedOwner(row: any) {
@@ -204,6 +234,44 @@ async function notifyAssignedOwner(row: any) {
   } catch (error: any) {
     await recordNotification(String(row.capa_id), recipient, "assignment", "failed", error?.message || error);
     return { attempted: true, sent: false, logged: false, failed: true };
+  }
+}
+
+async function deliverEscalation(row: any, recipient: string, type: string, dryRun: boolean) {
+  if (!emailLike(recipient)) return { skipped: true, reason: "invalid-recipient" };
+  if (await notificationCoolingDown(String(row.capa_id), recipient, type)) return { skipped: true, reason: "cooldown" };
+  const typeLabel: Record<string, string> = {
+    critical_unassigned: "kritikus, kiosztatlan CAPA",
+    critical_risk: "kritikus CAPA",
+    deadline_overdue: "lejárt CAPA határidő",
+    acknowledgement_overdue: "elmaradt felelősi visszaigazolás",
+  };
+  const label = typeLabel[type] || "CAPA vezetői eszkaláció";
+  const subject = `[VIR CAPA] ${label} – ${safe(row.title) || row.capa_id}`;
+  const text = [
+    "VIR CAPA vezetői eszkaláció.",
+    "",
+    `Esemény: ${label}`,
+    `CAPA: ${safe(row.title) || row.capa_id}`,
+    `Súlyosság: ${safe(row.severity)}`,
+    `Kockázati pontszám: ${Number(row.score || 0)}/100`,
+    `Telephely: ${safe(row.location_id) || '—'}`,
+    `Felelős: ${safe(row.assigned_owner_key) || safe(row.assigned_owner_team) || 'nincs kijelölve'}`,
+    `Határidő: ${row.suggested_due_at ? new Date(row.suggested_due_at).toISOString() : '—'}`,
+    `Kijelölés: ${row.assigned_at ? new Date(row.assigned_at).toISOString() : '—'}`,
+    `Visszaigazolás: ${row.acknowledged_at ? new Date(row.acknowledged_at).toISOString() : 'nincs'}`,
+    "",
+    "Nyissa meg a Statisztika és VIR / CAPA vezetői munkasort, és tegye meg a szükséges vezetői intézkedést.",
+  ].join("\n");
+  if (dryRun) return { skipped: false, dry_run: true, recipient, type };
+  try {
+    const result: any = await sendEmail({ to: recipient, subject, text });
+    const status: "sent" | "logged" = result?.sent ? "sent" : "logged";
+    await recordNotification(String(row.capa_id), recipient, type, status, result?.logged ? "SMTP nem küldött; az eszkaláció naplózásra került." : null);
+    return { skipped: false, sent: Boolean(result?.sent), logged: Boolean(result?.logged), recipient, type };
+  } catch (error: any) {
+    await recordNotification(String(row.capa_id), recipient, type, "failed", error?.message || error);
+    return { skipped: false, sent: false, failed: true, recipient, type };
   }
 }
 
@@ -245,4 +313,61 @@ export async function acknowledgeExceptionCapaManagementAssignment(capaId: strin
   if (!row) throw Object.assign(new Error("A CAPA javaslat nincs aktív felelőshöz rendelve vagy már projektté alakult."), { status: 409 });
   await managementEvent(capaId, "improvement_assignment_acknowledged", actor, "A CAPA fejlesztési eszkaláció felelősi kijelölése visszaigazolva.", { note: rationale || null });
   return row;
+}
+
+export async function runExceptionCapaManagementEscalations(options: { dryRun?: boolean } = {}) {
+  if (escalationInFlight) return escalationInFlight;
+  escalationInFlight = (async () => {
+    await ensureExceptionCapaManagementQueueSchema();
+    const dryRun = options.dryRun === true;
+    const { rows } = await db.query(`SELECT
+        r.capa_id::text capa_id,r.score,r.suggested_due_at,r.assigned_owner_key,r.assigned_owner_team,r.assigned_at,r.acknowledged_at,
+        c.title,c.severity,rc.location_id::text location_id
+      FROM exception_capa_improvement_recommendations r
+      JOIN exception_capa_candidates c ON c.id=r.capa_id
+      JOIN exception_root_cause_clusters rc ON rc.id=c.cluster_id
+      WHERE r.status='recommended'
+        AND NOT EXISTS(SELECT 1 FROM exception_capa_improvement_links l WHERE l.capa_id=r.capa_id)
+        AND (
+          lower(c.severity)='critical'
+          OR r.suggested_due_at<now()
+          OR (r.assigned_at IS NOT NULL AND r.acknowledged_at IS NULL AND r.assigned_at<now()-($1::int*interval '1 hour'))
+        )
+      ORDER BY CASE WHEN lower(c.severity)='critical' THEN 0 ELSE 1 END,r.suggested_due_at NULLS LAST,r.score DESC
+      LIMIT 250`, [ACK_GRACE_HOURS]);
+    let candidates = 0, attempts = 0, sent = 0, logged = 0, failed = 0, cooldown = 0, dryRunCount = 0;
+    for (const row of rows) {
+      const critical = safe(row.severity).toLowerCase() === "critical";
+      const overdue = Boolean(row.suggested_due_at && new Date(row.suggested_due_at).getTime() < Date.now());
+      const ackOverdue = Boolean(row.assigned_at && !row.acknowledged_at && new Date(row.assigned_at).getTime() < Date.now() - ACK_GRACE_HOURS * 3600_000);
+      const unassigned = !safe(row.assigned_owner_key) && !safe(row.assigned_owner_team);
+      const type = overdue ? "deadline_overdue" : ackOverdue ? "acknowledgement_overdue" : critical && unassigned ? "critical_unassigned" : "critical_risk";
+      const recipients = new Set<string>();
+      if (emailLike(row.assigned_owner_key)) recipients.add(safe(row.assigned_owner_key).toLowerCase());
+      if (critical || overdue || ackOverdue) for (const email of await tenantManagementRecipients(safe(row.location_id))) recipients.add(email);
+      if (!recipients.size) continue;
+      candidates += 1;
+      for (const recipient of recipients) {
+        const result: any = await deliverEscalation(row, recipient, type, dryRun);
+        if (result.skipped && result.reason === "cooldown") { cooldown += 1; continue; }
+        if (result.skipped) continue;
+        attempts += 1;
+        if (result.dry_run) dryRunCount += 1;
+        else if (result.sent) sent += 1;
+        else if (result.logged) logged += 1;
+        else if (result.failed) failed += 1;
+      }
+      if (!dryRun && attempts > 0) await db.query(`UPDATE exception_capa_improvement_recommendations SET last_management_notice_at=now(),updated_at=now() WHERE capa_id=$1::uuid`, [row.capa_id]);
+    }
+    return { enabled: ESCALATION_ENABLED, dry_run: dryRun, checked: rows.length, candidates, attempts, sent, logged, failed, cooldown, dry_run_count: dryRunCount, generated_at: new Date().toISOString() };
+  })().finally(() => { escalationInFlight = null; });
+  return escalationInFlight;
+}
+
+export function startExceptionCapaManagementEscalationScheduler() {
+  if (escalationStarted || !ESCALATION_ENABLED || process.env.NODE_ENV === "test") return;
+  escalationStarted = true;
+  cron.schedule("7,37 * * * *", () => {
+    void runExceptionCapaManagementEscalations().catch(error => console.error("[exception-capa] management escalation cycle failed", error));
+  }, { timezone: "Europe/Budapest" });
 }
