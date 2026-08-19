@@ -10,20 +10,23 @@ const sql=read('src/sql/20260819_NBA_MARKETING_AUTOMATION_V20.sql');
 test('NBA marketing bridge is tenant scoped and mounted before generic intelligence router',()=>{
   assert.ok(route.includes('requireTenantContext'));
   assert.ok(route.includes('tenant_id'));
+  assert.ok(route.includes('loadClient(String(job.tenant_id)'));
+  assert.ok(route.includes('CLIENT_NOT_FOUND_IN_TENANT'));
   assert.ok(clients.includes("router.use('/intelligence/marketing',nbaMarketingAutomationRouter)"));
   assert.ok(clients.indexOf("'/intelligence/marketing'")<clients.indexOf("'/intelligence'"));
 });
 
-test('only accepted NBA actions can create marketing jobs',()=>{
+test('fresh schema owns the NBA event dependency and accepted actions only create jobs',()=>{
+  assert.ok(route.includes('CREATE TABLE IF NOT EXISTS crm_next_best_action_events'));
   assert.ok(route.includes("ev.action_status!==\"accepted\""));
   assert.ok(route.includes('NBA_ACTION_NOT_ACCEPTED'));
-  assert.ok(route.includes('crm_next_best_action_events'));
 });
 
 test('consent is fail closed and rechecked before dispatch',()=>{
   for(const marker of ['marketing_consent','email_consent','sms_consent','phone_consent','consent_snapshot','dispatch_blocked'])assert.ok(route.includes(marker),marker);
-  assert.ok(route.includes('const check=consentFor(job.action_code,job.channel'));
+  assert.ok(route.includes('consentFor(String(job.action_code),job.channel as Channel,c)'));
   assert.ok(route.includes('Nincs aktív marketing-hozzájárulás'));
+  assert.ok(route.includes('provider_ready:false'));
 });
 
 test('explicit approval is default and auto dispatch is off by default',()=>{
@@ -31,12 +34,14 @@ test('explicit approval is default and auto dispatch is off by default',()=>{
   assert.ok(sql.includes('require_explicit_approval boolean NOT NULL DEFAULT true'));
   assert.ok(route.includes('/jobs/:id/approve'));
   assert.ok(route.includes('/jobs/:id/send'));
+  assert.ok(route.includes('cfg.auto_dispatch&&!cfg.require_explicit_approval'));
 });
 
 test('supports email SMS push queue and callback with attribution and audit trail',()=>{
   for(const channel of ['email','sms','push','callback'])assert.ok(route.includes(`\"${channel}\"`),channel);
   assert.ok(route.includes('sendEmail'));
   assert.ok(route.includes('sendSms'));
+  assert.ok(route.includes('escapeHtml'));
   assert.ok(route.includes('waiting_provider'));
   assert.ok(route.includes('callback_ready'));
   assert.ok(route.includes('utm_source'));
