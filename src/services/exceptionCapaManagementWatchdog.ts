@@ -4,7 +4,7 @@ import { sendEmail } from "../mailer";
 import { ensureExceptionCapaManagementQueueSchema } from "./exceptionCapaManagementQueue";
 
 let schemaPromise:Promise<void>|null=null;
-let cyclePromise:Promise<any>|null=null;
+const cyclePromises=new Map<string,Promise<any>>();
 let started=false;
 const safe=(value:unknown)=>String(value??"").trim();
 const emailLike=(value:unknown)=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safe(value));
@@ -133,10 +133,14 @@ async function deliver(row:any,level:number,trigger:string,ageMinutes:number){
   return{sent,failed,logged,skipped};
 }
 
-export async function runExceptionCapaManagementWatchdog(){
-  if(cyclePromise)return cyclePromise;
-  cyclePromise=(async()=>{
+export async function runExceptionCapaManagementWatchdog(locationIds:string[]|null=null){
+  if(Array.isArray(locationIds)&&locationIds.length===0)return{checked:0,escalated:0,sent:0,failed:0,logged:0,skipped:0,generated_at:new Date().toISOString()};
+  const scopeKey=locationIds?[...locationIds].sort().join(','):'*';
+  const existing=cyclePromises.get(scopeKey);if(existing)return existing;
+  const cycle=(async()=>{
     await ensureExceptionCapaManagementWatchdogSchema();
+    const params:any[]=locationIds?[locationIds]:[];
+    const scopeSql=locationIds?` AND rc.location_id::text = ANY($1::text[])`:'';
     const {rows}=await db.query(`
       SELECT r.capa_id::text,r.status recommendation_status,r.score,r.suggested_due_at,r.recommended_at,r.last_evaluated_at,
         r.assigned_owner_key,r.assigned_owner_team,r.assigned_at,r.acknowledged_at,
@@ -151,9 +155,10 @@ export async function runExceptionCapaManagementWatchdog(){
       WHERE r.status='recommended'
         AND l.project_id IS NULL
         AND (r.assigned_at IS NULL OR r.acknowledged_at IS NULL)
+        ${scopeSql}
       ORDER BY c.severity,r.score DESC,r.suggested_due_at NULLS LAST
       LIMIT 1000
-    `);
+    `,params);
     let escalated=0,sent=0,failed=0,logged=0,skipped=0;
     for(const row of rows){
       const target=escalationTarget(row);if(!target.level)continue;
@@ -162,8 +167,8 @@ export async function runExceptionCapaManagementWatchdog(){
       sent+=result.sent;failed+=result.failed;logged+=result.logged;skipped+=result.skipped;
     }
     return{checked:rows.length,escalated,sent,failed,logged,skipped,generated_at:new Date().toISOString()};
-  })().finally(()=>{cyclePromise=null});
-  return cyclePromise;
+  })().finally(()=>{cyclePromises.delete(scopeKey)});
+  cyclePromises.set(scopeKey,cycle);return cycle;
 }
 
 export function startExceptionCapaManagementWatchdog(){
