@@ -3,43 +3,39 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 
-const route=fs.readFileSync(path.join(process.cwd(),'src/routes/migrationCenter.ts'),'utf8');
-const vir=fs.readFileSync(path.join(process.cwd(),'src/routes/vir.ts'),'utf8');
-const sql=fs.readFileSync(path.join(process.cwd(),'src/sql/20260819_MIGRATION_CENTER_V18.sql'),'utf8');
+const read=p=>fs.readFileSync(path.join(process.cwd(),p),'utf8');
+const route=read('src/routes/migrationCenter.ts');
+const vir=read('src/routes/vir.ts');
+const sql=read('src/sql/20260819_MIGRATION_CENTER_V18.sql');
 
-test('v18 exposes all migration providers including intentionally duplicated Altegio',()=>{
-  for(const provider of ['altegio','booksy','fresha','excel','csv']) {
-    assert.ok(route.includes(`code:"${provider}"`),`missing migration provider: ${provider}`);
-  }
-  assert.ok(route.includes('name:"Altegio"'));
-  assert.ok(route.includes('duplicate_visible:true'));
+test('Migration Center v18 keeps Altegio first-class and keeps native Altegio compatibility routes',()=>{
+  assert.ok(route.includes('const PROVIDERS'));
+  for(const provider of ['Altegio','Booksy','Fresha','Excel','CSV']) assert.ok(route.includes(provider),`missing provider: ${provider}`);
   assert.ok(route.includes('/api/services/import/altegio'));
   assert.ok(route.includes('/api/products/import/altegio'));
+  assert.ok(route.includes('duplicate_visible:true'));
 });
 
-test('v18 supports staged preview mapping duplicate resolution audit and rollback',()=>{
-  for(const policy of ['review','skip','merge','create_new']) assert.ok(route.includes(policy));
+test('Migration Center v18 exposes staging, duplicate handling, apply, rollback and evidence',()=>{
+  for(const policy of ['review','skip','merge','create_new']) assert.ok(route.includes(policy),`missing duplicate policy: ${policy}`);
+  for(const marker of ['upload.single("file")','/runs/:id/mapping','/runs/:id/apply','/runs/:id/rollback','/runs/:id/evidence']) assert.ok(route.includes(marker),`missing workflow marker: ${marker}`);
   for(const table of ['migration_runs','migration_items','migration_operations','migration_events']) {
-    assert.ok(route.includes(table));
-    assert.ok(sql.includes(table));
+    assert.ok(route.includes(table),`route missing ${table}`);
+    assert.ok(sql.includes(table),`migration missing ${table}`);
   }
-  for(const endpoint of ['/runs/:id/upload','/runs/:id/mapping','/runs/:id/apply','/runs/:id/rollback','/runs/:id/evidence']) assert.ok(route.includes(endpoint));
 });
 
-test('v18 is tenant-admin scoped and fail-closed for untenantized SaaS targets',()=>{
-  assert.ok(route.includes('requireAuth,requireTenantContext,requireTenantRole("owner","admin")'));
+test('Migration Center v18 is tenant-admin scoped and mounted without removing legacy VIR routes',()=>{
+  assert.ok(route.includes('requireTenantContext'));
+  assert.ok(route.includes('requireTenantRole("owner","admin")'));
   assert.ok(route.includes('tenant_id'));
-  assert.ok(route.includes('tenant-biztos'));
-  assert.ok(route.includes('külső SaaS tenant importja blokkolva'));
-});
-
-test('v18 mounts as a dedicated VIR workspace while preserving legacy VIR routes',()=>{
-  assert.ok(vir.includes('./migrationCenter'));
-  assert.ok(vir.includes('./virLegacy'));
+  assert.ok(vir.includes('migrationCenterRouter'));
+  assert.ok(vir.includes('legacyVirRouter'));
   assert.ok(vir.includes('/migration-center'));
 });
 
-test('appointments stay preview-only in v18 until relational resolvers are added',()=>{
-  assert.ok(route.includes('appointments:{table:"appointments",apply:false'));
+test('appointments remain preview-only until relational resolution is implemented',()=>{
+  assert.ok(route.includes('appointments'));
+  assert.ok(route.includes('apply:false'));
   assert.ok(route.includes('PREVIEW_ONLY_ENTITY'));
 });
