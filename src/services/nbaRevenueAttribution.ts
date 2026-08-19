@@ -18,7 +18,7 @@ export async function ensureNbaRevenueAttribution(){
     );
     CREATE INDEX IF NOT EXISTS crm_nba_marketing_touches_job_idx ON crm_nba_marketing_touches(tenant_id,job_id,created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS crm_nba_marketing_touches_dedupe_uq
-      ON crm_nba_marketing_touches(job_id,fingerprint_hash,(date_trunc('hour',created_at)))
+      ON crm_nba_marketing_touches(job_id,fingerprint_hash)
       WHERE fingerprint_hash IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS crm_nba_revenue_attribution(
@@ -112,18 +112,25 @@ export async function attributionSummary(tenantId:string,days:number,locationId:
   const actionRows=(await pool.query(`
     WITH jobs AS (
       SELECT id,action_code,channel FROM crm_nba_marketing_jobs WHERE tenant_id=$1::bigint AND sent_at>=now()-($2::int||' days')::interval
-    ), attr AS (
+    ), attr_raw AS (
       SELECT r.job_id,r.expected_booking_value,r.work_order_id,lower(COALESCE(to_jsonb(a)->>'status','')) appointment_status
       FROM crm_nba_revenue_attribution r JOIN appointments a ON a.id=r.appointment_id
       WHERE r.tenant_id=$1::bigint ${locationId?`AND (to_jsonb(a)->>'location_id')=$3::text`:""}
-    ), paid AS (
-      SELECT a.job_id,COALESCE(SUM(p.amount),0)::numeric revenue FROM attr a LEFT JOIN work_order_payments p ON p.work_order_id=a.work_order_id WHERE a.appointment_status NOT IN('cancelled','canceled','no_show') GROUP BY a.job_id
+    ), attr_job AS (
+      SELECT job_id,
+        COUNT(*) FILTER(WHERE appointment_status NOT IN('cancelled','canceled','no_show'))::int conversions,
+        COALESCE(SUM(expected_booking_value) FILTER(WHERE appointment_status NOT IN('cancelled','canceled','no_show')),0)::numeric expected_value
+      FROM attr_raw GROUP BY job_id
+    ), paid_job AS (
+      SELECT a.job_id,COALESCE(SUM(p.amount),0)::numeric revenue
+      FROM attr_raw a LEFT JOIN work_order_payments p ON p.work_order_id=a.work_order_id
+      WHERE a.appointment_status NOT IN('cancelled','canceled','no_show') GROUP BY a.job_id
     )
     SELECT j.action_code,j.channel,COUNT(*)::int sent,
-      COUNT(DISTINCT CASE WHEN a.appointment_status NOT IN('cancelled','canceled','no_show') THEN a.job_id END)::int conversions,
-      COALESCE(SUM(CASE WHEN a.appointment_status NOT IN('cancelled','canceled','no_show') THEN a.expected_booking_value ELSE 0 END),0)::numeric expected_value,
+      COALESCE(SUM(a.conversions),0)::int conversions,
+      COALESCE(SUM(a.expected_value),0)::numeric expected_value,
       COALESCE(SUM(p.revenue),0)::numeric paid_revenue
-    FROM jobs j LEFT JOIN attr a ON a.job_id=j.id LEFT JOIN paid p ON p.job_id=j.id
+    FROM jobs j LEFT JOIN attr_job a ON a.job_id=j.id LEFT JOIN paid_job p ON p.job_id=j.id
     GROUP BY j.action_code,j.channel ORDER BY paid_revenue DESC,conversions DESC,sent DESC`,params)).rows;
   const sent=Number(totals.sent_jobs||0),bookings=Number(totals.attributed_bookings||0),revenue=Number(totals.paid_revenue||0);
   return {period_days:period,...totals,sent_jobs:sent,landed_jobs:Number(totals.landed_jobs||0),attributed_bookings:bookings,expected_booking_value:Number(totals.expected_booking_value||0),paid_revenue:revenue,conversion_rate_percent:sent?Number(((bookings/sent)*100).toFixed(2)):0,revenue_per_send:sent?Number((revenue/sent).toFixed(2)):0,action_rows:actionRows.map((r:any)=>({...r,sent:Number(r.sent||0),conversions:Number(r.conversions||0),expected_value:Number(r.expected_value||0),paid_revenue:Number(r.paid_revenue||0),conversion_rate_percent:Number(r.sent)?Number((Number(r.conversions||0)/Number(r.sent)*100).toFixed(2)):0}))};
