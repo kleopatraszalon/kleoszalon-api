@@ -41,6 +41,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+      - name: Install dependencies from lockfile
+        run: npm ci --include=dev --no-audit --no-fund
+      - name: Verify clean lockfile install
+        run: git diff --exit-code -- package.json package-lock.json
       - name: Validate KLEO baseline, mappings and automation registry
         run: npm run requirements:check
       - name: Validate baseline and operational contracts
