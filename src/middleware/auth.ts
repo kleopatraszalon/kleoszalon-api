@@ -11,6 +11,7 @@ export interface AuthRequest extends Request {
     role?: string | string[];
     location_id?: number | string | null;
     tenant_id?: number | string | null;
+    employee_id?: number | string | null;
     uat_scope?: string;
   };
 }
@@ -65,6 +66,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     // in-request tenant/location context is more current than a legacy or stale JWT.
     const preservedTenantId = sameAuthenticatedUser ? previousUser?.tenant_id ?? null : null;
     const preservedLocationId = sameAuthenticatedUser ? previousUser?.location_id ?? null : null;
+    const preservedEmployeeId = sameAuthenticatedUser ? previousUser?.employee_id ?? null : null;
 
     req.user = {
       id: decodedId,
@@ -72,6 +74,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
       role: decoded.role,
       location_id: preservedLocationId ?? decoded.location_id ?? null,
       tenant_id: preservedTenantId ?? decoded.tenant_id ?? null,
+      employee_id: preservedEmployeeId ?? decoded.employee_id ?? null,
       uat_scope: decoded.uat_scope ? String(decoded.uat_scope) : undefined,
     };
 
