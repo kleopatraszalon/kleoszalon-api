@@ -41,10 +41,15 @@ test('revenue is grounded in persisted work order payments and excludes cancelle
   assert.ok(service.includes('paid_job'));
 });
 
-test('admin analytics is tenant and location scoped and mounted before generic intelligence routes',()=>{
+test('admin analytics is tenant and location scoped with a matching location denominator',()=>{
   assert.ok(admin.includes('requireTenantContext'));
   assert.ok(admin.includes('LOCATION_SCOPE_REQUIRED'));
-  assert.ok(admin.includes('location_id'));
+  assert.ok(admin.includes('applyLocationDenominator'));
+  assert.ok(admin.includes('WITH scoped_jobs AS'));
+  assert.ok(admin.includes("(to_jsonb(c)->>'location_id')=$3::text"));
+  assert.ok(admin.includes('summary.sent_jobs=sent'));
+  assert.ok(admin.includes('summary.landed_jobs='));
+  assert.ok(admin.includes('summary.conversion_rate_percent='));
   assert.ok(clients.includes("router.use('/intelligence/attribution',nbaAttributionAdminRouter)"));
   assert.ok(clients.indexOf("'/intelligence/attribution'")<clients.indexOf("'/intelligence'"));
 });
