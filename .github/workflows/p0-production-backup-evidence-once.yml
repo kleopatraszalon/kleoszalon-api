@@ -45,12 +45,21 @@ jobs:
               sha: context.sha,
               state: 'pending',
               context: 'p0/production-backup-evidence',
-              description: 'Running production PostgreSQL 17 backup and isolated restore',
+              description: 'Running snapshot-consistent PostgreSQL 17 backup and restore',
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install runtime dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
 
       - name: Verify PostgreSQL 17 client image
         shell: bash
@@ -74,7 +83,7 @@ jobs:
           echo "::add-mask::${PRODUCTION_BACKUP_SOURCE}"
           echo "url=${PRODUCTION_BACKUP_SOURCE}" >> "$GITHUB_OUTPUT"
 
-      - name: Run production dump, isolated restore and consistency checks
+      - name: Run snapshot-consistent production dump, isolated restore and consistency checks
         env:
           SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
           BACKUP_EVIDENCE_ENVIRONMENT: production-backup-isolated-restore
@@ -94,7 +103,7 @@ jobs:
           response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
           oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
           test -n "$oidc"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production PostgreSQL 17 backup dump + isolated restore + table/row consistency checks PASS; one-shot P0 evidence"}]}))')"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production PostgreSQL 17 exported-snapshot dump + isolated restore + snapshot-consistent table/row verification PASS"}]}))')"
           curl -fsS --retry 3 --max-time 30 \
             -H "Authorization: Bearer $oidc" \
             -H 'Content-Type: application/json' \
@@ -110,7 +119,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
-              body: `Production PostgreSQL 17 backup dump + isolated restore + consistency evidence PASS: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. P0/1 closed with production evidence.`
+              body: `Production PostgreSQL 17 exported-snapshot backup + isolated restore + snapshot-consistent table/row evidence PASS: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. P0/1 closed with production evidence.`
             });
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -137,7 +146,7 @@ jobs:
               state: passed ? 'success' : 'failure',
               context: 'p0/production-backup-evidence',
               description: passed
-                ? 'Production PostgreSQL 17 backup + isolated restore PASS'
+                ? 'Snapshot-consistent PostgreSQL 17 production backup + restore PASS'
                 : 'Production backup evidence FAILED; P0 remains open',
               target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
