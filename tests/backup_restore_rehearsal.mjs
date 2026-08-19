@@ -197,3 +197,5 @@ const evidence = {
 };
 fs.writeFileSync(path.join(evidenceDir, 'requirements-evidence-backup-restore.json'), JSON.stringify(evidence, null, 2));
 console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceState.tableCount} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes} snapshot_consistent=true source_tls=${evidence.source_tls_required} pg_client=${evidence.pg_client_mode}`);
+
+// Protected-main validation trigger for canonical production backup evidence workflow.
