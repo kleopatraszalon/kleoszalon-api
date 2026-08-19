@@ -74,7 +74,11 @@ function buildWhere(locationIds: string[], filters: CapaManagementQueueFilters) 
   if (status && status !== "all") add("r.status=?", status);
   if (severity && severity !== "all") add("lower(c.severity)=?", severity);
   if (owner) add("lower(COALESCE(r.assigned_owner_key,r.assigned_owner_team,'')) LIKE ?", `%${owner}%`);
-  if (q) add("(c.title ILIKE ? OR rc.cluster_key ILIKE ? OR COALESCE(c.problem_statement,'') ILIKE ?)", `%${q}%`), params.push(`%${q}%`, `%${q}%`);
+  if (q) {
+    params.push(`%${q}%`);
+    const ix = params.length;
+    where.push(`(c.title ILIKE $${ix} OR rc.cluster_key ILIKE $${ix} OR COALESCE(c.problem_statement,'') ILIKE $${ix})`);
+  }
   if (locationId) add("rc.location_id::text=?", locationId);
   if (filters.onlyOverdue) where.push("r.suggested_due_at < now() AND l.project_id IS NULL AND r.status <> 'dismissed'");
   if (filters.onlyUnassigned) where.push("NULLIF(trim(COALESCE(r.assigned_owner_key,r.assigned_owner_team,'')),'') IS NULL");
@@ -216,9 +220,11 @@ export async function assignExceptionCapaManagementOwner(capaId: string, actor: 
       acknowledged_by=NULL,acknowledged_at=NULL,management_note=NULLIF($5,''),last_management_notice_at=now(),updated_at=now()
     FROM exception_capa_candidates c, exception_root_cause_clusters rc
     WHERE r.capa_id=$1::uuid AND c.id=r.capa_id AND rc.id=c.cluster_id
+      AND r.status='recommended'
+      AND NOT EXISTS(SELECT 1 FROM exception_capa_improvement_links l WHERE l.capa_id=r.capa_id)
     RETURNING r.*,c.title,c.severity,rc.location_id::text location_id
   `, [capaId, ownerKey, ownerTeam, actor, note])).rows[0];
-  if (!row) throw Object.assign(new Error("A CAPA fejlesztési javaslat nem található."), { status: 404 });
+  if (!row) throw Object.assign(new Error("Csak aktív, projektté még nem emelt fejlesztési javaslat rendelhető felelőshöz."), { status: 409 });
   await managementEvent(capaId, "improvement_owner_assigned", actor, "CAPA fejlesztési eszkaláció felelőse kijelölve.", { owner_key: ownerKey || null, owner_team: ownerTeam || null, note: note || null });
   const notification = await notifyAssignedOwner(row);
   return { ...row, notification };
@@ -228,12 +234,15 @@ export async function acknowledgeExceptionCapaManagementAssignment(capaId: strin
   await ensureExceptionCapaManagementQueueSchema();
   const rationale = safe(note);
   const row = (await db.query(`
-    UPDATE exception_capa_improvement_recommendations
+    UPDATE exception_capa_improvement_recommendations r
     SET acknowledged_by=$2,acknowledged_at=now(),management_note=COALESCE(NULLIF($3,''),management_note),updated_at=now()
-    WHERE capa_id=$1::uuid AND NULLIF(trim(COALESCE(assigned_owner_key,assigned_owner_team,'')),'') IS NOT NULL
-    RETURNING *
+    WHERE r.capa_id=$1::uuid
+      AND r.status='recommended'
+      AND NULLIF(trim(COALESCE(r.assigned_owner_key,r.assigned_owner_team,'')),'') IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM exception_capa_improvement_links l WHERE l.capa_id=r.capa_id)
+    RETURNING r.*
   `, [capaId, actor, rationale])).rows[0];
-  if (!row) throw Object.assign(new Error("A CAPA javaslat nincs felelőshöz rendelve vagy nem található."), { status: 409 });
+  if (!row) throw Object.assign(new Error("A CAPA javaslat nincs aktív felelőshöz rendelve vagy már projektté alakult."), { status: 409 });
   await managementEvent(capaId, "improvement_assignment_acknowledged", actor, "A CAPA fejlesztési eszkaláció felelősi kijelölése visszaigazolva.", { note: rationale || null });
   return row;
 }
