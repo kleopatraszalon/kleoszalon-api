@@ -64,10 +64,12 @@ export async function attributeNbaBooking(jobId:string,appointmentId:string){
   if(!sentAt||sentAt<Date.now()-30*86400000)return {ok:false,code:"ATTRIBUTION_WINDOW_EXPIRED"};
   const appointment=(await pool.query(`
     SELECT a.id::text id,(to_jsonb(a)->>'client_id') client_id,(to_jsonb(a)->>'work_order_id') work_order_id,
-      lower(COALESCE(to_jsonb(a)->>'status','')) status,
+      a.created_at,lower(COALESCE(to_jsonb(a)->>'status','')) status,
       COALESCE((SELECT SUM(COALESCE(s.price,0)*(1-COALESCE(s.discount_percent,0)/100.0)) FROM appointment_services s WHERE s.appointment_id=a.id),0)::numeric expected_value
     FROM appointments a WHERE a.id=$1::uuid LIMIT 1`,[appointmentId])).rows[0];
   if(!appointment)return {ok:false,code:"APPOINTMENT_NOT_FOUND"};
+  const appointmentCreatedAt=new Date(appointment.created_at).getTime();
+  if(!Number.isFinite(appointmentCreatedAt)||appointmentCreatedAt<sentAt)return {ok:false,code:"APPOINTMENT_PRECEDES_CAMPAIGN"};
   if(String(appointment.client_id)!==String(job.client_id))return {ok:false,code:"CLIENT_MISMATCH"};
   if(["cancelled","canceled","no_show"].includes(String(appointment.status)))return {ok:false,code:"APPOINTMENT_NOT_CONVERTED"};
   const row=(await pool.query(`
