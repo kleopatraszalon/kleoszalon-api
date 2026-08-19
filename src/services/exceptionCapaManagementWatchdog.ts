@@ -89,6 +89,7 @@ async function deliver(row:any,level:number,trigger:string,ageMinutes:number){
   const managers=await tenantManagementRecipients(String(row.tenant_id));
   const recipients=[...new Set([
     ...(level===1&&emailLike(owner)?[owner]:[]),
+    ...(level===1&&Boolean(row.assigned_at)&&!emailLike(owner)?managers:[]),
     ...(level>=2||!row.assigned_at?managers:[]),
     ...(level>=2&&emailLike(owner)?[owner]:[]),
   ])];
