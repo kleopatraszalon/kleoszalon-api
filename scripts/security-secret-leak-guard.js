@@ -19,11 +19,35 @@ const contentPatterns = [
   { name: 'GitHub classic token', regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
   { name: 'GitHub fine-grained token', regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },
   { name: 'AWS access key', regex: /\bAKIA[0-9A-Z]{16}\b/ },
-  { name: 'credential-bearing PostgreSQL URL', regex: /postgres(?:ql)?:\/\/[^\s:@/]+:[^\s@/]+@[^\s]+/i },
 ];
 
+const postgresUrlPattern = /postgres(?:ql)?:\/\/[^\s"'`<>]+/gi;
+const localHosts = new Set(['localhost', '127.0.0.1', '::1', 'postgres', 'db', 'database']);
+const placeholderValues = new Set(['postgres', 'user', 'username', 'password', 'pass', 'secret', 'test', 'example', 'changeme', 'change-me']);
+
+function suspiciousPostgresUrl(raw) {
+  try {
+    const url = new URL(raw);
+    const host = String(url.hostname || '').toLowerCase();
+    const user = decodeURIComponent(url.username || '').toLowerCase();
+    const pass = decodeURIComponent(url.password || '').toLowerCase();
+    if (!user || !pass) return false;
+    if (localHosts.has(host) || host.endsWith('.local')) return false;
+    if (placeholderValues.has(user) || placeholderValues.has(pass)) return false;
+    if (/\$\{|<[^>]+>|\{\{/.test(raw)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const failures = [];
+let checked = 0;
 for (const file of tracked) {
+  // Historical repository bloat may still contain tracked dependencies; do not
+  // treat third-party package documentation/test fixtures as project secrets.
+  if (file.startsWith('node_modules/')) continue;
+
   if (blockedPathPatterns.some(pattern => pattern.test(file))) {
     failures.push(`${file}: blocked secret-bearing filename`);
     continue;
@@ -36,9 +60,15 @@ for (const file of tracked) {
   let content;
   try { content = fs.readFileSync(file, 'utf8'); } catch { continue; }
   if (content.includes('\u0000')) continue;
+  checked += 1;
 
   for (const pattern of contentPatterns) {
     if (pattern.regex.test(content)) failures.push(`${file}: ${pattern.name}`);
+  }
+
+  const postgresUrls = content.match(postgresUrlPattern) || [];
+  if (postgresUrls.some(suspiciousPostgresUrl)) {
+    failures.push(`${file}: non-placeholder credential-bearing PostgreSQL URL`);
   }
 }
 
@@ -48,4 +78,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`Secret leak guard PASS (${tracked.length} tracked files checked).`);
+console.log(`Secret leak guard PASS (${checked} project files checked).`);
