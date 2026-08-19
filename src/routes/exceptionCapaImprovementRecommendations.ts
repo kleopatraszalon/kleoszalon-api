@@ -24,6 +24,7 @@ void ensureExceptionCapaManagementQueueSchema().catch(error=>console.error('[exc
 
 const actor=(req:AuthRequest)=>String(req.user?.email||req.user?.id||'management-user');
 const loc=(req:AuthRequest)=>String(req.query.location_id||req.body?.location_id||req.user?.location_id||'').trim()||null;
+const queueLocation=(req:AuthRequest)=>String(req.query.location_id||'').trim()||null;
 const sendError=(error:any,res:any,next:any)=>error?.status?res.status(error.status).json({message:error.message}):String(error?.code||'')==='23514'?res.status(409).json({message:error?.message||'A governance szabály megakadályozta a műveletet.',code:'improvement_recommendation_governance_conflict'}):next(error);
 const tenantId=async(req:AuthRequest)=>{const tenant=await resolveTenantIdentity(req);if(!tenant)throw Object.assign(new Error('A tenant nem azonosítható.'),{status:403});return String(tenant.id)};
 
@@ -38,10 +39,19 @@ async function scope(req:AuthRequest){
   return{capa,tenant};
 }
 
+async function managementItemScope(req:AuthRequest){
+  const capa=await getExceptionCapa(String(req.params.id));
+  const tenant=await tenantId(req);
+  const sourceLocation=String(capa?.item?.location_id||'').trim()||null;
+  if(!sourceLocation)throw Object.assign(new Error('A globális CAPA rekord tenant-hozzárendelése nem bizonyítható.'),{status:403});
+  if(!(await locationBelongsToTenant(sourceLocation,tenant)))throw Object.assign(new Error('A CAPA rekord nem érhető el ebben a vállalatban.'),{status:404});
+  return{capa,tenant,sourceLocation};
+}
+
 async function workqueueScope(req:AuthRequest){
   const tenant=await tenantId(req);
   const allowed=await tenantLocationIds(tenant);
-  const requested=loc(req);
+  const requested=queueLocation(req);
   if(requested&&!allowed.includes(requested))throw Object.assign(new Error('A kiválasztott telephely nem tartozik ehhez a vállalathoz.'),{status:403});
   return{tenant,locations:requested?[requested]:allowed,requested};
 }
@@ -59,12 +69,12 @@ router.get('/intelligence/capa/improvement-workqueue',async(req:AuthRequest,res,
 }catch(error:any){sendError(error,res,next)}});
 
 router.post('/intelligence/capa/:id/improvement-workqueue/assign',async(req:AuthRequest,res,next)=>{try{
-  await scope(req);
+  await managementItemScope(req);
   res.json(await assignExceptionCapaManagementOwner(String(req.params.id),actor(req),{ownerKey:req.body?.owner_key,ownerTeam:req.body?.owner_team,note:req.body?.note}));
 }catch(error:any){sendError(error,res,next)}});
 
 router.post('/intelligence/capa/:id/improvement-workqueue/acknowledge',async(req:AuthRequest,res,next)=>{try{
-  await scope(req);res.json(await acknowledgeExceptionCapaManagementAssignment(String(req.params.id),actor(req),req.body?.note));
+  await managementItemScope(req);res.json(await acknowledgeExceptionCapaManagementAssignment(String(req.params.id),actor(req),req.body?.note));
 }catch(error:any){sendError(error,res,next)}});
 
 router.get('/intelligence/capa/:id/improvement-recommendation',async(req:AuthRequest,res,next)=>{try{
