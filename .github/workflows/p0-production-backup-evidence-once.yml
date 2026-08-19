@@ -33,6 +33,7 @@ jobs:
     env:
       RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_restore_target
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
+      PG_CLIENT_DOCKER_IMAGE: postgres:17
     steps:
       - name: Mark production backup evidence pending
         uses: actions/github-script@v7
@@ -51,18 +52,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 17 client tools
+      - name: Verify PostgreSQL 17 client image
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client-17
-          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-          /usr/lib/postgresql/17/bin/pg_dump --version
-          /usr/lib/postgresql/17/bin/pg_restore --version
+          docker image inspect postgres:17 >/dev/null
+          docker run --rm postgres:17 pg_dump --version
+          docker run --rm postgres:17 pg_restore --version
 
       - name: Resolve production source without exposing secret
         id: source
