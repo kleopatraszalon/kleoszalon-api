@@ -49,10 +49,11 @@ jobs:
                 : 'Checking all production P0 controls'
             });
 
-            // P0/4 is proven from the actual GitHub branch-protection configuration.
-            // Do not require governance issue #320 to be closed here: that issue is
-            // intentionally closed by p0-close-main-protection-on-success.yml after
-            // this readiness workflow succeeds. Requiring it here creates a deadlock.
+            // The workflow token can prove protected=true and required status checks
+            // from getBranch(). Classic protection review/force-push/deletion details
+            // require repository administration read permission, which GITHUB_TOKEN
+            // does not have. Those admin controls are therefore tracked fail-closed
+            // by governance evidence issue #320 instead of an impossible API call.
             try {
               const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
               if (!branch.data.protected) {
@@ -61,8 +62,7 @@ jobs:
                 details.push('P0/4: main branch reports protected=true');
               }
 
-              const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
-              const contexts = protection.data.required_status_checks?.contexts || [];
+              const contexts = branch.data.protection?.required_status_checks?.contexts || [];
               for (const required of canonicalRequiredChecks) {
                 if (!contexts.includes(required)) {
                   failures.push(`P0/4: required status check ${required} is missing on main`);
@@ -71,31 +71,27 @@ jobs:
               if (canonicalRequiredChecks.every(required => contexts.includes(required))) {
                 details.push(`P0/4: canonical required checks active: ${canonicalRequiredChecks.join(', ')}`);
               }
+            } catch (error) {
+              failures.push(`P0/4: readable branch protection baseline cannot be proven (${error.status || error.message})`);
+            }
 
-              if (!protection.data.required_pull_request_reviews) {
-                failures.push('P0/4: pull-request review requirement is not enabled on main');
-              } else {
-                const approvals = Number(protection.data.required_pull_request_reviews.required_approving_review_count || 0);
-                if (approvals < 1) {
-                  failures.push('P0/4: at least one approving PR review is not required on main');
+            try {
+              const governanceIssue = await github.rest.issues.get({ owner, repo, issue_number: 320 });
+              if (governanceIssue.data.state !== 'closed') {
+                if (isPullRequest) {
+                  notices.push('P0/4 governance evidence: issue #320 remains open; production stays blocked');
                 } else {
-                  details.push(`P0/4: required approving PR reviews=${approvals}`);
+                  failures.push('P0/4 governance evidence: issue #320 is still open');
                 }
-              }
-
-              if (protection.data.allow_force_pushes?.enabled === true) {
-                failures.push('P0/4: force pushes are allowed on main');
               } else {
-                details.push('P0/4: force pushes are disabled');
-              }
-
-              if (protection.data.allow_deletions?.enabled === true) {
-                failures.push('P0/4: branch deletion is allowed on main');
-              } else {
-                details.push('P0/4: branch deletion is disabled');
+                details.push('P0/4 governance evidence: issue #320 closed');
               }
             } catch (error) {
-              failures.push(`P0/4: readable branch protection metadata cannot be proven (${error.status || error.message})`);
+              if (isPullRequest) {
+                notices.push('P0/4 governance evidence: issue #320 could not be verified; production stays blocked');
+              } else {
+                failures.push('P0/4 governance evidence: issue #320 cannot be verified');
+              }
             }
 
             const productionIssues = [
@@ -150,7 +146,7 @@ jobs:
               core.setFailed(failures.join(' | '));
             } else {
               core.summary.addRaw(isPullRequest
-                ? 'Remediation PR may proceed; production deploy remains fail-closed until P0/1–P0/3 are closed.\n'
+                ? 'Remediation PR may proceed; production deploy remains fail-closed until P0/1–P0/4 are closed.\n'
                 : 'All production P0 controls are proven closed.\n');
               await core.summary.write();
             }
