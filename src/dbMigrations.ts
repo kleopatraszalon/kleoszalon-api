@@ -7,6 +7,9 @@ const MIGRATION_LOCK_KEY_A = 20260819;
 const MIGRATION_LOCK_KEY_B = 1;
 const MIGRATION_STATEMENT_TIMEOUT_MS = Math.max(30000, Number(process.env.PG_MIGRATION_STATEMENT_TIMEOUT_MS ?? 300000));
 const MIGRATION_LOCK_TIMEOUT_MS = Math.max(5000, Number(process.env.PG_MIGRATION_LOCK_TIMEOUT_MS ?? 60000));
+const MIGRATION_FAILURE_MODE = String(
+  process.env.MIGRATION_FAILURE_MODE || (process.env.NODE_ENV === "production" ? "readiness" : "strict"),
+).trim().toLowerCase();
 
 function sha256(content: string) {
   return crypto.createHash("sha256").update(content, "utf8").digest("hex");
@@ -42,6 +45,11 @@ async function ensureMigrationLedger(client: any) {
     )
   `);
   await client.query(`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum_sha256 text`);
+}
+
+function isMigrationIntegrityFailure(error: unknown) {
+  const message = String((error as any)?.message || error || "");
+  return message.includes("Migration checksum mismatch") || message.includes("recorded without a checksum");
 }
 
 export async function runMigrations() {
@@ -120,7 +128,19 @@ async function main() {
     console.log("Database migrations complete.");
   } catch (error) {
     console.error("Database migration failed:", error);
-    process.exitCode = 1;
+    const integrityFailure = isMigrationIntegrityFailure(error);
+    if (MIGRATION_FAILURE_MODE === "strict" || integrityFailure) {
+      process.exitCode = 1;
+    } else {
+      // Production recovery mode: allow the API process to start after a
+      // non-integrity migration error. Runtime tenant/schema readiness stays
+      // fail-closed and the deployment health gate decides whether this release
+      // is safe to promote. Checksum/ledger integrity errors never use this path.
+      console.error(
+        "[migration] non-integrity failure deferred to runtime readiness; API startup may continue in fail-closed readiness mode.",
+      );
+      process.exitCode = 0;
+    }
   } finally {
     await db.end().catch(() => undefined);
   }
