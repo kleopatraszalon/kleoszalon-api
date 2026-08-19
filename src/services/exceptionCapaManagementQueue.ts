@@ -315,11 +315,12 @@ export async function acknowledgeExceptionCapaManagementAssignment(capaId: strin
   return row;
 }
 
-export async function runExceptionCapaManagementEscalations(options: { dryRun?: boolean } = {}) {
+export async function runExceptionCapaManagementEscalations(options: { dryRun?: boolean; locationIds?: string[] } = {}) {
   if (escalationInFlight) return escalationInFlight;
   escalationInFlight = (async () => {
     await ensureExceptionCapaManagementQueueSchema();
     const dryRun = options.dryRun === true;
+    const locationIds = Array.isArray(options.locationIds) && options.locationIds.length ? options.locationIds.map(String) : null;
     const { rows } = await db.query(`SELECT
         r.capa_id::text capa_id,r.score,r.suggested_due_at,r.assigned_owner_key,r.assigned_owner_team,r.assigned_at,r.acknowledged_at,
         c.title,c.severity,rc.location_id::text location_id
@@ -328,13 +329,14 @@ export async function runExceptionCapaManagementEscalations(options: { dryRun?: 
       JOIN exception_root_cause_clusters rc ON rc.id=c.cluster_id
       WHERE r.status='recommended'
         AND NOT EXISTS(SELECT 1 FROM exception_capa_improvement_links l WHERE l.capa_id=r.capa_id)
+        AND ($2::text[] IS NULL OR rc.location_id::text=ANY($2::text[]))
         AND (
           lower(c.severity)='critical'
           OR r.suggested_due_at<now()
           OR (r.assigned_at IS NOT NULL AND r.acknowledged_at IS NULL AND r.assigned_at<now()-($1::int*interval '1 hour'))
         )
       ORDER BY CASE WHEN lower(c.severity)='critical' THEN 0 ELSE 1 END,r.suggested_due_at NULLS LAST,r.score DESC
-      LIMIT 250`, [ACK_GRACE_HOURS]);
+      LIMIT 250`, [ACK_GRACE_HOURS, locationIds]);
     let candidates = 0, attempts = 0, sent = 0, logged = 0, failed = 0, cooldown = 0, dryRunCount = 0;
     for (const row of rows) {
       const critical = safe(row.severity).toLowerCase() === "critical";
@@ -347,19 +349,21 @@ export async function runExceptionCapaManagementEscalations(options: { dryRun?: 
       if (critical || overdue || ackOverdue) for (const email of await tenantManagementRecipients(safe(row.location_id))) recipients.add(email);
       if (!recipients.size) continue;
       candidates += 1;
+      let rowAttempts = 0;
       for (const recipient of recipients) {
         const result: any = await deliverEscalation(row, recipient, type, dryRun);
         if (result.skipped && result.reason === "cooldown") { cooldown += 1; continue; }
         if (result.skipped) continue;
         attempts += 1;
+        rowAttempts += 1;
         if (result.dry_run) dryRunCount += 1;
         else if (result.sent) sent += 1;
         else if (result.logged) logged += 1;
         else if (result.failed) failed += 1;
       }
-      if (!dryRun && attempts > 0) await db.query(`UPDATE exception_capa_improvement_recommendations SET last_management_notice_at=now(),updated_at=now() WHERE capa_id=$1::uuid`, [row.capa_id]);
+      if (!dryRun && rowAttempts > 0) await db.query(`UPDATE exception_capa_improvement_recommendations SET last_management_notice_at=now(),updated_at=now() WHERE capa_id=$1::uuid`, [row.capa_id]);
     }
-    return { enabled: ESCALATION_ENABLED, dry_run: dryRun, checked: rows.length, candidates, attempts, sent, logged, failed, cooldown, dry_run_count: dryRunCount, generated_at: new Date().toISOString() };
+    return { enabled: ESCALATION_ENABLED, dry_run: dryRun, scoped_locations: locationIds?.length || null, checked: rows.length, candidates, attempts, sent, logged, failed, cooldown, dry_run_count: dryRunCount, generated_at: new Date().toISOString() };
   })().finally(() => { escalationInFlight = null; });
   return escalationInFlight;
 }
