@@ -3,13 +3,6 @@ name: VIR release candidate gate
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/vir-release-candidate.yml'
   push:
     branches: [main]
     paths:
