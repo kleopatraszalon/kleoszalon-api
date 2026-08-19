@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   build:
@@ -31,3 +32,19 @@ jobs:
 
       - name: Build API
         run: npm run build
+
+      - name: Publish protected-branch build evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          payload=$(node -e 'console.log(JSON.stringify({state:"success",context:"build",description:"API contract/regression + production build passed",target_url:process.env.RUN_URL}))')
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/statuses/${STATUS_SHA}" \
+            -d "${payload}"
