@@ -36,30 +36,40 @@ jobs:
       LOCAL_SOURCE_URL: postgresql://postgres:postgres@localhost:5432/kleo_backup_fixture
       RESTORE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kleo_restore_target
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
+      PG_CLIENT_DOCKER_IMAGE: postgres:17
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 17 client tools
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install runtime dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Verify PostgreSQL 17 client image
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client-17
-          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-          /usr/lib/postgresql/17/bin/pg_dump --version
-          /usr/lib/postgresql/17/bin/pg_restore --version
+          docker image inspect postgres:17 >/dev/null
+          docker run --rm postgres:17 pg_dump --version
+          docker run --rm postgres:17 pg_restore --version
 
       - name: Prepare isolated restore target and PR fixture
         shell: bash
         run: |
           set -euo pipefail
-          PGPASSWORD=postgres /usr/lib/postgresql/17/bin/createdb -h localhost -U postgres kleo_restore_target
+          docker run --rm --network host \
+            -e PGPASSWORD=postgres \
+            postgres:17 createdb -h localhost -U postgres kleo_restore_target
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PGPASSWORD=postgres /usr/lib/postgresql/17/bin/psql -h localhost -U postgres -d kleo_backup_fixture -v ON_ERROR_STOP=1 -c "CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id)); INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon'); INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');"
+            docker run --rm --network host \
+              -e PGPASSWORD=postgres \
+              postgres:17 psql -h localhost -U postgres -d kleo_backup_fixture -v ON_ERROR_STOP=1 \
+              -c "CREATE TABLE locations(id uuid PRIMARY KEY, name text NOT NULL); CREATE TABLE clients(id uuid PRIMARY KEY, full_name text NOT NULL, location_id uuid REFERENCES locations(id)); INSERT INTO locations VALUES('00000000-0000-4000-8000-000000000001','Backup fixture salon'); INSERT INTO clients VALUES('00000000-0000-4000-8000-000000000002','Backup fixture guest','00000000-0000-4000-8000-000000000001');"
           fi
 
       - name: Resolve source without exposing secret
@@ -82,7 +92,7 @@ jobs:
             echo "environment=production-backup-isolated-restore" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run dump, isolated restore and consistency checks
+      - name: Run snapshot-consistent dump, isolated restore and consistency checks
         env:
           SOURCE_DATABASE_URL: ${{ steps.source.outputs.url }}
           BACKUP_EVIDENCE_ENVIRONMENT: ${{ steps.source.outputs.environment }}
@@ -103,7 +113,7 @@ jobs:
           response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
           oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
           test -n "$oidc"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production backup dump + isolated PostgreSQL 17 restore + consistency checks PASS; artifact requirements-evidence-backup-restore"}]}))')"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({entries:[{key:"backup.restore",status:"pass",evidence:"Production PostgreSQL 17 exported-snapshot dump + isolated restore + snapshot-consistent table/row verification PASS; artifact requirements-evidence-backup-restore"}]}))')"
           curl -fsS --retry 3 --max-time 30 \
             -H "Authorization: Bearer $oidc" \
             -H 'Content-Type: application/json' \
@@ -126,7 +136,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                body: `Successful production backup dump + isolated PostgreSQL 17 restore + consistency evidence: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Closing P0.`
+                body: `Successful production PostgreSQL 17 exported-snapshot backup + isolated restore + snapshot-consistent table/row evidence: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Closing P0.`
               });
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -149,7 +159,7 @@ jobs:
             const title = 'P0: backup/restore evidence cycle failed';
             const { data } = await github.rest.issues.listForRepo({owner: context.repo.owner, repo: context.repo.repo, state: 'open'});
             const existing = data.find(i => i.title === title);
-            const body = `A KLEO-NFR-BCK-001 backup/restore evidence cycle failed. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. A failure is release-blocking until a successful restore evidence run exists.`;
+            const body = `A KLEO-NFR-BCK-001 snapshot-consistent backup/restore evidence cycle failed. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. A failure is release-blocking until a successful restore evidence run exists.`;
             if (existing) {
               await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body});
             } else {
