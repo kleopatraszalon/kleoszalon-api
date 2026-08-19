@@ -23,7 +23,7 @@ export async function ensureExecutiveAiMenu(){
         ('analytics.exception_center','Exception Command Center','Siren','/finance/exception-command-center',16),
         ('analytics.exception_intelligence','Exception Intelligence','ChartNoAxesCombined','/finance/exception-command-center/intelligence',17),
         ('analytics.exception_capa','CAPA központ','ClipboardCheck','/finance/exception-command-center/capa',18),
-        ('analytics.capa_workqueue','CAPA vezetői munkasor','ListChecks','/finance/exception-command-center/capa/workqueue',19),
+        ('analytics.capa_workqueue','CAPA vezetői munkasor','ClipboardCheck','/finance/exception-command-center/capa/workqueue',19),
         ('analytics.major_incident','Major Incident / War Room','MonitorPlay','/finance/exception-command-center/major-incidents',20),
         ('analytics.resilience_recovery','Resilience & Recovery','Activity','/finance/exception-command-center/resilience',21)
       ) x(code,name,icon,route,order_index)
