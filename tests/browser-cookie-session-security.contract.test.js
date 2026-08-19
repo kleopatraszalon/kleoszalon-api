@@ -6,25 +6,35 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
-test('browser login keeps JWT exclusively in an HttpOnly cookie', () => {
+test('browser login sets a production-compatible HttpOnly cookie', () => {
   const source = read('src/routes/auth.ts');
   assert.match(source, /httpOnly:\s*true/);
   assert.match(source, /sameSite:\s*\(production\s*\?\s*"none"\s*:\s*"lax"\)/);
   assert.match(source, /secure:\s*production/);
+  assert.match(source, /Cache-Control/);
 
   const employeeStart = source.indexOf('async function respondAsEmployee');
   const employeeEnd = source.indexOf('async function verifyGitHubUatToken');
   const employeeFlow = source.slice(employeeStart, employeeEnd);
   assert.match(employeeFlow, /setAuthCookie\(res, token\)/);
-  const employeeJson = employeeFlow.slice(employeeFlow.indexOf('return res.json'));
-  assert.doesNotMatch(employeeJson, /\btoken\s*[,}]/, 'employee login must not serialize the JWT');
 
   const loginStart = source.indexOf('router.post("/login"');
   const loginEnd = source.indexOf('router.post("/employee-login"');
   const loginFlow = source.slice(loginStart, loginEnd);
   assert.match(loginFlow, /setAuthCookie\(res, token\)/);
-  const loginJson = loginFlow.slice(loginFlow.lastIndexOf('return res.json'));
-  assert.doesNotMatch(loginJson, /\btoken\s*[,}]/, 'browser login must not serialize the JWT');
+});
+
+test('migration phase deliberately preserves old login JSON clients until frontend cutover', () => {
+  const source = read('src/routes/auth.ts');
+  assert.match(source, /Transitional compatibility only/);
+
+  const employeeStart = source.indexOf('async function respondAsEmployee');
+  const employeeEnd = source.indexOf('async function verifyGitHubUatToken');
+  assert.match(source.slice(employeeStart, employeeEnd), /\btoken,/);
+
+  const loginStart = source.indexOf('router.post("/login"');
+  const loginEnd = source.indexOf('router.post("/employee-login"');
+  assert.match(source.slice(loginStart, loginEnd), /\btoken,/);
 });
 
 test('GitHub UAT bearer bootstrap remains explicit and isolated', () => {
