@@ -34,7 +34,12 @@ test('replacement is case-insensitive and removes duplicates',()=>{
   );
 });
 
-test('production start preloads recipient normalization before the API server',()=>{
+test('production start migrates first and still preloads recipient normalization before the API server',()=>{
   const pkg=JSON.parse(fs.readFileSync(path.join(process.cwd(),'package.json'),'utf8'));
-  assert.equal(pkg.scripts.start,'node -r ./scripts/workorder-recipient-env.cjs dist/server.js');
+  const start=String(pkg.scripts.start||'');
+  const migrate='npm run migrate';
+  const api='node -r ./scripts/workorder-recipient-env.cjs dist/server.js';
+  assert.ok(start.startsWith(`${migrate} && `),'production startup must apply versioned migrations first');
+  assert.ok(start.includes(api),'recipient normalization preload must remain attached to the API process');
+  assert.ok(start.indexOf(migrate)<start.indexOf(api),'migration must run before the recipient-preloaded API process');
 });
