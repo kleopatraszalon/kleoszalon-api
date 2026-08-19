@@ -58,9 +58,13 @@ jobs:
             // risk acceptance, not a claim that provider-side rotation occurred.
             details.push('P0/2 credential rotation: operator risk acceptance recorded; rotation deferred');
 
+            // Operator decision 2026-08-19: NAV TEST UAT remains tracked in issue
+            // #212 but is explicitly deferred and outside the current production
+            // release scope. This is deferral, not evidence that NAV TEST passed.
+            details.push('P0/3 NAV TEST UAT: explicitly deferred; issue #212 remains open and non-blocking');
+
             const productionIssues = [
               { number:270, label:'P0/1 backup/restore evidence' },
-              { number:212, label:'P0/3 NAV TEST configuration/UAT' },
             ];
             for (const item of productionIssues) {
               try {
@@ -77,4 +81,4 @@ jobs:
             if (details.length) core.summary.addList(details);
             if (notices.length) core.summary.addHeading('Production blockers still open',2).addList(notices);
             if (failures.length) { core.summary.addHeading('Blocking controls',2).addList(failures); await core.summary.write(); core.setFailed(failures.join(' | ')); }
-            else { core.summary.addRaw(isPullRequest ? 'Remediation PR may proceed; production remains fail-closed for unresolved controls.\n' : 'All required production P0 controls are closed or explicitly risk-accepted.\n'); await core.summary.write(); }
+            else { core.summary.addRaw(isPullRequest ? 'Remediation PR may proceed; production remains fail-closed for unresolved blocking controls.\n' : 'All required production P0 controls are closed or explicitly risk-accepted/deferred.\n'); await core.summary.write(); }
