@@ -3,6 +3,26 @@ import db from "../db";
 let schemaReady:Promise<void>|null=null;
 export async function ensureSelfServiceSignupSchema(){
  if(!schemaReady){schemaReady=db.query(`
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+  CREATE TABLE IF NOT EXISTS tenant_onboarding (
+    tenant_id bigint PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    status text NOT NULL DEFAULT 'in_progress' CHECK(status IN('in_progress','blocked','ready')),
+    current_step text NOT NULL DEFAULT 'company',
+    started_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    created_by text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE TABLE IF NOT EXISTS tenant_onboarding_events (
+    id bigserial PRIMARY KEY,
+    tenant_id bigint NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    step_key text NOT NULL,
+    event_type text NOT NULL,
+    actor_user_id text,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS tenant_onboarding_events_tenant_idx ON tenant_onboarding_events(tenant_id,created_at DESC);
   CREATE TABLE IF NOT EXISTS saas_self_service_signups(
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     request_key text NOT NULL UNIQUE,
