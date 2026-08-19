@@ -8,6 +8,7 @@ import marketingAutomationRouter from './marketingAutomation';
 import clientDetailRecoveryRouter from './clientDetailRecovery';
 import customerIntelligenceRouter from './customerIntelligence';
 import nbaMarketingAutomationRouter from './nbaMarketingAutomation';
+import nbaAttributionAdminRouter from './nbaAttributionAdmin';
 import clientsCoreRouter from './clientsCore';
 
 const router=Router();
@@ -18,6 +19,7 @@ router.use(clientGovernanceRouter);
 router.use(clientReceptionContextRouter);
 router.use('/marketing-automation',marketingAutomationRouter);
 router.use(clientDetailRecoveryRouter);
+router.use('/intelligence/attribution',nbaAttributionAdminRouter);
 router.use('/intelligence/marketing',nbaMarketingAutomationRouter);
 router.use('/intelligence',customerIntelligenceRouter);
 router.use(clientsCoreRouter);
