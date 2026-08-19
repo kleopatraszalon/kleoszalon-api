@@ -14,6 +14,18 @@ const blockedPathPatterns = [
   /\.(secret|secrets)$/i,
 ];
 
+const blockedRootArtifactPatterns = [
+  /^[^/]+\.(lnk|exe|zip)$/i,
+  /^desktop\.ini$/i,
+];
+const blockedExactRootArtifacts = new Set([
+  '({',
+  'm.parent_id',
+  'nvm',
+  'Új Szöveges dokumentum.txt',
+]);
+const blockedTrackedDirectories = ['node_modules/', 'dist/'];
+
 const contentPatterns = [
   { name: 'private key material', regex: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
   { name: 'GitHub classic token', regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
@@ -44,10 +56,14 @@ function suspiciousPostgresUrl(raw) {
 const failures = [];
 let checked = 0;
 for (const file of tracked) {
-  // Historical repository bloat may still contain tracked dependencies; do not
-  // treat third-party package documentation/test fixtures as project secrets.
-  if (file.startsWith('node_modules/')) continue;
-
+  if (blockedTrackedDirectories.some(prefix => file.startsWith(prefix))) {
+    failures.push(`${file}: generated dependency/build output must not be tracked`);
+    continue;
+  }
+  if (blockedRootArtifactPatterns.some(pattern => pattern.test(file)) || blockedExactRootArtifacts.has(file)) {
+    failures.push(`${file}: blocked root-level local/binary artifact`);
+    continue;
+  }
   if (blockedPathPatterns.some(pattern => pattern.test(file))) {
     failures.push(`${file}: blocked secret-bearing filename`);
     continue;
@@ -73,9 +89,9 @@ for (const file of tracked) {
 }
 
 if (failures.length) {
-  console.error('Secret leak guard FAILED. Remove or replace the following tracked material:');
+  console.error('Repository security/hygiene guard FAILED. Remove or replace the following tracked material:');
   for (const failure of [...new Set(failures)]) console.error(` - ${failure}`);
   process.exit(1);
 }
 
-console.log(`Secret leak guard PASS (${checked} project files checked).`);
+console.log(`Repository security/hygiene guard PASS (${checked} project files checked).`);
