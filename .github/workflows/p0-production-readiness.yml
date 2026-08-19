@@ -49,10 +49,9 @@ jobs:
                 : 'Checking all production P0 controls'
             });
 
-            // P0/4 is proven from the actual GitHub branch-protection configuration.
-            // Do not require governance issue #320 to be closed here: that issue is
-            // intentionally closed by p0-close-main-protection-on-success.yml after
-            // this readiness workflow succeeds. Requiring it here creates a deadlock.
+            // P0/4 is proven from active rules that apply to main. This endpoint only
+            // needs repository metadata read permission, unlike the classic branch-
+            // protection admin endpoint, so GITHUB_TOKEN can verify it fail-closed.
             try {
               const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
               if (!branch.data.protected) {
@@ -61,8 +60,20 @@ jobs:
                 details.push('P0/4: main branch reports protected=true');
               }
 
-              const protection = await github.rest.repos.getBranchProtection({ owner, repo, branch: 'main' });
-              const contexts = protection.data.required_status_checks?.contexts || [];
+              const rulesResponse = await github.request('GET /repos/{owner}/{repo}/rules/branches/{branch}', {
+                owner,
+                repo,
+                branch: 'main',
+                per_page: 100,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' }
+              });
+              const rules = Array.isArray(rulesResponse.data) ? rulesResponse.data : [];
+
+              const statusRule = rules.find(rule => rule.type === 'required_status_checks');
+              const ruleChecks = statusRule?.parameters?.required_status_checks || [];
+              const ruleContexts = ruleChecks.map(check => String(check.context || '')).filter(Boolean);
+              const branchContexts = branch.data.protection?.required_status_checks?.contexts || [];
+              const contexts = [...new Set([...ruleContexts, ...branchContexts])];
               for (const required of canonicalRequiredChecks) {
                 if (!contexts.includes(required)) {
                   failures.push(`P0/4: required status check ${required} is missing on main`);
@@ -72,30 +83,29 @@ jobs:
                 details.push(`P0/4: canonical required checks active: ${canonicalRequiredChecks.join(', ')}`);
               }
 
-              if (!protection.data.required_pull_request_reviews) {
-                failures.push('P0/4: pull-request review requirement is not enabled on main');
+              const pullRequestRule = rules.find(rule => rule.type === 'pull_request');
+              const approvals = Number(pullRequestRule?.parameters?.required_approving_review_count || 0);
+              if (!pullRequestRule) {
+                failures.push('P0/4: pull-request rule is not active on main');
+              } else if (approvals < 1) {
+                failures.push('P0/4: at least one approving PR review is not required on main');
               } else {
-                const approvals = Number(protection.data.required_pull_request_reviews.required_approving_review_count || 0);
-                if (approvals < 1) {
-                  failures.push('P0/4: at least one approving PR review is not required on main');
-                } else {
-                  details.push(`P0/4: required approving PR reviews=${approvals}`);
-                }
+                details.push(`P0/4: required approving PR reviews=${approvals}`);
               }
 
-              if (protection.data.allow_force_pushes?.enabled === true) {
-                failures.push('P0/4: force pushes are allowed on main');
+              if (!rules.some(rule => rule.type === 'non_fast_forward')) {
+                failures.push('P0/4: non-fast-forward protection is not active; force pushes are not proven blocked');
               } else {
-                details.push('P0/4: force pushes are disabled');
+                details.push('P0/4: non-fast-forward rule active; force pushes blocked');
               }
 
-              if (protection.data.allow_deletions?.enabled === true) {
-                failures.push('P0/4: branch deletion is allowed on main');
+              if (!rules.some(rule => rule.type === 'deletion')) {
+                failures.push('P0/4: deletion protection rule is not active on main');
               } else {
-                details.push('P0/4: branch deletion is disabled');
+                details.push('P0/4: branch deletion protection rule active');
               }
             } catch (error) {
-              failures.push(`P0/4: readable branch protection metadata cannot be proven (${error.status || error.message})`);
+              failures.push(`P0/4: readable branch governance rules cannot be proven (${error.status || error.message})`);
             }
 
             const productionIssues = [
