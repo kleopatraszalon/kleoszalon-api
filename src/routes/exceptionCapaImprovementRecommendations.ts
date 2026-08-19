@@ -14,11 +14,14 @@ import {
   ensureExceptionCapaManagementQueueSchema,
   getExceptionCapaManagementQueueSummary,
   listExceptionCapaManagementQueue,
+  runExceptionCapaManagementEscalations,
+  startExceptionCapaManagementEscalationScheduler,
 } from "../services/exceptionCapaManagementQueue";
 import {locationBelongsToTenant,resolveTenantIdentity,tenantLocationIds} from "../saas/tenantAccess";
 
 const router=Router();
 startExceptionCapaImprovementRecommendationScheduler();
+startExceptionCapaManagementEscalationScheduler();
 void ensureExceptionCapaImprovementRecommendationSchema().catch(error=>console.error('[exception-capa] improvement recommendation schema bootstrap failed',error));
 void ensureExceptionCapaManagementQueueSchema().catch(error=>console.error('[exception-capa] management workqueue schema bootstrap failed',error));
 
@@ -58,6 +61,10 @@ async function workqueueScope(req:AuthRequest){
 
 router.get('/intelligence/capa/improvement-workqueue/summary',async(req:AuthRequest,res,next)=>{try{
   const{locations}=await workqueueScope(req);res.json(await getExceptionCapaManagementQueueSummary(locations));
+}catch(error:any){sendError(error,res,next)}});
+
+router.post('/intelligence/capa/improvement-workqueue/escalations/preview',async(req:AuthRequest,res,next)=>{try{
+  const{locations}=await workqueueScope(req);res.json(await runExceptionCapaManagementEscalations({dryRun:true,locationIds:locations}));
 }catch(error:any){sendError(error,res,next)}});
 
 router.get('/intelligence/capa/improvement-workqueue',async(req:AuthRequest,res,next)=>{try{
