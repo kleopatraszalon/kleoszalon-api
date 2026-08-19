@@ -31,15 +31,16 @@ test('tenant-wide queue still proves every record through tenant locations',()=>
   assert.match(service,/rc\.location_id::text = ANY\(\$1::text\[\]\)/);
 });
 
-test('workqueue API supports summary filtering owner assignment and acknowledgement',()=>{
+test('workqueue API supports summary filtering owner assignment acknowledgement and safe escalation preview',()=>{
   const route=read('src/routes/exceptionCapaImprovementRecommendations.ts');
   for(const endpoint of [
     '/intelligence/capa/improvement-workqueue/summary',
+    '/intelligence/capa/improvement-workqueue/escalations/preview',
     '/intelligence/capa/improvement-workqueue',
     '/intelligence/capa/:id/improvement-workqueue/assign',
     '/intelligence/capa/:id/improvement-workqueue/acknowledge'
   ])assert.ok(route.includes(endpoint),endpoint);
-  for(const marker of ['status:String(req.query.status','severity:String(req.query.severity','onlyOverdue','onlyUnassigned'])assert.ok(route.includes(marker),marker);
+  for(const marker of ['status:String(req.query.status','severity:String(req.query.severity','onlyOverdue','onlyUnassigned','dryRun:true,locationIds:locations'])assert.ok(route.includes(marker),marker);
 });
 
 test('assignment cannot bypass CAPA improvement governance and notifies only explicit email owners',()=>{
@@ -50,4 +51,16 @@ test('assignment cannot bypass CAPA improvement governance and notifies only exp
   assert.match(src,/sendEmail\(\{ to: recipient, subject, text \}\)/);
   assert.match(src,/SMTP nem küldött; az üzenet naplózásra került/);
   assert.doesNotMatch(src,/INSERT INTO management_improvement_projects/);
+});
+
+test('automatic management escalation is opt-in tenant-safe cooldown controlled and dry-run previewable',()=>{
+  const src=read('src/services/exceptionCapaManagementQueue.ts');
+  for(const marker of [
+    'CAPA_MANAGEMENT_ESCALATION_ENABLED','CAPA_MANAGEMENT_ESCALATION_COOLDOWN_MINUTES','CAPA_MANAGEMENT_ACK_GRACE_HOURS',
+    'notificationCoolingDown','tenantManagementRecipients','JOIN tenant_users tu ON tu.tenant_id=l.tenant_id','runExceptionCapaManagementEscalations',
+    'options.locationIds','critical_unassigned','critical_risk','deadline_overdue','acknowledgement_overdue','dry_run_count',
+    'startExceptionCapaManagementEscalationScheduler','!ESCALATION_ENABLED','7,37 * * * *'
+  ])assert.ok(src.includes(marker),marker);
+  assert.match(src,/\$2::text\[\] IS NULL OR rc\.location_id::text=ANY\(\$2::text\[\]\)/);
+  assert.match(src,/created_at > now\(\)-\(\$4::int\*interval '1 minute'\)/);
 });
