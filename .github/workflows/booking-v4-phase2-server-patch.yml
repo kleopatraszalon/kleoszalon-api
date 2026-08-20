@@ -47,3 +47,4 @@ jobs:
             git commit -m "feat(booking-v4): mount phase 2 chain router"
             git push origin HEAD:feature/booking-4-phase2
           fi
+# retrigger: 2026-08-20T19:44+02:00
