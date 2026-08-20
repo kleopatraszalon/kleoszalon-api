@@ -7,10 +7,13 @@ import franchiseAccountingRouter from "./franchiseAccounting";
 import saasPlatformRouter from "./saasPlatform";
 import saasLifecyclePolicyRouter from "./saasLifecyclePolicy";
 import tenantAdminInvitationsPublic from "./tenantAdminInvitationsPublic";
+import saasRevenueRouter,{saasRevenuePublicRouter} from "./saasRevenue";
 
 const router = Router();
 router.use("/admin-invitations",tenantAdminInvitationsPublic);
+router.use("/billing",saasRevenuePublicRouter);
 router.use(requireAuth, requireTenantContext);
+router.use("/revenue",saasRevenueRouter);
 router.use("/franchise-finance",franchiseFinanceRouter);
 router.use("/franchise-accounting",franchiseAccountingRouter);
 router.use("/platform",saasLifecyclePolicyRouter);
