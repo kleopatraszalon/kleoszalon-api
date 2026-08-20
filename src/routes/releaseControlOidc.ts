@@ -2,34 +2,43 @@ import { Router, type Request, type Response } from "express";
 import axios from "axios";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
-import { currentReleaseRef, recordReleaseEvidence } from "./releaseControl";
+import { currentReleaseRef, recordReleaseComponent, recordReleaseEvidence } from "./releaseControl";
 
 const router = Router();
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const RELEASE_CONTROL_AUDIENCE = "kleoszalon-release-control";
 
-type WorkflowRule = { repository: string; workflow_ref: string; keys: Set<string> };
+type EvidenceScope = "backend" | "frontend" | "operational";
+type WorkflowRule = { repository: string; workflow_ref: string; keys: Set<string>; scope: EvidenceScope };
 const WORKFLOW_RULES: WorkflowRule[] = [
   {
     repository: "kleopatraszalon/kleoszalon-api",
     workflow_ref: "kleopatraszalon/kleoszalon-api/.github/workflows/render-deploy.yml@refs/heads/main",
     keys: new Set(["tests.backend", "build.backend", "tests.integration", "tests.financial", "tests.saas", "tests.rbac"]),
+    scope: "backend",
   },
   {
     repository: "kleopatraszalon/kleoszalon-api",
     workflow_ref: "kleopatraszalon/kleoszalon-api/.github/workflows/backup-restore-evidence.yml@refs/heads/main",
     keys: new Set(["backup.restore"]),
+    scope: "operational",
   },
   {
     repository: "kleopatraszalon/kleoszalon-frontend",
     workflow_ref: "kleopatraszalon/kleoszalon-frontend/.github/workflows/render-deploy.yml@refs/heads/main",
     keys: new Set(["version.frontend", "tests.frontend", "build.frontend"]),
+    scope: "frontend",
   },
 ];
 
 function bearerToken(req: Request): string {
   const authorization = String(req.headers.authorization || "").trim();
   return authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
+}
+
+function validSha(value: unknown): string | null {
+  const ref = String(value || "").trim();
+  return /^[a-f0-9]{40}$/i.test(ref) ? ref.toLowerCase() : null;
 }
 
 async function verifyGitHubWorkflow(token: string) {
@@ -61,21 +70,41 @@ router.post("/evidence", async (req: Request, res: Response) => {
   if (!oidcToken) return res.status(401).json({ error: "GitHub OIDC token szükséges." });
   try {
     const { claims, rule } = await verifyGitHubWorkflow(oidcToken);
-    const currentRef = currentReleaseRef();
+    const currentBackendRef = currentReleaseRef();
     const expectedRef = String(req.body?.expected_release_ref || "").trim();
-    if (expectedRef && expectedRef !== currentRef) {
+
+    if (rule.scope === "backend" && expectedRef && expectedRef !== currentBackendRef) {
       return res.status(409).json({
         error: "release_ref_mismatch",
         message: "A workflow commitja még nem azonos a futó backend release-szel.",
         expected_release_ref: expectedRef,
-        current_release_ref: currentRef,
+        current_release_ref: currentBackendRef,
       });
     }
+
     const entries = Array.isArray(req.body?.entries) ? req.body.entries.slice(0, 20) : [];
     if (!entries.length) return res.status(400).json({ error: "Legalább egy release evidence tétel szükséges." });
+
     const runUrl = `https://github.com/${claims.repository}/actions/runs/${String(claims?.run_id || "")}`;
     const updatedBy = `github-actions:${String(claims?.actor || "unknown")}`;
     const source = `github-actions:${String(claims?.workflow_ref || "workflow")}`.slice(0, 300);
+
+    let evidenceRef = currentBackendRef;
+    let componentRef: string | null = null;
+    if (rule.scope === "frontend") {
+      componentRef = validSha(claims?.sha || req.body?.component_ref);
+      if (!componentRef) throw new Error("A frontend workflow hiteles commit SHA-ja hiányzik.");
+      await recordReleaseComponent({
+        component: "frontend",
+        component_ref: componentRef,
+        source,
+        updated_by: updatedBy,
+      });
+      evidenceRef = `frontend:${componentRef}`;
+    } else if (rule.scope === "operational") {
+      evidenceRef = "operational:backup";
+    }
+
     const saved = [];
     for (const entry of entries) {
       const key = String(entry?.key || "").trim();
@@ -83,9 +112,9 @@ router.post("/evidence", async (req: Request, res: Response) => {
       const status = String(entry?.status || "pass").trim();
       if (!["pass", "warning", "fail", "pending"].includes(status)) return res.status(400).json({ error: `Érvénytelen release gate státusz: ${status}` });
       const detail = String(entry?.evidence || "").trim();
-      const evidence = [detail, `Run: ${runUrl}`].filter(Boolean).join(" · ").slice(0, 4000);
+      const evidence = [detail, componentRef ? `Component SHA: ${componentRef}` : "", `Run: ${runUrl}`].filter(Boolean).join(" · ").slice(0, 4000);
       saved.push(await recordReleaseEvidence({
-        release_ref: currentRef,
+        release_ref: evidenceRef,
         key,
         status: status as "pass" | "warning" | "fail" | "pending",
         evidence,
@@ -97,10 +126,13 @@ router.post("/evidence", async (req: Request, res: Response) => {
       repository: String(claims?.repository || ""),
       workflow_ref: String(claims?.workflow_ref || ""),
       run_id: String(claims?.run_id || ""),
-      release_ref: currentRef,
+      scope: rule.scope,
+      backend_release_ref: currentBackendRef,
+      evidence_ref: evidenceRef,
+      component_ref: componentRef,
       keys: saved.map((x: any) => x.check_key),
     });
-    return res.json({ ok: true, release_ref: currentRef, saved });
+    return res.json({ ok: true, release_ref: evidenceRef, backend_release_ref: currentBackendRef, component_ref: componentRef, saved });
   } catch (error: any) {
     console.warn("[RELEASE-CONTROL] GitHub OIDC evidence rejected:", error?.message || String(error));
     return res.status(401).json({ error: "Érvénytelen vagy nem engedélyezett GitHub release workflow." });

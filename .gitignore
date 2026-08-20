@@ -21,3 +21,13 @@ id_ed25519
 *.secret
 *.secrets
 secrets.local.*
+
+# Root-level local/build artifacts
+/*.lnk
+/*.exe
+/*.zip
+/desktop.ini
+/({
+/m.parent_id
+/nvm
+/Új Szöveges dokumentum.txt

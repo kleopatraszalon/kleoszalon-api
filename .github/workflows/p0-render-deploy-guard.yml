@@ -67,10 +67,18 @@ jobs:
               governanceFailures.push('P0/4 branch governance evidence issue #320 cannot be verified');
             }
 
+            // Operator decision 2026-08-19: P0/2 credential rotation is an explicit
+            // risk acceptance under restricted single-operator access. Rotation is
+            // deferred; this does not claim provider-side rotation evidence.
+            core.notice('P0/2 credential rotation risk acceptance recorded; deploy guard does not block on issue #62.');
+
+            // Operator decision 2026-08-19: P0/3 NAV TEST UAT is explicitly deferred.
+            // The issue remains open and visible, but it is not a production deploy
+            // blocker until the NAV integration is brought into the release scope.
+            core.notice('P0/3 NAV TEST UAT is explicitly deferred; deploy guard does not block on issue #212.');
+
             for (const item of [
               { number: 270, label: 'P0/1 backup/restore' },
-              { number: 62, label: 'P0/2 credential rotation' },
-              { number: 212, label: 'P0/3 NAV TEST' },
             ]) {
               try {
                 const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
@@ -99,9 +107,11 @@ jobs:
             core.summary.addHeading('P0 production deployment guard');
             core.summary.addRaw(`Candidate Render workflow run: ${run.id}\n`);
             core.summary.addRaw(`Candidate SHA: ${run.head_sha}\n`);
+            core.summary.addRaw('P0/2 credential rotation: explicit operator risk acceptance; rotation deferred.\n');
+            core.summary.addRaw('P0/3 NAV TEST UAT: explicit operator deferral; issue #212 remains open and non-blocking.\n');
 
             if (!governanceFailures.length && !p0Failures.length) {
-              core.summary.addRaw('All four P0 controls are proven closed. Render deploy is allowed.\n');
+              core.summary.addRaw('All blocking production controls are proven closed or explicitly risk-accepted/deferred. Render deploy is allowed.\n');
               await core.summary.write();
               return;
             }
