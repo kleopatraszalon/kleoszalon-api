@@ -98,9 +98,14 @@ router.get("/catalog", async (req, res) => {
       db.query(
         `SELECT s.id,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,
                 COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric price,
-                COALESCE(st.name,'Egyéb szolgáltatások') category_name
+                COALESCE(bsc.name,st.name,'Egyéb szolgáltatások') category_name,
+                COALESCE(bd.code,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END) department_code,
+                COALESCE(bd.name,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END) department_name
          FROM services s
          LEFT JOIN service_types st ON st.id=s.service_type_id
+         LEFT JOIN booking_service_taxonomy bst ON bst.service_id=s.id
+         LEFT JOIN booking_service_categories bsc ON bsc.id=bst.category_id AND bsc.is_active=true
+         LEFT JOIN booking_departments bd ON bd.id=bsc.department_id AND bd.is_active=true
          WHERE s.is_active=true AND COALESCE(s.online_bookable,true)=true
            AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id)
                 OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$1::uuid))
