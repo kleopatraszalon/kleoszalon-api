@@ -1,30 +1,13 @@
 import { Router } from "express";
 import db from "../db";
+import ensureBookingV4 from "../booking/ensureBookingV4";
 
 const router = Router();
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const normCode=(v:unknown)=>String(v||"").trim().toUpperCase();
 const asIds=(v:unknown)=>Array.isArray(v)?v.map(String).filter(Boolean):String(v||"").split(",").map(x=>x.trim()).filter(Boolean);
 
-let schemaReady=false;
-async function ensureSchema(){
-  if(schemaReady)return;
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS booking_guest_beneficiaries(
-      appointment_id uuid PRIMARY KEY REFERENCES appointments(id) ON DELETE CASCADE,
-      booked_for_other boolean NOT NULL DEFAULT false,
-      guest_name text,guest_phone text,guest_email text,relationship_label text,
-      created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS booking_marketing_consents(
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),appointment_id uuid REFERENCES appointments(id) ON DELETE SET NULL,
-      email text,phone text,channel text NOT NULL DEFAULT 'email',consented boolean NOT NULL,
-      consent_text_version text NOT NULL DEFAULT 'booking-v4-2026-08-20',source text NOT NULL DEFAULT 'online_booking',
-      consented_at timestamptz,withdrawn_at timestamptz,created_at timestamptz NOT NULL DEFAULT now()
-    );
-  `);
-  schemaReady=true;
-}
+router.use(async(_req,res,next)=>{try{await ensureBookingV4();next()}catch(error:any){res.status(500).json({error:"A Booking 4.0 adatmodell inicializálása sikertelen.",detail:error?.message||String(error)})}});
 
 router.get("/v4/last-minute",async(req,res)=>{
   try{
@@ -45,10 +28,7 @@ router.get("/v4/last-minute",async(req,res)=>{
       ORDER BY o.start_time ASC
       LIMIT 40`,[locationId||null]);
     res.json({offers:rows});
-  }catch(error:any){
-    if(error?.code==='42P01')return res.json({offers:[],booking_v4_schema:false});
-    res.status(500).json({error:"A Last Minute ajánlatok nem tölthetők be.",detail:error?.message||String(error)});
-  }
+  }catch(error:any){res.status(500).json({error:"A Last Minute ajánlatok nem tölthetők be.",detail:error?.message||String(error)});}
 });
 
 router.get("/v4/staff",async(req,res)=>{
@@ -71,10 +51,7 @@ router.get("/v4/staff",async(req,res)=>{
         AND ($3='' OR lower(COALESCE(lvl.code,''))=lower($3))
       ORDER BY e.is_top_specialist DESC,full_name`,[locationId||null,category,level]);
     res.json({staff:rows});
-  }catch(error:any){
-    if(error?.code==='42P01'||error?.code==='42703')return res.json({staff:[],booking_v4_schema:false});
-    res.status(500).json({error:"A szakemberek nem tölthetők be.",detail:error?.message||String(error)});
-  }
+  }catch(error:any){res.status(500).json({error:"A szakemberek nem tölthetők be.",detail:error?.message||String(error)});}
 });
 
 router.post("/v4/coupon/validate",async(req,res)=>{
@@ -101,15 +78,11 @@ router.post("/v4/coupon/validate",async(req,res)=>{
     const discount=c.discount_type==='percent'?subtotal*(Number(c.discount_value)/100):Number(c.discount_value);
     const capped=Math.max(0,Math.min(subtotal,discount));
     res.json({valid:true,coupon_id:c.id,code:c.code,name:c.name,discount_type:c.discount_type,discount_value:Number(c.discount_value),discount_amount:Math.round(capped),total_after_discount:Math.max(0,Math.round(subtotal-capped)),combinable:Boolean(c.combinable),exclude_last_minute:Boolean(c.exclude_last_minute)});
-  }catch(error:any){
-    if(error?.code==='42P01')return res.status(503).json({valid:false,error:"A Booking 4.0 kuponmodul még nincs inicializálva."});
-    res.status(500).json({valid:false,error:"A kupon ellenőrzése sikertelen.",detail:error?.message||String(error)});
-  }
+  }catch(error:any){res.status(500).json({valid:false,error:"A kupon ellenőrzése sikertelen.",detail:error?.message||String(error)});}
 });
 
 router.post("/v4/booking-meta",async(req,res)=>{
   try{
-    await ensureSchema();
     const appointmentId=String(req.body?.appointment_id||"").trim();
     if(!UUID_RE.test(appointmentId))return res.status(400).json({error:"Érvénytelen appointment_id."});
     const bookedForOther=Boolean(req.body?.booking_for_other);
