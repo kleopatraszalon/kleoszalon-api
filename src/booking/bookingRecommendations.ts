@@ -1,7 +1,7 @@
 import axios from 'axios';
 import db from '../db';
 
-export type BookingRecommendation={type:'service'|'promotion';service_id:string|null;title:string;message:string;name?:string;price?:number;duration_minutes?:number;category_name?:string;campaign_id?:string;discount_type?:string;discount_value?:number;valid_until?:string|null;ai_generated:boolean};
+export type BookingRecommendation={id?:string;type:'service'|'promotion';service_id:string|null;title:string;message:string;name?:string;price?:number;duration_minutes?:number;category_name?:string;campaign_id?:string;discount_type?:string;discount_value?:number;valid_until?:string|null;ai_generated:boolean};
 
 const fallbackMessage=(name:string,duration:number)=>`${name} jól kiegészítheti a választott kezelést, és körülbelül ${duration} perccel hosszabbítja a foglalást.`;
 const outputText=(data:any)=>String(data?.output_text||data?.output?.flatMap((x:any)=>x?.content||[]).find((x:any)=>x?.type==='output_text')?.text||'');
@@ -32,12 +32,15 @@ export async function bookingRecommendations(locationId:string,selectedIds:strin
     AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid))`,[selected,locationId])).rows:[];
   if(selectedRows.length!==selected.length)return{recommendations:[],ai_used:false,selected_service_ids:selected};
   const categoryIds=selectedRows.map((x:any)=>x.service_type_id).filter(Boolean);
+  const configured=selected.length?(await db.query(`SELECT r.id::text recommendation_id,r.recommended_service_id::text service_id,r.recommendation_type,r.label,r.discount_percent,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric price,COALESCE(st.name,'Kiegészítő szolgáltatás') category_name FROM booking_service_recommendations r JOIN services s ON s.id=r.recommended_service_id LEFT JOIN service_types st ON st.id=s.service_type_id WHERE r.is_active=true AND r.source_service_id=ANY($1::uuid[]) AND (r.location_id IS NULL OR r.location_id=$2::uuid) AND COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true ORDER BY r.priority,r.updated_at DESC LIMIT 8`,[selected,locationId])).rows:[];
   const services=selected.length?(await db.query(`SELECT s.id::text,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric price,COALESCE(st.name,'Kiegészítő szolgáltatás') category_name
     FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id
     WHERE COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true AND NOT(s.id=ANY($1::uuid[]))
       AND (NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id) OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$2::uuid))
     ORDER BY CASE WHEN s.service_type_id::text=ANY($3::text[]) THEN 0 ELSE 1 END,COALESCE(s.promo_price,s.list_price,s.base_price,0),s.name LIMIT 3`,[selected,locationId,categoryIds])).rows:[];
-  let recommendations:BookingRecommendation[]=services.map((s:any)=>({type:'service',service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}));
+  const configuredItems:BookingRecommendation[]=configured.map((r:any)=>({id:String(r.recommendation_id),type:'service',service_id:String(r.service_id),name:r.name,price:Number(r.price||0),duration_minutes:Number(r.duration_minutes||30),category_name:r.category_name,title:r.recommendation_type==='upsell'?'Prémium választás':r.recommendation_type==='bundle'?'Csomagban ajánljuk':'Ehhez ajánljuk',message:String(r.label||fallbackMessage(r.name,Number(r.duration_minutes||30))),ai_generated:false}));
+  const configuredServiceIds=new Set(configuredItems.map(x=>String(x.service_id)));
+  let recommendations:BookingRecommendation[]=[...configuredItems,...services.filter((s:any)=>!configuredServiceIds.has(String(s.id))).map((s:any)=>({type:'service' as const,service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}))];
   try{
     const campaignTable=(await db.query(`SELECT to_regclass('public.loyalty_coupon_campaigns') IS NOT NULL ok`)).rows[0]?.ok;
     if(campaignTable){
