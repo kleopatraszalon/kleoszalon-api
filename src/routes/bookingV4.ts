@@ -18,46 +18,25 @@ router.get("/v4/pricelist",async(req,res)=>{
       db.query(`
         SELECT s.id,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,
                COALESCE(st.name,'Egyéb') category_name,
-               CASE
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet'
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage'
-                 ELSE 'beauty'
-               END department_code,
-               CASE
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás'
-                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs'
-                 ELSE 'Kozmetika'
-               END department_name,
+               CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet'
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END department_code,
+               CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás'
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END department_name,
                COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric base_price,
-               COALESCE((
-                 SELECT jsonb_object_agg(x.code,x.price)
-                 FROM (
-                   SELECT DISTINCT ON (lvl.code) lvl.code,p.price
-                   FROM booking_service_prices_by_level p
-                   JOIN booking_staff_levels lvl ON lvl.id=p.staff_level_id AND lvl.is_active=true
-                   WHERE p.service_id=s.id AND p.is_active=true
-                     AND ($1::uuid IS NULL OR p.location_id=$1::uuid OR p.location_id IS NULL)
-                   ORDER BY lvl.code,(p.location_id=$1::uuid) DESC NULLS LAST,p.updated_at DESC
-                 ) x
-               ),'{}'::jsonb) level_prices
-        FROM services s
-        LEFT JOIN service_types st ON st.id=s.service_type_id
+               COALESCE((SELECT jsonb_object_agg(x.code,x.price) FROM (
+                 SELECT DISTINCT ON (lvl.code) lvl.code,p.price FROM booking_service_prices_by_level p
+                 JOIN booking_staff_levels lvl ON lvl.id=p.staff_level_id AND lvl.is_active=true
+                 WHERE p.service_id=s.id AND p.is_active=true AND ($1::uuid IS NULL OR p.location_id=$1::uuid OR p.location_id IS NULL)
+                 ORDER BY lvl.code,(p.location_id=$1::uuid) DESC NULLS LAST,p.updated_at DESC) x),'{}'::jsonb) level_prices
+        FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id
         WHERE COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true
           AND ($1::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id)
                OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$1::uuid))
         ORDER BY department_name,category_name,s.name`,[locationId||null])
     ]);
-    const services=servicesResult.rows.map((row:any)=>({
-      ...row,
-      level_prices:{
-        normal:Number(row.level_prices?.normal??row.base_price??0),
-        top:row.level_prices?.top!=null?Number(row.level_prices.top):null,
-        master:row.level_prices?.master!=null?Number(row.level_prices.master):null,
-        trainee:row.level_prices?.trainee!=null?Number(row.level_prices.trainee):null,
-      }
-    }));
+    const services=servicesResult.rows.map((row:any)=>({...row,level_prices:{normal:Number(row.level_prices?.normal??row.base_price??0),top:row.level_prices?.top!=null?Number(row.level_prices.top):null,master:row.level_prices?.master!=null?Number(row.level_prices.master):null,trainee:row.level_prices?.trainee!=null?Number(row.level_prices.trainee):null}}));
     res.json({locations:locationsResult.rows,services});
   }catch(error:any){res.status(500).json({error:"Az árlista nem tölthető be.",detail:error?.message||String(error)});}
 });
@@ -66,94 +45,78 @@ router.get("/v4/last-minute",async(req,res)=>{
   try{
     const locationId=String(req.query.location_id||"").trim();
     if(locationId&&!UUID_RE.test(locationId))return res.status(400).json({error:"Érvénytelen location_id."});
-    const {rows}=await db.query(`
-      SELECT o.id,o.location_id,o.service_id,o.employee_id,o.start_time,o.end_time,
-             o.original_price,o.offer_price,o.discount_percent,o.expires_at,
-             l.name location_name,s.name service_name,
-             COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') employee_name,
-             e.photo_url
-      FROM booking_last_minute_offers o
-      JOIN locations l ON l.id=o.location_id
-      JOIN services s ON s.id=o.service_id
-      JOIN employees e ON e.id=o.employee_id
-      WHERE o.status='active' AND o.expires_at>now() AND o.start_time>now()
-        AND ($1::uuid IS NULL OR o.location_id=$1::uuid)
-      ORDER BY o.start_time ASC
-      LIMIT 40`,[locationId||null]);
+    const {rows}=await db.query(`SELECT o.id,o.location_id,o.service_id,o.employee_id,o.start_time,o.end_time,o.original_price,o.offer_price,o.discount_percent,o.expires_at,l.name location_name,s.name service_name,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') employee_name,e.photo_url FROM booking_last_minute_offers o JOIN locations l ON l.id=o.location_id JOIN services s ON s.id=o.service_id JOIN employees e ON e.id=o.employee_id WHERE o.status='active' AND o.expires_at>now() AND o.start_time>now() AND ($1::uuid IS NULL OR o.location_id=$1::uuid) ORDER BY o.start_time ASC LIMIT 40`,[locationId||null]);
     res.json({offers:rows});
   }catch(error:any){res.status(500).json({error:"A Last Minute ajánlatok nem tölthetők be.",detail:error?.message||String(error)});}
 });
 
 router.get("/v4/staff",async(req,res)=>{
   try{
-    const locationId=String(req.query.location_id||"").trim();
-    const category=String(req.query.category||"").trim();
-    const level=String(req.query.level||"").trim();
+    const locationId=String(req.query.location_id||"").trim(),category=String(req.query.category||"").trim(),level=String(req.query.level||"").trim();
     if(locationId&&!UUID_RE.test(locationId))return res.status(400).json({error:"Érvénytelen location_id."});
-    const {rows}=await db.query(`
-      SELECT e.id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name,
-             e.photo_url,e.public_bio,e.is_top_specialist,lvl.code staff_level_code,lvl.name staff_level_name,
-             COALESCE((SELECT jsonb_agg(jsonb_build_object('code',c.category_code,'name',c.category_name,'primary',c.is_primary) ORDER BY c.is_primary DESC,c.category_name)
-                       FROM employee_professional_categories c WHERE c.employee_id=e.id),'[]'::jsonb) categories,
-             COALESCE((SELECT jsonb_agg(jsonb_build_object('url',p.image_url,'caption',p.caption) ORDER BY p.sort_order,p.created_at)
-                       FROM employee_reference_photos p WHERE p.employee_id=e.id AND p.is_active=true),'[]'::jsonb) reference_photos
-      FROM employees e
-      LEFT JOIN booking_staff_levels lvl ON lvl.id=e.booking_staff_level_id
-      WHERE e.active=true AND ($1::uuid IS NULL OR e.location_id=$1::uuid OR e.location_id IS NULL)
-        AND ($2='' OR EXISTS(SELECT 1 FROM employee_professional_categories c WHERE c.employee_id=e.id AND (lower(c.category_code)=lower($2) OR lower(c.category_name)=lower($2))))
-        AND ($3='' OR lower(COALESCE(lvl.code,''))=lower($3))
-      ORDER BY e.is_top_specialist DESC,full_name`,[locationId||null,category,level]);
+    const {rows}=await db.query(`SELECT e.id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name,e.photo_url,e.public_bio,e.is_top_specialist,lvl.code staff_level_code,lvl.name staff_level_name,COALESCE((SELECT jsonb_agg(jsonb_build_object('code',c.category_code,'name',c.category_name,'primary',c.is_primary) ORDER BY c.is_primary DESC,c.category_name) FROM employee_professional_categories c WHERE c.employee_id=e.id),'[]'::jsonb) categories,COALESCE((SELECT jsonb_agg(jsonb_build_object('url',p.image_url,'caption',p.caption) ORDER BY p.sort_order,p.created_at) FROM employee_reference_photos p WHERE p.employee_id=e.id AND p.is_active=true),'[]'::jsonb) reference_photos FROM employees e LEFT JOIN booking_staff_levels lvl ON lvl.id=e.booking_staff_level_id WHERE e.active=true AND ($1::uuid IS NULL OR e.location_id=$1::uuid OR e.location_id IS NULL) AND ($2='' OR EXISTS(SELECT 1 FROM employee_professional_categories c WHERE c.employee_id=e.id AND (lower(c.category_code)=lower($2) OR lower(c.category_name)=lower($2)))) AND ($3='' OR lower(COALESCE(lvl.code,''))=lower($3)) ORDER BY e.is_top_specialist DESC,full_name`,[locationId||null,category,level]);
     res.json({staff:rows});
   }catch(error:any){res.status(500).json({error:"A szakemberek nem tölthetők be.",detail:error?.message||String(error)});}
 });
 
 router.post("/v4/coupon/validate",async(req,res)=>{
   try{
-    const code=normCode(req.body?.code),locationId=String(req.body?.location_id||"").trim();
-    const serviceIds=asIds(req.body?.service_ids),subtotal=Math.max(0,Number(req.body?.subtotal||0));
+    const code=normCode(req.body?.code),locationId=String(req.body?.location_id||"").trim(),serviceIds=asIds(req.body?.service_ids),subtotal=Math.max(0,Number(req.body?.subtotal||0));
     if(!code)return res.status(400).json({valid:false,error:"Kuponkód szükséges."});
     if(locationId&&!UUID_RE.test(locationId))return res.status(400).json({valid:false,error:"Érvénytelen location_id."});
     if(serviceIds.some(id=>!UUID_RE.test(id)))return res.status(400).json({valid:false,error:"Érvénytelen szolgáltatásazonosító."});
-    const {rows}=await db.query(`
-      SELECT c.*,
-        (NOT EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id)
-          OR EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id AND cl.location_id=$2::uuid)) location_ok,
-        (NOT EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id)
-          OR EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id AND cs.service_id=ANY($3::uuid[]))) service_ok
-      FROM booking_coupon_campaigns c
-      WHERE upper(c.code)=upper($1) AND c.is_active=true
-        AND (c.valid_from IS NULL OR c.valid_from<=now()) AND (c.valid_until IS NULL OR c.valid_until>=now())
-      LIMIT 1`,[code,locationId||null,serviceIds]);
-    const c=rows[0];
-    if(!c)return res.status(404).json({valid:false,error:"A kupon nem található vagy lejárt."});
+    const {rows}=await db.query(`SELECT c.*,(NOT EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id) OR EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id AND cl.location_id=$2::uuid)) location_ok,(NOT EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id) OR EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id AND cs.service_id=ANY($3::uuid[]))) service_ok FROM booking_coupon_campaigns c WHERE upper(c.code)=upper($1) AND c.is_active=true AND (c.valid_from IS NULL OR c.valid_from<=now()) AND (c.valid_until IS NULL OR c.valid_until>=now()) LIMIT 1`,[code,locationId||null,serviceIds]);
+    const c=rows[0];if(!c)return res.status(404).json({valid:false,error:"A kupon nem található vagy lejárt."});
     if(!c.location_ok||!c.service_ok)return res.status(400).json({valid:false,error:"A kupon erre a foglalásra nem használható."});
     if(c.minimum_booking_value!=null&&subtotal<Number(c.minimum_booking_value))return res.status(400).json({valid:false,error:`A kupon minimum ${Number(c.minimum_booking_value).toLocaleString('hu-HU')} Ft foglalási értéktől érvényes.`});
-    const discount=c.discount_type==='percent'?subtotal*(Number(c.discount_value)/100):Number(c.discount_value);
-    const capped=Math.max(0,Math.min(subtotal,discount));
+    const discount=c.discount_type==='percent'?subtotal*(Number(c.discount_value)/100):Number(c.discount_value),capped=Math.max(0,Math.min(subtotal,discount));
     res.json({valid:true,coupon_id:c.id,code:c.code,name:c.name,discount_type:c.discount_type,discount_value:Number(c.discount_value),discount_amount:Math.round(capped),total_after_discount:Math.max(0,Math.round(subtotal-capped)),combinable:Boolean(c.combinable),exclude_last_minute:Boolean(c.exclude_last_minute)});
   }catch(error:any){res.status(500).json({valid:false,error:"A kupon ellenőrzése sikertelen.",detail:error?.message||String(error)});}
 });
 
 router.post("/v4/booking-meta",async(req,res)=>{
+  const appointmentId=String(req.body?.appointment_id||"").trim();
+  if(!UUID_RE.test(appointmentId))return res.status(400).json({error:"Érvénytelen appointment_id."});
+  const cx=await db.connect();
   try{
-    const appointmentId=String(req.body?.appointment_id||"").trim();
-    if(!UUID_RE.test(appointmentId))return res.status(400).json({error:"Érvénytelen appointment_id."});
-    const bookedForOther=Boolean(req.body?.booking_for_other);
-    const guestName=String(req.body?.guest_name||"").trim(),guestPhone=String(req.body?.guest_phone||"").trim(),guestEmail=String(req.body?.guest_email||"").trim();
+    await cx.query("BEGIN");
+    await cx.query(`CREATE TABLE IF NOT EXISTS booking_coupon_redemptions(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),coupon_id uuid NOT NULL REFERENCES booking_coupon_campaigns(id) ON DELETE RESTRICT,appointment_id uuid NOT NULL UNIQUE REFERENCES appointments(id) ON DELETE CASCADE,client_id uuid REFERENCES clients(id) ON DELETE SET NULL,discount_amount numeric(12,2) NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now())`);
     const email=String(req.body?.email||"").trim(),phone=String(req.body?.phone||"").trim();
-    const marketingConsent=Boolean(req.body?.marketing_consent);
-    const exists=(await db.query(`SELECT id FROM appointments WHERE id=$1::uuid LIMIT 1`,[appointmentId])).rows[0];
-    if(!exists)return res.status(404).json({error:"A foglalás nem található."});
-    await db.query(`
-      INSERT INTO booking_guest_beneficiaries(appointment_id,booked_for_other,guest_name,guest_phone,guest_email,relationship_label)
-      VALUES($1::uuid,$2,$3,$4,$5,$6)
-      ON CONFLICT(appointment_id) DO UPDATE SET booked_for_other=EXCLUDED.booked_for_other,guest_name=EXCLUDED.guest_name,
-        guest_phone=EXCLUDED.guest_phone,guest_email=EXCLUDED.guest_email,relationship_label=EXCLUDED.relationship_label,updated_at=now()`,
-      [appointmentId,bookedForOther,bookedForOther?guestName:null,bookedForOther?guestPhone:null,bookedForOther?guestEmail:null,String(req.body?.relationship_label||"").trim()||null]);
-    await db.query(`INSERT INTO booking_marketing_consents(appointment_id,email,phone,channel,consented,consented_at)
-      VALUES($1::uuid,$2,$3,'email',$4,CASE WHEN $4 THEN now() ELSE NULL END)`,[appointmentId,email||null,phone||null,marketingConsent]);
-    res.json({ok:true,appointment_id:appointmentId,marketing_consent:marketingConsent});
-  }catch(error:any){res.status(500).json({error:"A Booking 4.0 kiegészítő adatok mentése sikertelen.",detail:error?.message||String(error)});}
+    const booking=(await cx.query(`SELECT a.id,a.location_id,a.employee_id,a.client_id,a.start_time,cl.email,cl.phone FROM appointments a JOIN clients cl ON cl.id=a.client_id WHERE a.id=$1::uuid AND (($2<>'' AND lower(COALESCE(cl.email,''))=lower($2)) OR ($3<>'' AND regexp_replace(COALESCE(cl.phone,''),'[^0-9]','','g')=regexp_replace($3,'[^0-9]','','g')) LIMIT 1 FOR UPDATE`,[appointmentId,email,phone])).rows[0];
+    if(!booking){await cx.query("ROLLBACK");return res.status(404).json({error:"A foglalás nem található vagy az elérhetőség nem egyezik."});}
+
+    const bookedForOther=Boolean(req.body?.booking_for_other),guestName=String(req.body?.guest_name||"").trim(),guestPhone=String(req.body?.guest_phone||"").trim(),guestEmail=String(req.body?.guest_email||"").trim(),marketingConsent=Boolean(req.body?.marketing_consent);
+    await cx.query(`INSERT INTO booking_guest_beneficiaries(appointment_id,booked_for_other,guest_name,guest_phone,guest_email,relationship_label) VALUES($1::uuid,$2,$3,$4,$5,$6) ON CONFLICT(appointment_id) DO UPDATE SET booked_for_other=EXCLUDED.booked_for_other,guest_name=EXCLUDED.guest_name,guest_phone=EXCLUDED.guest_phone,guest_email=EXCLUDED.guest_email,relationship_label=EXCLUDED.relationship_label,updated_at=now()`,[appointmentId,bookedForOther,bookedForOther?guestName:null,bookedForOther?guestPhone:null,bookedForOther?guestEmail:null,String(req.body?.relationship_label||"").trim()||null]);
+    await cx.query(`INSERT INTO booking_marketing_consents(appointment_id,email,phone,channel,consented,consented_at) VALUES($1::uuid,$2,$3,'email',$4,CASE WHEN $4 THEN now() ELSE NULL END)`,[appointmentId,email||null,phone||null,marketingConsent]);
+
+    const lm=(await cx.query(`SELECT o.* FROM booking_last_minute_offers o WHERE o.location_id=$1::uuid AND o.employee_id=$2::uuid AND o.start_time=$3::timestamptz AND o.status='active' AND o.expires_at>now() AND EXISTS(SELECT 1 FROM appointment_services aps WHERE aps.appointment_id=$4::uuid AND aps.service_id=o.service_id) ORDER BY o.created_at DESC LIMIT 1 FOR UPDATE`,[booking.location_id,booking.employee_id,booking.start_time,appointmentId])).rows[0];
+    if(lm){
+      await cx.query(`UPDATE appointment_services SET discount_percent=CASE WHEN price>0 THEN LEAST(100,GREATEST(COALESCE(discount_percent,0),100-(($3::numeric/price)*100))) ELSE COALESCE(discount_percent,0) END WHERE appointment_id=$1::uuid AND service_id=$2::uuid`,[appointmentId,lm.service_id,Number(lm.offer_price)]);
+      await cx.query(`UPDATE booking_last_minute_offers SET status='booked',updated_at=now() WHERE id=$1::uuid`,[lm.id]);
+    }
+
+    const couponCode=normCode(req.body?.coupon_code);let coupon:any=null,discountAmount=0;
+    if(couponCode){
+      const serviceIds=(await cx.query(`SELECT service_id FROM appointment_services WHERE appointment_id=$1::uuid`,[appointmentId])).rows.map((x:any)=>x.service_id);
+      coupon=(await cx.query(`SELECT c.*,(NOT EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id) OR EXISTS(SELECT 1 FROM booking_coupon_locations cl WHERE cl.coupon_id=c.id AND cl.location_id=$2::uuid)) location_ok,(NOT EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id) OR EXISTS(SELECT 1 FROM booking_coupon_services cs WHERE cs.coupon_id=c.id AND cs.service_id=ANY($3::uuid[]))) service_ok,(SELECT count(*)::int FROM booking_coupon_redemptions r WHERE r.coupon_id=c.id) total_uses,(SELECT count(*)::int FROM booking_coupon_redemptions r WHERE r.coupon_id=c.id AND r.client_id=$4::uuid) customer_uses FROM booking_coupon_campaigns c WHERE upper(c.code)=upper($1) AND c.is_active=true AND (c.valid_from IS NULL OR c.valid_from<=now()) AND (c.valid_until IS NULL OR c.valid_until>=now()) LIMIT 1 FOR UPDATE`,[couponCode,booking.location_id,serviceIds,booking.client_id])).rows[0];
+      if(!coupon){await cx.query("ROLLBACK");return res.status(400).json({error:"A kupon nem található vagy lejárt."});}
+      if(!coupon.location_ok||!coupon.service_ok){await cx.query("ROLLBACK");return res.status(400).json({error:"A kupon erre a foglalásra nem használható."});}
+      if(lm&&coupon.exclude_last_minute){await cx.query("ROLLBACK");return res.status(400).json({error:"Ez a kupon Last Minute ajánlattal nem kombinálható."});}
+      if(coupon.max_total_uses!=null&&Number(coupon.total_uses)>=Number(coupon.max_total_uses)){await cx.query("ROLLBACK");return res.status(409).json({error:"A kupon felhasználási kerete elfogyott."});}
+      if(coupon.max_uses_per_customer!=null&&Number(coupon.customer_uses)>=Number(coupon.max_uses_per_customer)){await cx.query("ROLLBACK");return res.status(409).json({error:"Ezt a kupont már a megengedett alkalommal felhasználtad."});}
+      const totals=(await cx.query(`SELECT COALESCE(SUM(price*(1-COALESCE(discount_percent,0)/100.0)),0)::numeric subtotal FROM appointment_services WHERE appointment_id=$1::uuid`,[appointmentId])).rows[0];
+      const subtotal=Math.max(0,Number(totals?.subtotal||0));
+      if(coupon.minimum_booking_value!=null&&subtotal<Number(coupon.minimum_booking_value)){await cx.query("ROLLBACK");return res.status(400).json({error:`A kupon minimum ${Number(coupon.minimum_booking_value).toLocaleString('hu-HU')} Ft foglalási értéktől érvényes.`});}
+      discountAmount=Math.min(subtotal,coupon.discount_type==='percent'?subtotal*Number(coupon.discount_value)/100:Number(coupon.discount_value));
+      if(discountAmount>0&&subtotal>0){const factor=(subtotal-discountAmount)/subtotal;await cx.query(`UPDATE appointment_services SET discount_percent=LEAST(100,GREATEST(0,100-((100-COALESCE(discount_percent,0))*$2))) WHERE appointment_id=$1::uuid`,[appointmentId,factor]);}
+      await cx.query(`INSERT INTO booking_coupon_redemptions(coupon_id,appointment_id,client_id,discount_amount) VALUES($1::uuid,$2::uuid,$3::uuid,$4) ON CONFLICT(appointment_id) DO NOTHING`,[coupon.id,appointmentId,booking.client_id,discountAmount]);
+    }
+
+    const final=(await cx.query(`SELECT COALESCE(SUM(price*(1-COALESCE(discount_percent,0)/100.0)),0)::numeric total FROM appointment_services WHERE appointment_id=$1::uuid`,[appointmentId])).rows[0];
+    await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note) VALUES($1::uuid,'booking_v4_finalized','public',$2::jsonb,'Booking 4.0 ár/promóció véglegesítés')`,[appointmentId,JSON.stringify({last_minute_offer_id:lm?.id||null,coupon_code:coupon?.code||null,coupon_discount_amount:Math.round(discountAmount),final_total:Math.round(Number(final?.total||0))})]);
+    await cx.query("COMMIT");
+    res.json({ok:true,appointment_id:appointmentId,marketing_consent:marketingConsent,last_minute_offer_id:lm?.id||null,coupon_code:coupon?.code||null,coupon_discount_amount:Math.round(discountAmount),final_total:Math.round(Number(final?.total||0))});
+  }catch(error:any){await cx.query("ROLLBACK").catch(()=>undefined);res.status(500).json({error:"A Booking 4.0 kiegészítő adatok mentése sikertelen.",detail:error?.message||String(error)});}finally{cx.release();}
 });
 
 export default router;
