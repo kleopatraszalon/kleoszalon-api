@@ -5,6 +5,93 @@ let ready: Promise<void> | null = null;
 export function ensureInventoryOperationsSchema(): Promise<void> {
   if (ready) return ready;
   ready = (async () => {
+    // Older production databases may already contain these tables with an
+    // earlier column set. Heal additive schema drift before any index or seed
+    // statement below references newer columns.
+    await db.query(`
+      DO $$ BEGIN
+        IF to_regclass('public.inventory_warehouses') IS NOT NULL THEN
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS location_id text NULL;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS code text NULL;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS warehouse_type text NOT NULL DEFAULT 'mixed';
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS comment text NULL;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS is_default_sale boolean NOT NULL DEFAULT false;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS is_default_consumption boolean NOT NULL DEFAULT false;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 100;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS created_by text NULL;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS updated_by text NULL;
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+          ALTER TABLE inventory_warehouses ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_warehouse_balances') IS NOT NULL THEN
+          ALTER TABLE inventory_warehouse_balances ADD COLUMN IF NOT EXISTS min_quantity numeric(16,3) NOT NULL DEFAULT 0;
+          ALTER TABLE inventory_warehouse_balances ADD COLUMN IF NOT EXISTS optimal_quantity numeric(16,3) NOT NULL DEFAULT 0;
+          ALTER TABLE inventory_warehouse_balances ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+          ALTER TABLE inventory_warehouse_balances ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_settings') IS NOT NULL THEN
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS cost_method text NOT NULL DEFAULT 'weighted_average';
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS prevent_negative_stock boolean NOT NULL DEFAULT true;
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS stocktake_missing_mode text NOT NULL DEFAULT 'system';
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS barcode_increment numeric(16,3) NOT NULL DEFAULT 1;
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS updated_by text NULL;
+          ALTER TABLE inventory_settings ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_units') IS NOT NULL THEN
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS name text NULL;
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS precision_digits integer NOT NULL DEFAULT 3;
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true;
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS sort_order integer NOT NULL DEFAULT 100;
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+          ALTER TABLE inventory_units ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_stocktakes') IS NOT NULL THEN
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'draft';
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS product_category_id uuid NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS note text NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS created_by text NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS submitted_by text NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS approved_by text NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS submitted_at timestamptz NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS approved_at timestamptz NULL;
+          ALTER TABLE inventory_stocktakes ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_stocktake_items') IS NOT NULL THEN
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS product_name_snapshot text NULL;
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS barcode_snapshot text NULL;
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS expected_quantity numeric(16,3) NOT NULL DEFAULT 0;
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS counted_quantity numeric(16,3) NULL;
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+          ALTER TABLE inventory_stocktake_items ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_transfers') IS NOT NULL THEN
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'pending';
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS document_number text NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS note text NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS created_by text NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS dispatched_by text NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS received_by text NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS dispatched_at timestamptz NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS received_at timestamptz NULL;
+          ALTER TABLE inventory_transfers ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+        END IF;
+
+        IF to_regclass('public.inventory_transfer_items') IS NOT NULL THEN
+          ALTER TABLE inventory_transfer_items ADD COLUMN IF NOT EXISTS product_name_snapshot text NULL;
+          ALTER TABLE inventory_transfer_items ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+        END IF;
+      END $$;
+    `);
+
     await db.query(`
       CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

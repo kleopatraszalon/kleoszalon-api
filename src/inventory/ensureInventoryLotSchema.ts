@@ -3,19 +3,10 @@ import { ensureInventoryOperationsSchema } from "./ensureInventoryOperationsSche
 
 let ready: Promise<void> | null = null;
 
-async function schemaExists(queryable:any){
-  const {rows}=await queryable.query(`
-    SELECT to_regclass('public.inventory_lots') IS NOT NULL
-       AND to_regclass('public.inventory_warehouse_lot_balances') IS NOT NULL
-       AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='products' AND column_name='lot_tracking_enabled')
-       AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='products' AND column_name='expiry_tracking_enabled')
-       AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='products' AND column_name='fefo_enabled') AS ok
-  `);
-  return Boolean(rows[0]?.ok);
-}
-
 async function applySchema(queryable:any){
-  if(await schemaExists(queryable))return;
+  // Always execute the idempotent DDL. A table existing is not proof that it
+  // already has the latest column set; older production databases can be
+  // several additive revisions behind.
   await queryable.query(`
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -37,6 +28,15 @@ async function applySchema(queryable:any){
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS manufactured_at date NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS expires_at date NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS supplier_id bigint NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS source_record_type text NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS source_record_id text NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS note text NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS created_by text NULL;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
     CREATE UNIQUE INDEX IF NOT EXISTS inventory_lots_product_code_uq
       ON inventory_lots(product_id,lower(lot_code));
     CREATE INDEX IF NOT EXISTS inventory_lots_product_expiry_idx
@@ -51,6 +51,9 @@ async function applySchema(queryable:any){
       updated_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE(warehouse_id,lot_id)
     );
+    ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS quantity numeric(16,3) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
     CREATE INDEX IF NOT EXISTS inventory_warehouse_lot_balances_fefo_idx
       ON inventory_warehouse_lot_balances(warehouse_id,lot_id,quantity);
 
@@ -64,6 +67,12 @@ async function applySchema(queryable:any){
       allocation_kind text NOT NULL DEFAULT 'lot' CHECK(allocation_kind IN('lot','legacy_untracked')),
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS lot_id uuid NULL REFERENCES inventory_lots(id) ON DELETE RESTRICT;
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS lot_code_snapshot text NULL;
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS quantity numeric(16,3) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS allocation_kind text NOT NULL DEFAULT 'lot';
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
     CREATE INDEX IF NOT EXISTS inventory_movement_lot_allocations_movement_idx
       ON inventory_movement_lot_allocations(movement_id);
     CREATE INDEX IF NOT EXISTS inventory_movement_lot_allocations_lot_idx
@@ -81,6 +90,13 @@ async function applySchema(queryable:any){
       allocation_kind text NOT NULL DEFAULT 'lot' CHECK(allocation_kind IN('lot','legacy_untracked')),
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS product_id uuid NULL REFERENCES products(id) ON DELETE RESTRICT;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS lot_id uuid NULL REFERENCES inventory_lots(id) ON DELETE RESTRICT;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS lot_code_snapshot text NULL;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS quantity numeric(16,3) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS allocation_kind text NOT NULL DEFAULT 'lot';
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
     CREATE UNIQUE INDEX IF NOT EXISTS inventory_transfer_lot_allocations_uq
       ON inventory_transfer_lot_allocations(source_type,source_id,COALESCE(lot_id,'00000000-0000-0000-0000-000000000000'::uuid),allocation_kind);
     CREATE INDEX IF NOT EXISTS inventory_transfer_lot_allocations_source_idx
