@@ -4,6 +4,8 @@ const fs=require('node:fs');
 const path=require('node:path');
 const read=(rel)=>fs.readFileSync(path.join(__dirname,'..',rel),'utf8');
 
+// Keep this contract on the current release-gate path: revenue changes must
+// continue to prove fail-closed billing, idempotency and lifecycle recovery.
 const route=read('src/routes/saasRevenue.ts');
 const provider=read('src/saas/stripeBilling.ts');
 const saas=read('src/routes/saas.ts');
