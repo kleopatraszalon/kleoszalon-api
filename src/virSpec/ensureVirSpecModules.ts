@@ -19,6 +19,7 @@ const migrationFiles = [
   "20260808_CHECKLIST_MENU_V1.sql",
   "20260808_EMPLOYEE_SELF_MENU_V1.sql",
   "20260810_BOOKING_VOICE_STATS_V1.sql",
+  "20260820_ADMIN_FULL_MENU_VISIBILITY_V1.sql",
 ];
 
 async function runSqlFile(fileName: string) {
