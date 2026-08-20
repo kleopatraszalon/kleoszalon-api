@@ -46,6 +46,17 @@ function bearerHeader(req: Request): string {
   return /^Bearer\s+/i.test(value) ? value : "";
 }
 
+function clearBrowserAuthCookie(res: Response): void {
+  const production = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  res.clearCookie("token", {
+    httpOnly: true,
+    sameSite: production ? "none" : "lax",
+    secure: production,
+    partitioned: production,
+    path: "/",
+  } as any);
+}
+
 /**
  * CSRF applies only when the browser authenticates through the HttpOnly cookie.
  * Explicit Bearer clients are not ambient-authority requests and remain usable
@@ -59,13 +70,14 @@ export function browserCookieMutationAllowed(req: Request): boolean {
   if (typeof cookieToken !== "string" || !cookieToken.trim()) return true;
 
   const fetchSite = String(req.headers["sec-fetch-site"] ?? "").trim().toLowerCase();
-  if (fetchSite === "cross-site") return false;
-
   const origin = normalizeOrigin(req.headers.origin);
+
+  // Chromium reports requests between the frontend and API Render hosts as
+  // cross-site. A concrete allowlisted Origin is therefore checked before the
+  // generic Sec-Fetch-Site fallback and remains fail-closed for unknown origins.
   if (origin) return trustedBrowserOrigins().has(origin);
 
-  // Modern same-origin browser requests expose Sec-Fetch-Site. Requests with an
-  // ambient auth cookie but no verifiable browser origin fail closed.
+  if (fetchSite === "cross-site") return false;
   return fetchSite === "same-origin";
 }
 
@@ -152,13 +164,14 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
     console.error("JWT / jogosultsági hiba:", err);
 
     if (err.name === "TokenExpiredError") {
-      res.clearCookie("token", { path: "/" });
+      clearBrowserAuthCookie(res);
       return res.status(401).json({
         error: "A munkamenet lejárt. Kérjük, jelentkezz be újra.",
       });
     }
 
     if (["JsonWebTokenError", "NotBeforeError"].includes(String(err?.name || ""))) {
+      clearBrowserAuthCookie(res);
       return res.status(401).json({
         error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
       });
