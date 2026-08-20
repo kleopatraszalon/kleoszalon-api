@@ -7,7 +7,7 @@ const router=Router();
 export const saasRevenuePublicRouter=Router();
 const manage=requireTenantRole("owner","admin");
 
-async function ensureRevenueSchema(){
+export async function ensureRevenueSchema(){
  await db.query(`
   ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS annual_price numeric(14,2);
   ALTER TABLE subscription_plans ADD COLUMN IF NOT EXISTS onboarding_fee numeric(14,2) NOT NULL DEFAULT 0;
