@@ -17,13 +17,13 @@ router.get("/overview",async(req,res)=>{
     const days=Math.round(bounded(req.query.days,1,365,30));
     const [summary,byLocation,recent]=await Promise.all([
       db.query(`SELECT
-        (SELECT count(*)::int FROM appointments a WHERE a.start_time::date=current_date AND lower(COALESCE(a.status,'')) NOT IN('cancelled','canceled')) bookings_today,
-        (SELECT count(*)::int FROM appointments a WHERE lower(COALESCE(a.status,''))='pending') pending_bookings,
+        (SELECT count(*)::int FROM appointments a WHERE a.start_time::date=current_date AND lower(COALESCE(a.status,'')) NOT IN('cancelled','canceled') AND ($1::uuid IS NULL OR a.location_id=$1::uuid)) bookings_today,
+        (SELECT count(*)::int FROM appointments a WHERE lower(COALESCE(a.status,''))='pending' AND ($1::uuid IS NULL OR a.location_id=$1::uuid)) pending_bookings,
         (SELECT count(*)::int FROM booking_chains c WHERE c.created_at>=now()-($2::text||' days')::interval AND ($1::uuid IS NULL OR c.location_id=$1::uuid)) chains_period,
         (SELECT COALESCE(sum(GREATEST(0,EXTRACT(EPOCH FROM(c.end_time-c.start_time))/60-c.total_gap_minutes)),0)::int FROM booking_chains c WHERE c.created_at>=now()-($2::text||' days')::interval AND ($1::uuid IS NULL OR c.location_id=$1::uuid)) chain_service_minutes,
         (SELECT count(*)::int FROM booking_coupon_campaigns WHERE is_active=true AND (valid_until IS NULL OR valid_until>=now())) active_coupons,
-        (SELECT count(*)::int FROM booking_coupon_redemptions r WHERE r.created_at>=now()-($2::text||' days')::interval) coupon_redemptions,
-        (SELECT COALESCE(sum(r.discount_amount),0)::numeric FROM booking_coupon_redemptions r WHERE r.created_at>=now()-($2::text||' days')::interval) coupon_discount_value,
+        (SELECT count(*)::int FROM booking_coupon_redemptions r JOIN appointments a ON a.id=r.appointment_id WHERE r.created_at>=now()-($2::text||' days')::interval AND ($1::uuid IS NULL OR a.location_id=$1::uuid)) coupon_redemptions,
+        (SELECT COALESCE(sum(r.discount_amount),0)::numeric FROM booking_coupon_redemptions r JOIN appointments a ON a.id=r.appointment_id WHERE r.created_at>=now()-($2::text||' days')::interval AND ($1::uuid IS NULL OR a.location_id=$1::uuid)) coupon_discount_value,
         (SELECT count(*)::int FROM booking_last_minute_offers o WHERE o.status='active' AND o.expires_at>now() AND ($1::uuid IS NULL OR o.location_id=$1::uuid)) active_last_minute,
         (SELECT count(*)::int FROM booking_service_recommendations r WHERE r.is_active=true AND ($1::uuid IS NULL OR r.location_id=$1::uuid OR r.location_id IS NULL)) active_recommendations,
         (SELECT count(*)::int FROM employees e WHERE e.active=true AND e.booking_staff_level_id IS NOT NULL AND ($1::uuid IS NULL OR e.location_id=$1::uuid OR e.location_id IS NULL)) classified_staff,
