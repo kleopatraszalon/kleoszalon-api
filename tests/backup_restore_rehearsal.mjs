@@ -44,6 +44,24 @@ const dockerPg = (url, shellCommand, extraEnv = {}) => run(
 const quoteIdent = (value) => `"${String(value).replaceAll('"', '""')}"`;
 const quoteLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
+const isLocalDatabaseUrl = (connectionString) => {
+  try {
+    const hostname = new URL(connectionString).hostname.toLowerCase();
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+  } catch {
+    return false;
+  }
+};
+
+const clientConfig = (connectionString, applicationName) => ({
+  connectionString,
+  connectionTimeoutMillis: 30000,
+  application_name: applicationName,
+  ...(isLocalDatabaseUrl(connectionString)
+    ? {}
+    : { ssl: { rejectUnauthorized: true } }),
+});
+
 const readCounts = async (client) => {
   const tableResult = await client.query(`
     SELECT table_schema, table_name
@@ -71,16 +89,8 @@ const readCounts = async (client) => {
   };
 };
 
-const sourceClient = new Client({
-  connectionString: source,
-  connectionTimeoutMillis: 30000,
-  application_name: 'kleoszalon-backup-evidence-source',
-});
-const restoreClient = new Client({
-  connectionString: restore,
-  connectionTimeoutMillis: 30000,
-  application_name: 'kleoszalon-backup-evidence-restore',
-});
+const sourceClient = new Client(clientConfig(source, 'kleoszalon-backup-evidence-source'));
+const restoreClient = new Client(clientConfig(restore, 'kleoszalon-backup-evidence-restore'));
 
 let sourceTransactionOpen = false;
 let sourceSnapshot;
@@ -100,8 +110,6 @@ try {
   sourceRecoveryPoint = snapshotResult.rows[0]?.recovery_point;
   if (!sourceSnapshot) throw new Error('Unable to export source PostgreSQL snapshot');
 
-  // These counts and pg_dump below are intentionally bound to the same exported snapshot.
-  // This prevents legitimate production writes during the backup from causing false mismatches.
   sourceState = await readCounts(sourceClient);
 
   if (pgClientDockerImage) {
@@ -135,7 +143,6 @@ try {
 const dumpBytes = fs.statSync(dumpPath).size;
 if (dumpBytes <= 0) throw new Error('Backup dump is empty');
 
-// RESTORE_DATABASE_URL points to an isolated disposable database prepared by the workflow.
 if (pgClientDockerImage) {
   dockerPg(
     restore,
@@ -168,6 +175,7 @@ const evidence = {
   workflow: 'backup-restore-evidence',
   postgres_major: 17,
   pg_client_mode: pgClientDockerImage ? `docker:${pgClientDockerImage}` : 'local',
+  source_tls_required: !isLocalDatabaseUrl(source),
   result: 'passed',
   source_recovery_point: sourceRecoveryPoint instanceof Date
     ? sourceRecoveryPoint.toISOString()
@@ -188,4 +196,6 @@ const evidence = {
   ],
 };
 fs.writeFileSync(path.join(evidenceDir, 'requirements-evidence-backup-restore.json'), JSON.stringify(evidence, null, 2));
-console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceState.tableCount} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes} snapshot_consistent=true pg_client=${evidence.pg_client_mode}`);
+console.log(`BACKUP_RESTORE_EVIDENCE_OK tables=${sourceState.tableCount} rto_seconds=${rtoSeconds} dump_bytes=${dumpBytes} snapshot_consistent=true source_tls=${evidence.source_tls_required} pg_client=${evidence.pg_client_mode}`);
+
+// Protected-main validation trigger for canonical production backup evidence workflow.

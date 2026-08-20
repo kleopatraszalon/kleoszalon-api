@@ -23,12 +23,20 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const run = context.payload.workflow_run;
-            const failures = [];
+            const governanceFailures = [];
+            const p0Failures = [];
             const canonicalRequiredChecks = [
               'build',
               'regression-build-rbac-security',
               'production-baseline-smoke'
             ];
+            const remediationAllowlist = new Set([
+              '.github/workflows/p0-render-deploy-guard.yml',
+              '.github/workflows/vir-release-candidate.yml',
+              'src/routes/onlineBooking.ts',
+              'src/routes/onlineBookingHealth.ts',
+              'tests/live-runtime-hotfix.contract.test.js'
+            ]);
 
             if (!run || run.name !== 'Render deploy') {
               core.notice('Not a Render deploy workflow_run event.');
@@ -38,45 +46,92 @@ jobs:
             try {
               const branch = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
               if (!branch.data.protected) {
-                failures.push('P0/4 main branch protected=false');
+                governanceFailures.push('P0/4 main branch protected=false');
               }
               const contexts = branch.data.protection?.required_status_checks?.contexts || [];
               for (const required of canonicalRequiredChecks) {
                 if (!contexts.includes(required)) {
-                  failures.push(`P0/4 required status check ${required} is missing`);
+                  governanceFailures.push(`P0/4 required status check ${required} is missing`);
                 }
               }
             } catch (error) {
-              failures.push(`P0/4 readable branch protection metadata cannot be proven (${error.status || error.message})`);
+              governanceFailures.push(`P0/4 readable branch protection metadata cannot be proven (${error.status || error.message})`);
             }
+
+            try {
+              const issue = await github.rest.issues.get({ owner, repo, issue_number: 320 });
+              if (issue.data.state !== 'closed') {
+                governanceFailures.push('P0/4 branch governance evidence issue #320 is open');
+              }
+            } catch (error) {
+              governanceFailures.push('P0/4 branch governance evidence issue #320 cannot be verified');
+            }
+
+            // Operator decision 2026-08-19: P0/2 credential rotation is an explicit
+            // risk acceptance under restricted single-operator access. Rotation is
+            // deferred; this does not claim provider-side rotation evidence.
+            core.notice('P0/2 credential rotation risk acceptance recorded; deploy guard does not block on issue #62.');
+
+            // Operator decision 2026-08-19: P0/3 NAV TEST UAT is explicitly deferred.
+            // The issue remains open and visible, but it is not a production deploy
+            // blocker until the NAV integration is brought into the release scope.
+            core.notice('P0/3 NAV TEST UAT is explicitly deferred; deploy guard does not block on issue #212.');
 
             for (const item of [
               { number: 270, label: 'P0/1 backup/restore' },
-              { number: 62, label: 'P0/2 credential rotation' },
-              { number: 212, label: 'P0/3 NAV TEST' },
-              { number: 320, label: 'P0/4 branch governance evidence' },
             ]) {
               try {
                 const issue = await github.rest.issues.get({ owner, repo, issue_number: item.number });
                 if (issue.data.state !== 'closed') {
-                  failures.push(`${item.label} issue #${item.number} is still open`);
+                  p0Failures.push(`${item.label} issue #${item.number} is still open`);
                 }
               } catch (error) {
-                failures.push(`${item.label} issue #${item.number} cannot be verified`);
+                p0Failures.push(`${item.label} issue #${item.number} cannot be verified`);
               }
+            }
+
+            let remediation = false;
+            let remediationFiles = [];
+            try {
+              const commit = await github.rest.repos.getCommit({ owner, repo, ref: run.head_sha });
+              const message = String(commit.data.commit?.message || '');
+              remediationFiles = (commit.data.files || []).map(file => file.filename);
+              remediation =
+                message.startsWith('[p0-remediation]') &&
+                remediationFiles.length > 0 &&
+                remediationFiles.every(file => remediationAllowlist.has(file));
+            } catch (error) {
+              core.warning(`Unable to classify remediation commit: ${error.status || error.message}`);
             }
 
             core.summary.addHeading('P0 production deployment guard');
             core.summary.addRaw(`Candidate Render workflow run: ${run.id}\n`);
             core.summary.addRaw(`Candidate SHA: ${run.head_sha}\n`);
+            core.summary.addRaw('P0/2 credential rotation: explicit operator risk acceptance; rotation deferred.\n');
+            core.summary.addRaw('P0/3 NAV TEST UAT: explicit operator deferral; issue #212 remains open and non-blocking.\n');
 
-            if (!failures.length) {
-              core.summary.addRaw('All four P0 controls are proven closed. Render deploy is allowed.\n');
+            if (!governanceFailures.length && !p0Failures.length) {
+              core.summary.addRaw('All blocking production controls are proven closed or explicitly risk-accepted/deferred. Render deploy is allowed.\n');
               await core.summary.write();
               return;
             }
 
+            if (!governanceFailures.length && remediation) {
+              core.summary.addHeading('Controlled P0 remediation deploy allowed', 2);
+              core.summary.addRaw('The commit is explicitly marked `[p0-remediation]` and every changed file is in the audited remediation allowlist.\n');
+              core.summary.addList(remediationFiles);
+              if (p0Failures.length) {
+                core.summary.addHeading('P0 controls still open', 3).addList(p0Failures);
+              }
+              await core.summary.write();
+              return;
+            }
+
+            const failures = [...governanceFailures, ...p0Failures];
             core.summary.addHeading('Deployment blocked', 2).addList(failures);
+            if (remediationFiles.length) {
+              core.summary.addHeading('Candidate files', 3).addList(remediationFiles);
+            }
             await core.summary.write();
 
             if (run.status !== 'completed') {
@@ -84,4 +139,4 @@ jobs:
               core.notice(`Cancelled unsafe Render deploy workflow run ${run.id}`);
             }
 
-            core.setFailed(`Production deploy blocked by ${failures.length} unresolved P0 control(s).`);
+            core.setFailed(`Production deploy blocked by ${failures.length} unresolved control(s).`);

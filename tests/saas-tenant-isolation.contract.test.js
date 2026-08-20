@@ -6,8 +6,8 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 
-test('SaaS core exposes first-class tenant and franchise tables', () => {
-  const sql = read('src/sql/20260816_SAAS_CORE_V1.sql');
+test('SaaS core exposes first-class tenant and franchise tables through versioned migration', () => {
+  const sql = read('src/migrations/20260819_001_saas_tenant_baseline.sql');
   for (const table of [
     'tenants',
     'tenant_users',
@@ -20,23 +20,26 @@ test('SaaS core exposes first-class tenant and franchise tables', () => {
   }
 });
 
-test('critical business tables are tenant-backfilled before scoped access', () => {
-  const source = read('src/saas/ensureTenantIsolation.ts');
+test('critical business tables are declared tenant-scoped and backfilled only by migration', () => {
+  const readiness = read('src/saas/ensureTenantIsolation.ts');
+  const migration = read('src/migrations/20260819_001_saas_tenant_baseline.sql');
   for (const table of ['employees', 'clients', 'appointments', 'work_orders', 'product_stock_balances', 'purchase_orders']) {
-    assert.ok(source.includes(`"${table}"`), `${table} missing from SaaS isolation bootstrap`);
+    assert.ok(readiness.includes(`"${table}"`), `${table} missing from SaaS isolation readiness`);
   }
-  assert.match(source, /ALTER TABLE \$\{table\} ADD COLUMN IF NOT EXISTS tenant_id bigint/);
-  assert.match(source, /SET tenant_id=l\.tenant_id/);
+  assert.doesNotMatch(readiness, /ALTER TABLE/i);
+  assert.match(migration, /ALTER TABLE %I ADD COLUMN IF NOT EXISTS tenant_id bigint/);
+  assert.match(migration, /SET tenant_id=l\.tenant_id/);
 });
 
-test('child business and CRM tables inherit tenant ownership from parents', () => {
-  const source = read('src/saas/ensureTenantIsolation.ts');
+test('child business and CRM tables inherit tenant ownership from parents in migration', () => {
+  const readiness = read('src/saas/ensureTenantIsolation.ts');
+  const migration = read('src/migrations/20260819_001_saas_tenant_baseline.sql');
   for (const table of ['appointment_services', 'work_order_items', 'crm_client_tags', 'crm_client_notes', 'crm_form_responses', 'crm_consent_history', 'work_shifts']) {
-    assert.ok(source.includes(`table: "${table}"`), `${table} missing from child tenant propagation`);
+    assert.ok(readiness.includes(`table: "${table}"`), `${table} missing from child tenant readiness`);
   }
-  assert.match(source, /SET tenant_id=p\.tenant_id/);
-  assert.match(source, /crm_tags_tenant_name_uq/);
-  assert.match(source, /crm_forms_tenant_title_uq/);
+  assert.match(migration, /SET tenant_id=p\.tenant_id/);
+  assert.match(migration, /crm_tags_tenant_name_uq/);
+  assert.match(migration, /crm_forms_tenant_title_uq/);
 });
 
 test('location manager scope enforces tenant boundary before legacy location rules', () => {

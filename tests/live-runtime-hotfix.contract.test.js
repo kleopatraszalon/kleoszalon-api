@@ -53,3 +53,19 @@ test('online booking bootstrap does not create demo data',()=>{
   assert.doesNotMatch(src,/ensureWorkOrderDemoData/);
   assert.doesNotMatch(src,/ensureCentralSupplyDemoData/);
 });
+
+test('public booking health is read-only and mounted before mutation-capable booking layers',()=>{
+  const router=read('src/routes/onlineBooking.ts');
+  const health=read('src/routes/onlineBookingHealth.ts');
+  const healthMount=router.indexOf('router.use(onlineBookingHealthRouter)');
+  const coreMount=router.indexOf('router.use(onlineBookingCoreRouter)');
+  assert.ok(healthMount>=0,'read-only booking health router must be mounted');
+  assert.ok(coreMount>healthMount,'booking core must follow the read-only health router');
+  assert.match(health,/probe:\s*"read_only"/);
+  assert.match(health,/X-Kleo-Hotfix/);
+  assert.match(health,/to_jsonb\(t\)/);
+  assert.doesNotMatch(health,/ensureOnlineBooking/);
+  assert.doesNotMatch(health,/CREATE\s+TABLE/i);
+  assert.doesNotMatch(health,/ALTER\s+TABLE/i);
+  assert.doesNotMatch(health,/CREATE\s+OR\s+REPLACE/i);
+});

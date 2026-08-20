@@ -29,9 +29,26 @@ test('GitHub OIDC bridge is workflow allowlisted and release scoped',()=>{
  assert.match(auth,/router\.use\("\/uat\/release-control", releaseControlOidcRouter\)/);
 });
 
-test('backend release workflow publishes only after full quality and live smoke gates',()=>{
+test('backend release workflow publishes integration PASS only after exact-SHA live booking UAT',()=>{
  const yml=read('.github/workflows/render-deploy.yml');
- for(const marker of ['id-token: write','npm run test:financial-integrity','npm run test:workorders','npm run requirements:check','npm run test:saas-isolation','Publish backend evidence to Release Control Center','expected_release_ref:process.env.GITHUB_SHA'])assert.match(yml,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+ for(const marker of [
+   'id-token: write',
+   'npm run test:financial-integrity',
+   'npm run test:workorders',
+   'npm run requirements:check',
+   'npm run test:saas-isolation',
+   'Verify exact backend SHA and publish non-integration evidence',
+   'Controlled exact-SHA production booking UAT',
+   'Publish exact-SHA integration evidence after live UAT',
+   'expected_release_ref:process.env.GITHUB_SHA',
+   'node tests/booking_live_uat.mjs',
+ ]) assert.match(yml,new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+ const exact=yml.indexOf('Verify exact backend SHA and publish non-integration evidence');
+ const live=yml.indexOf('Controlled exact-SHA production booking UAT');
+ const integration=yml.indexOf('Publish exact-SHA integration evidence after live UAT');
+ assert.ok(exact>=0&&live>exact&&integration>live);
+ assert.ok(!yml.slice(exact,live).includes('tests.integration'));
+ assert.ok(yml.slice(integration).includes('tests.integration'));
  assert.match(yml,/RENDER_API_DEPLOY_HOOK_URL secret is not configured/);
 });
 

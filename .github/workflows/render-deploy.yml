@@ -40,28 +40,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
       - name: Unit and contract tests
         run: npm test
-
       - name: Financial integrity gate
         run: npm run test:financial-integrity
-
       - name: Workorder regression gate
         run: npm run test:workorders
-
       - name: Requirements quality gate
         run: npm run requirements:check
-
       - name: Prepare isolated SaaS tenant schema
         shell: bash
         run: |
@@ -78,13 +71,10 @@ jobs:
           SQL
           psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_CORE_V1.sql
           psql "$SAAS_UAT_DATABASE_URL" -v ON_ERROR_STOP=1 -f src/sql/20260816_SAAS_TENANT_ISOLATION_V2.sql
-
       - name: SaaS cross-tenant isolation gate
         run: npm run test:saas-isolation
-
       - name: TypeScript production build
         run: npm run build
-
       - name: Mark backend release verification pending
         shell: bash
         env:
@@ -92,40 +82,37 @@ jobs:
         run: |
           set -euo pipefail
           body="$(node -e 'process.stdout.write(JSON.stringify({state:"pending",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Quality gate passed; exact Render release verification pending",context:"release-control/render-backend"}))')"
-          curl -fsS --retry 3 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -X POST --data "$body" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
 
   deploy:
     name: Automatic exact-SHA production deploy
     needs: automated-quality-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    timeout-minutes: 28
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
       API_BASE_URL: https://kleoszalon-api-1.onrender.com
     steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@v4
+
+      - name: Setup Node for live UAT
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Require Render API deploy hook
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${RENDER_DEPLOY_HOOK_URL:-}" ]; then
-            echo "RENDER_API_DEPLOY_HOOK_URL secret is not configured." >&2
-            exit 1
-          fi
-
+          test -n "${RENDER_DEPLOY_HOOK_URL:-}" || { echo "RENDER_API_DEPLOY_HOOK_URL secret is not configured." >&2; exit 1; }
       - name: Trigger exact Render API commit
         shell: bash
         run: |
           set -euo pipefail
-          sep='?'
-          [[ "$RENDER_DEPLOY_HOOK_URL" == *'?'* ]] && sep='&'
+          sep='?'; [[ "$RENDER_DEPLOY_HOOK_URL" == *'?'* ]] && sep='&'
           curl -fsS --retry 3 --max-time 30 -X POST "${RENDER_DEPLOY_HOOK_URL}${sep}ref=${GITHUB_SHA}"
-
-      - name: Wait for the actual new Render release
+      - name: Wait for healthy Render service
         shell: bash
         run: |
           set -euo pipefail
@@ -137,93 +124,66 @@ jobs:
             rm -f /tmp/daily-headers.txt /tmp/daily-body.txt
             daily_code="$(curl -sS --max-time 20 -D /tmp/daily-headers.txt -o /tmp/daily-body.txt -w '%{http_code}' "$API_BASE_URL/api/public/marketing/daily-actions" || true)"
             daily_marker="$(tr -d '\r' < /tmp/daily-headers.txt 2>/dev/null | awk -F': ' 'tolower($1)=="x-kleo-hotfix"{print $2}' | tail -1)"
-
             if HEALTH="$health" READY="$ready" WALLBOARD="$wallboard" DAILY_CODE="$daily_code" DAILY_MARKER="$daily_marker" node - <<'NODE'
-          const health = JSON.parse(process.env.HEALTH || '{}');
-          const ready = JSON.parse(process.env.READY || '{}');
-          const wallboard = JSON.parse(process.env.WALLBOARD || '{}');
-          const dailyCode = process.env.DAILY_CODE || '';
-          const dailyMarker = process.env.DAILY_MARKER || '';
-          const ok = health.ok === true && health.db?.ok === true
-            && ready.ok === true
-            && wallboard.version === '1.0'
-            && Object.prototype.hasOwnProperty.call(wallboard, 'action')
-            && dailyCode === '200'
-            && /^api500-daily-actions-(?:v1|v2|empty-v1|empty-v2)$/.test(dailyMarker);
-          process.exit(ok ? 0 : 1);
+          const health=JSON.parse(process.env.HEALTH||'{}'), ready=JSON.parse(process.env.READY||'{}'), wallboard=JSON.parse(process.env.WALLBOARD||'{}');
+          const dailyMarker=process.env.DAILY_MARKER||'';
+          const dailyHealthy=/^api500-daily-actions-(?:v1|v2)$/.test(dailyMarker);
+          const ok=health.ok===true&&health.db?.ok===true&&ready.ok===true&&wallboard.version==='1.0'&&Object.prototype.hasOwnProperty.call(wallboard,'action')&&process.env.DAILY_CODE==='200'&&dailyHealthy;
+          process.exit(ok?0:1);
           NODE
             then
-              live=1
-              printf '%s\n' "$ready" > /tmp/ready.json
-              printf '%s\n' "$wallboard" > /tmp/wallboard.json
-              echo "Render health/readiness marker PASS: $daily_marker"
-              break
+              live=1; printf '%s\n' "$ready" >/tmp/ready.json; printf '%s\n' "$wallboard" >/tmp/wallboard.json; break
             fi
-
-            echo "Waiting for healthy Render release ($attempt/60): daily=$daily_code marker=${daily_marker:-missing}"
-            sleep 10
+            echo "Waiting for healthy Render service ($attempt/60): daily=$daily_code marker=${daily_marker:-missing}"; sleep 10
           done
-
-          if [ "$live" -ne 1 ]; then
-            echo "Render API did not become healthy after deploy trigger." >&2
-            cat /tmp/daily-body.txt 2>/dev/null || true
-            exit 1
-          fi
-
-          node -e "const x=require('/tmp/ready.json'); console.log('API readiness PASS; single-instance-failure-ready=',!!x.single_instance_failure_ready)"
-          node -e "const x=require('/tmp/wallboard.json'); console.log('WallBoard feed PASS; active-action=',!!x.action)"
-
+          test "$live" -eq 1 || { echo "Render API did not become healthy after deploy trigger." >&2; exit 1; }
       - name: Verify cashier API authentication boundary
         shell: bash
         run: |
           set -euo pipefail
           code="$(curl -sS --max-time 20 -o /tmp/cashier-response.txt -w '%{http_code}' "$API_BASE_URL/api/transactions/cashier/shift/current?date=2026-08-13&location_id=render-smoke")"
-          if [ "$code" != "401" ] && [ "$code" != "403" ]; then
-            echo "Unexpected unauthenticated cashier status: $code"
-            cat /tmp/cashier-response.txt
-            exit 1
-          fi
-          echo "Cashier authentication boundary PASS ($code)"
+          [[ "$code" = "401" || "$code" = "403" ]] || { echo "Unexpected unauthenticated cashier status: $code"; cat /tmp/cashier-response.txt; exit 1; }
 
-      - name: Publish backend evidence to Release Control Center
+      - name: Verify exact backend SHA and publish non-integration evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.backend",status:"pass",evidence:"npm test + requirements quality gate PASS"},{key:"build.backend",status:"pass",evidence:"TypeScript production build PASS"},{key:"tests.financial",status:"pass",evidence:"Financial integrity gate PASS"},{key:"tests.saas",status:"pass",evidence:"PostgreSQL 16 cross-tenant isolation UAT PASS"},{key:"tests.rbac",status:"pass",evidence:"RBAC fail-closed regression included in backend test suite PASS"}]}))')"
+          accepted=0
+          for attempt in $(seq 1 90); do
+            response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
+            oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
+            test -n "$oidc"
+            rm -f /tmp/release-evidence.json
+            code="$(curl -sS --max-time 30 -o /tmp/release-evidence.json -w '%{http_code}' -H "Authorization: Bearer $oidc" -H 'Content-Type: application/json' --data "$payload" "$API_BASE_URL/api/uat/release-control/evidence" || true)"
+            if [ "$code" = "200" ]; then accepted=1; echo "Non-integration evidence accepted for exact running SHA $GITHUB_SHA"; cat /tmp/release-evidence.json; break; fi
+            if [ "$code" = "409" ]; then
+              current="$(node -e "const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/release-evidence.json','utf8'));process.stdout.write(String(x.current_release_ref||''))}catch{}")"
+              echo "Waiting for exact Render SHA ($attempt/90): expected=$GITHUB_SHA current=${current:-unknown}"; sleep 10; continue
+            fi
+            echo "Release evidence submission failed with HTTP $code" >&2; cat /tmp/release-evidence.json >&2 || true; exit 1
+          done
+          test "$accepted" -eq 1 || { echo "Render did not expose workflow commit $GITHUB_SHA within 15 minutes." >&2; cat /tmp/release-evidence.json >&2 || true; exit 1; }
+
+      - name: Controlled exact-SHA production booking UAT
+        env:
+          BOOKING_UAT_BASE: https://kleoszalon-api-1.onrender.com/api/public/marketing/booking
+          BOOKING_UAT_EMAIL: vir-booking-uat@example.com
+        run: node tests/booking_live_uat.mjs
+
+      - name: Publish exact-SHA integration evidence after live UAT
         shell: bash
         run: |
           set -euo pipefail
           response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
           oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
           test -n "$oidc"
-          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.backend",status:"pass",evidence:"npm test + requirements quality gate PASS"},{key:"build.backend",status:"pass",evidence:"TypeScript production build PASS"},{key:"tests.integration",status:"pass",evidence:"Workorder regression + live Render health/readiness/WallBoard/cashier smoke PASS"},{key:"tests.financial",status:"pass",evidence:"Financial integrity gate PASS"},{key:"tests.saas",status:"pass",evidence:"PostgreSQL 16 cross-tenant isolation UAT PASS"},{key:"tests.rbac",status:"pass",evidence:"RBAC fail-closed regression included in backend test suite PASS"}]}))')"
-
-          accepted=0
-          for attempt in $(seq 1 60); do
-            rm -f /tmp/release-evidence.json
-            code="$(curl -sS --max-time 30 -o /tmp/release-evidence.json -w '%{http_code}' \
-              -H "Authorization: Bearer $oidc" \
-              -H 'Content-Type: application/json' \
-              --data "$payload" \
-              "$API_BASE_URL/api/uat/release-control/evidence" || true)"
-            if [ "$code" = "200" ]; then
-              accepted=1
-              echo "Release evidence accepted for exact running SHA $GITHUB_SHA"
-              cat /tmp/release-evidence.json
-              break
-            fi
-            if [ "$code" = "409" ]; then
-              current="$(node -e "const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/release-evidence.json','utf8'));process.stdout.write(String(x.current_release_ref||''))}catch{}")"
-              echo "Waiting for exact Render SHA ($attempt/60): expected=$GITHUB_SHA current=${current:-unknown}"
-              sleep 10
-              continue
-            fi
-            echo "Release evidence submission failed with HTTP $code" >&2
-            cat /tmp/release-evidence.json >&2 || true
-            exit 1
-          done
-
-          if [ "$accepted" -ne 1 ]; then
-            echo "Render did not expose the workflow commit $GITHUB_SHA before release-evidence timeout." >&2
-            cat /tmp/release-evidence.json >&2 || true
-            exit 1
-          fi
+          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.integration",status:"pass",evidence:"Exact-SHA Render health/readiness/WallBoard/cashier boundary + controlled production booking create/collision/reschedule/readback/cancel/cleanup UAT PASS"}]}))')"
+          curl -fsS --retry 3 --max-time 30 \
+            -H "Authorization: Bearer $oidc" \
+            -H 'Content-Type: application/json' \
+            --data "$payload" \
+            "$API_BASE_URL/api/uat/release-control/evidence"
 
       - name: Mark exact backend release verified
         shell: bash
@@ -231,24 +191,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          body="$(node -e 'process.stdout.write(JSON.stringify({state:"success",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA and Release Control evidence verified",context:"release-control/render-backend"}))')"
-          curl -fsS --retry 3 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -X POST --data "$body" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
-
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"success",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA, live booking UAT and Release Control evidence verified",context:"release-control/render-backend"}))')"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
       - name: Mark backend release verification failure
         if: ${{ failure() }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          body="$(node -e 'process.stdout.write(JSON.stringify({state:"failure",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA or Release Control evidence verification failed",context:"release-control/render-backend"}))')"
-          curl -fsS --retry 3 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -X POST --data "$body" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"failure",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA, live UAT or Release Control evidence verification failed",context:"release-control/render-backend"}))')"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"

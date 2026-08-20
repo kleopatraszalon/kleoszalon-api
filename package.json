@@ -17,7 +17,9 @@
     "test:financial-integrity": "node --test tests/financial-integrity.contract.test.js",
     "test:workorders": "node --test tests/workorder-stage8.contract.test.js tests/rbac-failclosed.contract.test.js tests/live-runtime-hotfix.contract.test.js",
     "test:saas-isolation": "node scripts/saas-cross-tenant-uat.js",
-    "start": "node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
+    "migrate": "node dist/dbMigrations.js",
+    "start": "npm run migrate && node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
+    "start:strict-migrations": "MIGRATION_FAILURE_MODE=strict npm run migrate && node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
     "seed:demo": "node dist/demo/seedRunner.js",
     "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json src/server.ts\""
   },

@@ -15,6 +15,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  issues: write
 
 jobs:
   nav-real-test-uat:
@@ -194,3 +195,33 @@ jobs:
           code="$(curl -sS --max-time 30 -o /tmp/chain.json -w '%{http_code}' -H "Authorization: Bearer $VIR_TOKEN" "$API_BASE_URL/api/transactions/nav-test-uat/chain/$INVOICE_ID")"
           if [ "$code" != "200" ]; then cat /tmp/chain.json; exit 1; fi
           node -e "const x=require('/tmp/chain.json');if(x.ok!==true||!Array.isArray(x.submissions)||!x.submissions.some(s=>s.id===process.env.SUBMISSION_ID&&s.environment==='test'&&s.transaction_id))process.exit(1);console.log('NAV TEST audit chain PASS')"
+
+      - name: Record NAV TEST evidence and close P0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner=context.repo.owner;
+            const repo=context.repo.repo;
+            const issue_number=212;
+            const issue=await github.rest.issues.get({owner,repo,issue_number});
+            const body=[
+              'P0 NAV TEST closure evidence recorded.',
+              `Workflow run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+              `Head SHA: ${context.sha}`,
+              '',
+              '- TEST-only environment: PASS',
+              '- NAV TEST technical credential readiness: PASS',
+              '- tokenExchange: PASS',
+              '- official XSD runtime and fixture validation: PASS',
+              '- isolated UAT fixture: PASS',
+              '- TEST manageInvoice submission: PASS',
+              '- queryTransactionStatus terminal state: PASS',
+              '- submit idempotency: PASS',
+              '- audit chain: PASS',
+              '',
+              'No secret values are stored in this evidence.'
+            ].join('\n');
+            await github.rest.issues.createComment({owner,repo,issue_number,body});
+            if(issue.data.state!=='closed'){
+              await github.rest.issues.update({owner,repo,issue_number,state:'closed',state_reason:'completed'});
+            }

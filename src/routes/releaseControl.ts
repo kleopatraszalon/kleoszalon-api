@@ -21,6 +21,12 @@ type Gate = {
   updated_by?: string | null;
 };
 
+type ReleaseRefs = {
+  backend_ref: string;
+  frontend_ref: string | null;
+  release_candidate_ref: string;
+};
+
 const MANUAL_GATES = [
   ["version.frontend", "Verzió és build", "Frontend Git SHA / deploy"],
   ["tests.backend", "Automatikus tesztek", "Backend unit / contract tesztek"],
@@ -51,6 +57,21 @@ const AUTOMATED_KEYS = new Set([
   "backup.restore",
 ]);
 
+const FRONTEND_KEYS = new Set(["version.frontend", "tests.frontend", "build.frontend"]);
+const OPERATIONAL_KEYS = new Set(["backup.restore"]);
+const BACKEND_KEYS = new Set([
+  "tests.backend",
+  "build.backend",
+  "tests.integration",
+  "tests.financial",
+  "tests.saas",
+  "tests.rbac",
+]);
+const OPERATIONAL_EVIDENCE_MAX_AGE_HOURS = Math.max(
+  1,
+  Number(process.env.RELEASE_OPERATIONAL_EVIDENCE_MAX_AGE_HOURS || 36),
+);
+
 let ensurePromise: Promise<void> | null = null;
 function ensureSchema() {
   if (!ensurePromise) ensurePromise = db.query(`
@@ -66,17 +87,106 @@ function ensureSchema() {
       UNIQUE(release_ref,check_key)
     );
     CREATE INDEX IF NOT EXISTS idx_release_control_evidence_ref ON release_control_evidence(release_ref,updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_release_control_evidence_key_updated ON release_control_evidence(check_key,updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS release_control_components(
+      component text PRIMARY KEY,
+      component_ref text NOT NULL,
+      source text NOT NULL DEFAULT 'runtime',
+      updated_by text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
   `).then(() => undefined).catch(error => { ensurePromise = null; throw error; });
   return ensurePromise;
 }
 
-function releaseRef() {
+function backendRef() {
   return String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT_SHA || process.env.COMMIT_SHA || "unversioned").trim();
 }
-export function currentReleaseRef() { return releaseRef(); }
-function frontendRef() {
-  return String(process.env.FRONTEND_RELEASE_SHA || process.env.FRONTEND_GIT_COMMIT || "").trim();
+export function currentReleaseRef() { return backendRef(); }
+
+function validSha(value: unknown): string | null {
+  const ref = String(value || "").trim();
+  return /^[a-f0-9]{40}$/i.test(ref) ? ref.toLowerCase() : null;
 }
+
+function candidateRef(backend: string, frontend: string | null) {
+  return `vir:${backend}:frontend:${frontend || "unverified"}`;
+}
+
+export async function recordReleaseComponent(input: {
+  component: string;
+  component_ref: string;
+  source: string;
+  updated_by: string;
+}) {
+  await ensureSchema();
+  const component = String(input.component || "").trim().toLowerCase();
+  const componentRef = validSha(input.component_ref);
+  if (!/^[a-z][a-z0-9_-]{1,63}$/.test(component)) throw new Error("Érvénytelen release component.");
+  if (!componentRef) throw new Error("Érvénytelen release component SHA.");
+  const result = await db.query(`
+    INSERT INTO release_control_components(component,component_ref,source,updated_by,updated_at)
+    VALUES($1,$2,$3,$4,now())
+    ON CONFLICT(component) DO UPDATE SET
+      component_ref=EXCLUDED.component_ref,
+      source=EXCLUDED.source,
+      updated_by=EXCLUDED.updated_by,
+      updated_at=now()
+    RETURNING *
+  `, [
+    component,
+    componentRef,
+    String(input.source || "unknown").trim().slice(0, 300) || "unknown",
+    String(input.updated_by || "system").trim().slice(0, 300) || "system",
+  ]);
+  return result.rows[0];
+}
+
+async function latestFrontendRef(): Promise<string | null> {
+  await ensureSchema();
+  try {
+    const component = (await db.query(`
+      SELECT component_ref
+        FROM release_control_components
+       WHERE component='frontend'
+       LIMIT 1
+    `)).rows[0]?.component_ref;
+    const ref = validSha(component);
+    if (ref) return ref;
+  } catch {}
+
+  const envRef = validSha(process.env.FRONTEND_RELEASE_SHA || process.env.FRONTEND_GIT_COMMIT || "");
+  if (envRef) return envRef;
+
+  // Backward-compatible bootstrap for evidence created before component tracking.
+  try {
+    const rows = (await db.query(`
+      SELECT evidence
+        FROM release_control_evidence
+       WHERE check_key='version.frontend' AND status='pass'
+       ORDER BY updated_at DESC
+       LIMIT 20
+    `)).rows;
+    for (const row of rows) {
+      const match = String(row?.evidence || "").match(/\b[a-f0-9]{40}\b/i);
+      const ref = validSha(match?.[0]);
+      if (ref) return ref;
+    }
+  } catch {}
+  return null;
+}
+
+export async function currentReleaseRefs(): Promise<ReleaseRefs> {
+  const backend = backendRef();
+  const frontend = await latestFrontendRef();
+  return {
+    backend_ref: backend,
+    frontend_ref: frontend,
+    release_candidate_ref: candidateRef(backend, frontend),
+  };
+}
+
 async function tableExists(table: string) {
   try { const r = await db.query(`SELECT to_regclass($1) IS NOT NULL ok`, [`public.${table}`]); return Boolean(r.rows[0]?.ok); }
   catch { return false; }
@@ -103,7 +213,7 @@ export async function recordReleaseEvidence(input: {
     VALUES($1,$2,$3,$4,$5,$6,now())
     ON CONFLICT(release_ref,check_key) DO UPDATE SET status=EXCLUDED.status,evidence=EXCLUDED.evidence,source=EXCLUDED.source,updated_by=EXCLUDED.updated_by,updated_at=now()
     RETURNING *`, [
-      String(input.release_ref || releaseRef()).trim() || releaseRef(),
+      String(input.release_ref || backendRef()).trim() || backendRef(),
       input.key,
       input.status,
       String(input.evidence || "").trim().slice(0, 4000) || null,
@@ -116,8 +226,9 @@ export async function recordReleaseEvidence(input: {
 async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const gates: Gate[] = [];
   const add = (g: Gate) => gates.push(g);
-  const ref = releaseRef();
-  const feRef = frontendRef();
+  const refs = await currentReleaseRefs();
+  const ref = refs.backend_ref;
+  const feRef = refs.frontend_ref;
   let dbLatency = 0;
   try {
     const started = Date.now();
@@ -206,26 +317,113 @@ async function automaticGates(): Promise<{ gates: Gate[]; meta: any }> {
   const hotfixMarkers = ["api500Hotfix","LifecycleHotfix","LiveRecovery","ReadinessHotfix","RuntimeHotfix"];
   add({ key:"runtime.hotfix-awareness", group:"Kódstabilitás", label:"Hotfix-konszolidáció kapu", status:"warning", blocking:false, message:`A release gate külön bizonyítékot kér a hotfix/recovery rétegek konszolidációjára (${hotfixMarkers.length} ismert kategória).`, source:"policy" });
 
-  return { gates, meta:{ backend_ref:ref, frontend_ref:feRef || null, node_version:process.version, environment:process.env.NODE_ENV || "unknown", database_latency_ms:dbLatency, migration_count:migrationCount, last_migration:lastMigration, apm_last_snapshot_at:apmLastSnapshotAt, apm_snapshot_age_minutes:apmSnapshotAgeMinutes, instance_count:instanceCount, database_ha_enabled:dbHa } };
+  return {
+    gates,
+    meta:{
+      backend_ref:ref,
+      frontend_ref:feRef || null,
+      release_candidate_ref:refs.release_candidate_ref,
+      node_version:process.version,
+      environment:process.env.NODE_ENV || "unknown",
+      database_latency_ms:dbLatency,
+      migration_count:migrationCount,
+      last_migration:lastMigration,
+      apm_last_snapshot_at:apmLastSnapshotAt,
+      apm_snapshot_age_minutes:apmSnapshotAgeMinutes,
+      instance_count:instanceCount,
+      database_ha_enabled:dbHa,
+      operational_evidence_max_age_hours:OPERATIONAL_EVIDENCE_MAX_AGE_HOURS,
+    },
+  };
 }
 
-async function evidenceGates(ref: string): Promise<Gate[]> {
+async function latestFrontendEvidence(frontend: string, key: string) {
+  const namespacedRef = `frontend:${frontend}`;
+  const exact = (await db.query(`
+    SELECT check_key,status,evidence,source,updated_by,updated_at
+      FROM release_control_evidence
+     WHERE release_ref=$1 AND check_key=$2
+     ORDER BY updated_at DESC
+     LIMIT 1
+  `, [namespacedRef, key])).rows[0];
+  if (exact) return exact;
+
+  // Legacy compatibility: frontend evidence used to be written under the then-current backend SHA.
+  return (await db.query(`
+    SELECT check_key,status,evidence,source,updated_by,updated_at
+      FROM release_control_evidence
+     WHERE check_key=$1
+       AND evidence ILIKE $2
+     ORDER BY updated_at DESC
+     LIMIT 1
+  `, [key, `%${frontend}%`])).rows[0] || null;
+}
+
+async function latestOperationalEvidence(key: string) {
+  return (await db.query(`
+    SELECT check_key,status,evidence,source,updated_by,updated_at
+      FROM release_control_evidence
+     WHERE check_key=$1
+       AND updated_at >= now() - ($2::text || ' hours')::interval
+     ORDER BY updated_at DESC
+     LIMIT 1
+  `, [key, String(OPERATIONAL_EVIDENCE_MAX_AGE_HOURS)])).rows[0] || null;
+}
+
+async function evidenceGates(refs: ReleaseRefs): Promise<Gate[]> {
   await ensureSchema();
-  const rows = (await db.query(`SELECT check_key,status,evidence,source,updated_by,updated_at FROM release_control_evidence WHERE release_ref=$1`, [ref])).rows;
-  const map = new Map(rows.map((r:any) => [String(r.check_key), r]));
+  const backendRows = (await db.query(`
+    SELECT check_key,status,evidence,source,updated_by,updated_at
+      FROM release_control_evidence
+     WHERE release_ref=$1
+  `, [refs.backend_ref])).rows;
+  const candidateRows = (await db.query(`
+    SELECT check_key,status,evidence,source,updated_by,updated_at
+      FROM release_control_evidence
+     WHERE release_ref=$1
+  `, [refs.release_candidate_ref])).rows;
+  const backendMap = new Map<string, any>(backendRows.map((r:any) => [String(r.check_key), r] as [string, any]));
+  const candidateMap = new Map<string, any>(candidateRows.map((r:any) => [String(r.check_key), r] as [string, any]));
+  const resolved = new Map<string, any>();
+
+  for (const key of BACKEND_KEYS) {
+    const row = backendMap.get(key);
+    if (row) resolved.set(key, row);
+  }
+
+  if (refs.frontend_ref) {
+    for (const key of FRONTEND_KEYS) {
+      const row = await latestFrontendEvidence(refs.frontend_ref, key);
+      if (row) resolved.set(key, row);
+    }
+  }
+
+  for (const key of OPERATIONAL_KEYS) {
+    const row = await latestOperationalEvidence(key);
+    if (row) resolved.set(key, row);
+  }
+
+  for (const [key, row] of candidateMap) {
+    if (!AUTOMATED_KEYS.has(key)) resolved.set(key, row);
+  }
 
   if (await tableExists("release_manual_signoffs")) {
     try {
-      const signoff = (await db.query(`SELECT result,notes,tester_name,created_at FROM release_manual_signoffs WHERE release_ref=$1 ORDER BY created_at DESC LIMIT 1`, [ref])).rows[0];
-      if (signoff && !map.has("uat.signoff")) {
+      const signoff = (await db.query(`SELECT result,notes,tester_name,created_at FROM release_manual_signoffs WHERE release_ref=$1 ORDER BY created_at DESC LIMIT 1`, [refs.release_candidate_ref])).rows[0];
+      if (signoff && !resolved.has("uat.signoff")) {
         const passed = ["pass","passed","approved","go","ok"].includes(String(signoff.result || "").toLowerCase());
-        map.set("uat.signoff", { check_key:"uat.signoff", status:passed?"pass":"fail", evidence:`${signoff.tester_name || "UAT"}: ${signoff.notes || signoff.result}`, source:"vir-spec-parity", updated_by:signoff.tester_name, updated_at:signoff.created_at });
+        resolved.set("uat.signoff", { check_key:"uat.signoff", status:passed?"pass":"fail", evidence:`${signoff.tester_name || "UAT"}: ${signoff.notes || signoff.result}`, source:"vir-spec-parity", updated_by:signoff.tester_name, updated_at:signoff.created_at });
       }
     } catch {}
   }
 
   return MANUAL_GATES.map(([key,group,label]) => {
-    const row:any = map.get(key);
+    const row:any = resolved.get(key);
+    let missing = AUTOMATED_KEYS.has(key)
+      ? "GitHub Actions bizonyíték még nem érkezett ehhez a futó release-hez."
+      : "Kötelező release-bizonyíték még nincs rögzítve.";
+    if (FRONTEND_KEYS.has(key) && !refs.frontend_ref) missing = "A futó frontend SHA még nincs hitelesítve a Release Control Centerben.";
+    if (OPERATIONAL_KEYS.has(key)) missing = `Nincs ${OPERATIONAL_EVIDENCE_MAX_AGE_HOURS} órán belüli sikeres üzemeltetési bizonyíték.`;
     return {
       key,
       group,
@@ -233,7 +431,7 @@ async function evidenceGates(ref: string): Promise<Gate[]> {
       status:(row?.status || "pending") as GateStatus,
       blocking:true,
       editable:!AUTOMATED_KEYS.has(key),
-      message:row?.evidence || (AUTOMATED_KEYS.has(key) ? "GitHub Actions bizonyíték még nem érkezett ehhez a futó release-hez." : "Kötelező release-bizonyíték még nincs rögzítve."),
+      message:row?.evidence || missing,
       evidence:row?.evidence || null,
       source:row?.source || (AUTOMATED_KEYS.has(key) ? "github-actions" : "manual"),
       updated_by:row?.updated_by || null,
@@ -247,7 +445,12 @@ router.use(async (_req,_res,next) => { try { await ensureSchema(); next(); } cat
 router.get("/", async (_req, res, next) => {
   try {
     const auto = await automaticGates();
-    const manual = await evidenceGates(auto.meta.backend_ref);
+    const refs: ReleaseRefs = {
+      backend_ref: auto.meta.backend_ref,
+      frontend_ref: auto.meta.frontend_ref,
+      release_candidate_ref: auto.meta.release_candidate_ref,
+    };
+    const manual = await evidenceGates(refs);
     const autoKeys = new Set(auto.gates.map(g => g.key));
     const gates = [...auto.gates, ...manual.filter(g => !autoKeys.has(g.key))];
     const blocking = gates.filter(g => g.blocking);
@@ -261,7 +464,18 @@ router.get("/", async (_req, res, next) => {
       blocking_total:blocking.length,
       blocking_open:blockers.length,
     };
-    res.json({ generated_at:new Date().toISOString(), release_ref:auto.meta.backend_ref, release_ready:blockers.length===0, decision:blockers.length===0?"GO":"NO-GO", summary, blockers:blockers.map(g=>({key:g.key,label:g.label,status:g.status,message:g.message})), meta:auto.meta, gates });
+    res.json({
+      generated_at:new Date().toISOString(),
+      release_ref:refs.release_candidate_ref,
+      backend_ref:refs.backend_ref,
+      frontend_ref:refs.frontend_ref,
+      release_ready:blockers.length===0,
+      decision:blockers.length===0?"GO":"NO-GO",
+      summary,
+      blockers:blockers.map(g=>({key:g.key,label:g.label,status:g.status,message:g.message})),
+      meta:auto.meta,
+      gates,
+    });
   } catch (error) { next(error); }
 });
 
@@ -272,7 +486,9 @@ router.post("/evidence", async (req:AuthRequest,res,next) => {
     if (AUTOMATED_KEYS.has(key)) return res.status(403).json({message:"Ezt a release gate-et kizárólag a hitelesített GitHub Actions workflow írhatja."});
     const status = String(req.body?.status || "pending").trim() as GateStatus;
     if (!["pass","warning","fail","pending"].includes(status)) return res.status(400).json({message:"Érvénytelen gate státusz."});
-    const ref = String(req.body?.release_ref || releaseRef()).trim() || releaseRef();
+    const refs = await currentReleaseRefs();
+    const ref = String(req.body?.release_ref || refs.release_candidate_ref).trim() || refs.release_candidate_ref;
+    if (ref !== refs.release_candidate_ref) return res.status(409).json({message:"Kézi release evidence csak az aktuális backend+frontend release candidate-hez rögzíthető.",current_release_ref:refs.release_candidate_ref});
     const row = await recordReleaseEvidence({
       release_ref: ref,
       key,
@@ -290,7 +506,9 @@ router.delete("/evidence/:key", async (req:AuthRequest,res,next) => {
     const key = String(req.params.key || "");
     if (!manualKeyAllowed(key)) return res.status(400).json({message:"Ismeretlen release gate."});
     if (AUTOMATED_KEYS.has(key)) return res.status(403).json({message:"Automatikus GitHub Actions bizonyíték kézzel nem törölhető."});
-    const ref = String(req.query.release_ref || releaseRef()).trim();
+    const refs = await currentReleaseRefs();
+    const ref = String(req.query.release_ref || refs.release_candidate_ref).trim();
+    if (ref !== refs.release_candidate_ref) return res.status(409).json({message:"Csak az aktuális release candidate kézi bizonyítéka törölhető.",current_release_ref:refs.release_candidate_ref});
     await db.query(`DELETE FROM release_control_evidence WHERE release_ref=$1 AND check_key=$2`, [ref,key]);
     res.json({ok:true,release_ref:ref,key,cleared_by:actor(req)});
   } catch (error) { next(error); }
