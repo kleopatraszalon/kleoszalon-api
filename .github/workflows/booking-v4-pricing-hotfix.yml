@@ -1,0 +1,40 @@
+name: Booking 4 chain pricing hotfix
+on:
+  push:
+    branches: [feature/booking-4-pricing-hotfix]
+    paths: [.github/workflows/booking-v4-pricing-hotfix.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/booking-4-pricing-hotfix
+      - name: Align coupon calculation with single booking
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/routes/bookingV4ChainBook.ts');s=p.read_text()
+          old="const baseSubtotal=resolved.reduce((sum,x)=>sum+Number(x.service.price||0),0);\n    let coupon:any=null,couponDiscount=0;"
+          new="const baseSubtotal=resolved.reduce((sum,x)=>sum+Number(x.service.price||0),0);\n    const onlineDiscountPercent=Math.max(0,Math.min(100,Number(cfg.online_discount_percent||0)));\n    const subtotalAfterOnline=baseSubtotal*(1-onlineDiscountPercent/100);\n    let coupon:any=null,couponDiscount=0;"
+          if old not in s: raise SystemExit('subtotal anchor not found')
+          s=s.replace(old,new,1)
+          s=s.replace("if(coupon.minimum_booking_value!=null&&baseSubtotal<Number(coupon.minimum_booking_value))", "if(coupon.minimum_booking_value!=null&&subtotalAfterOnline<Number(coupon.minimum_booking_value))",1)
+          s=s.replace("couponDiscount=Math.min(baseSubtotal,coupon.discount_type==='percent'?baseSubtotal*Number(coupon.discount_value)/100:Number(coupon.discount_value));", "couponDiscount=Math.min(subtotalAfterOnline,coupon.discount_type==='percent'?subtotalAfterOnline*Number(coupon.discount_value)/100:Number(coupon.discount_value));",1)
+          s=s.replace("const couponExtraPercent=baseSubtotal>0?couponDiscount/baseSubtotal*100:0;", "const couponExtraPercent=subtotalAfterOnline>0?couponDiscount/subtotalAfterOnline*100:0;",1)
+          s=s.replace("100-Number(cfg.online_discount_percent||0)", "100-onlineDiscountPercent",1)
+          s=s.replace("final_total:Math.max(0,Math.round(baseSubtotal*(1-Number(cfg.online_discount_percent||0)/100)-couponDiscount))", "final_total:Math.max(0,Math.round(subtotalAfterOnline-couponDiscount))",1)
+          p.write_text(s)
+          PY
+      - name: Verify
+        run: |
+          grep -q 'subtotalAfterOnline' src/routes/bookingV4ChainBook.ts
+          grep -q 'final_total:Math.max(0,Math.round(subtotalAfterOnline-couponDiscount))' src/routes/bookingV4ChainBook.ts
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/routes/bookingV4ChainBook.ts
+          git diff --cached --quiet || (git commit -m "fix(booking-v4): align chain coupon pricing order" && git push origin HEAD:feature/booking-4-pricing-hotfix)
