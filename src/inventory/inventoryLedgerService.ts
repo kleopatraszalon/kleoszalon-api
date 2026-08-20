@@ -43,6 +43,16 @@ function inventoryError(message: string, code: string, status = 409) {
   return error;
 }
 
+export async function productNegativeStockAllowed(client: any, productId: string, locationId: string | null) {
+  const functionExists = (await client.query(`SELECT to_regprocedure('kleo_product_negative_stock_allowed(uuid,text)') IS NOT NULL ok`)).rows[0]?.ok;
+  if (functionExists) {
+    const { rows } = await client.query(`SELECT kleo_product_negative_stock_allowed($1::uuid,$2::text) allowed`, [productId, locationId]);
+    return Boolean(rows[0]?.allowed);
+  }
+  const setting = await inventorySetting(client, locationId);
+  return setting.prevent_negative_stock === false;
+}
+
 async function productPurpose(client: any, productId: string): Promise<Purpose> {
   const { rows } = await client.query(`
     SELECT COALESCE((to_jsonb(p)->>'is_service_material')::boolean,false) AS is_service_material
@@ -56,6 +66,7 @@ export async function resolveInventoryWarehouse(client: any, selector: Warehouse
   const locationId = selector.locationId || null;
   const requiredQuantity = Math.max(0, Number(selector.requiredQuantity || 0));
   const purpose = selector.purpose || await productPurpose(client, selector.productId);
+  const allowNegative = requiredQuantity > EPS ? await productNegativeStockAllowed(client, selector.productId, locationId) : false;
 
   if (selector.warehouseId != null && String(selector.warehouseId).trim()) {
     const { rows } = await client.query(`
@@ -68,7 +79,7 @@ export async function resolveInventoryWarehouse(client: any, selector: Warehouse
     if (!warehouse) throw inventoryError("A kiválasztott raktár nem található vagy inaktív.", "INVENTORY_WAREHOUSE_NOT_FOUND", 404);
     const warehouseLocation = warehouse.location_id == null ? null : String(warehouse.location_id);
     if (warehouseLocation !== locationId) throw inventoryError("A kiválasztott raktár nem a rendelés vagy készletművelet telephelyéhez tartozik.", "INVENTORY_WAREHOUSE_LOCATION_MISMATCH", 400);
-    if (requiredQuantity > EPS && Number(warehouse.product_quantity || 0) + EPS < requiredQuantity) {
+    if (!allowNegative && requiredQuantity > EPS && Number(warehouse.product_quantity || 0) + EPS < requiredQuantity) {
       throw inventoryError(`A(z) ${warehouse.name} raktár készlete nem elegendő. Elérhető: ${Number(warehouse.product_quantity || 0)}, szükséges: ${requiredQuantity}.`, "INVENTORY_INSUFFICIENT_STOCK");
     }
     return warehouse;
@@ -92,7 +103,7 @@ export async function resolveInventoryWarehouse(client: any, selector: Warehouse
   `, [locationId, selector.productId, purpose, requiredQuantity]);
   const warehouse = rows[0];
   if (!warehouse) throw inventoryError("Nincs aktív raktár konfigurálva ehhez a telephelyhez.", "INVENTORY_WAREHOUSE_MISSING");
-  if (requiredQuantity > EPS && Number(warehouse.product_quantity || 0) + EPS < requiredQuantity) {
+  if (!allowNegative && requiredQuantity > EPS && Number(warehouse.product_quantity || 0) + EPS < requiredQuantity) {
     throw inventoryError(`A(z) ${warehouse.name} raktár készlete nem elegendő. Elérhető: ${Number(warehouse.product_quantity || 0)}, szükséges: ${requiredQuantity}.`, "INVENTORY_INSUFFICIENT_STOCK");
   }
   return warehouse;
@@ -246,8 +257,9 @@ export async function postWarehouseIssue(client: any, args: {
   const balance = await balanceForUpdate(client, args.warehouse.id, args.productId);
   const currentQty = Number(balance.quantity || 0);
   const after = currentQty - quantity;
-  const setting = await inventorySetting(client, args.warehouse.location_id == null ? null : String(args.warehouse.location_id));
-  if (setting.prevent_negative_stock !== false && after < -EPS) {
+  const locationId = args.warehouse.location_id == null ? null : String(args.warehouse.location_id);
+  const allowNegative = await productNegativeStockAllowed(client, args.productId, locationId);
+  if (!allowNegative && after < -EPS) {
     throw inventoryError(`A(z) ${args.warehouse.name} raktár készlete nem elegendő. Elérhető: ${currentQty}, szükséges: ${quantity}.`, "INVENTORY_INSUFFICIENT_STOCK");
   }
   const lotAllocations = await allocateInventoryLots(client, {
@@ -260,7 +272,7 @@ export async function postWarehouseIssue(client: any, args: {
   });
   const unitCost = Number(balance.unit_cost || 0);
   await client.query(`UPDATE inventory_warehouse_balances SET quantity=$2,updated_at=now() WHERE id=$1`, [balance.id, after]);
-  await syncLegacyInventoryAggregate(client, args.productId, args.warehouse.location_id == null ? null : String(args.warehouse.location_id));
+  await syncLegacyInventoryAggregate(client, args.productId, locationId);
   const movement = await insertMovement(client, args.warehouse, args.productId, args.movementType || "writeoff", -quantity, after, unitCost, args.meta);
   await recordMovementLotAllocations(client, movement.id, lotAllocations, -1);
   return { warehouse_id: args.warehouse.id, quantity: -quantity, balance_after: after, unit_cost: unitCost, movement, lot_allocations: lotAllocations };
