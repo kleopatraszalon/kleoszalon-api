@@ -23,15 +23,15 @@ test('CAPA management escalation is opt-in, cooldown controlled and tenant scope
     '!ESCALATION_ENABLED',
     '7,37 * * * *'
   ])assert.ok(src.includes(marker),marker);
-  assert.ok(src.includes('$2::text[] IS NULL OR rc.location_id::text=ANY($2::text[])'));
+  assert.match(src,/\$2::text\[\]\s+IS\s+NULL\s+OR\s+rc\.location_id::text\s*=\s*ANY\(\$2::text\[\]\)/);
 });
 
 test('tenant scoped dry-run preview is exposed and isolated from global scheduler result',()=>{
   const route=read('src/routes/exceptionCapaImprovementRecommendations.ts');
   const src=read('src/services/exceptionCapaManagementQueue.ts');
   assert.ok(route.includes('/intelligence/capa/improvement-workqueue/escalations/preview'));
-  assert.ok(route.includes('dryRun:true,locationIds:locations'));
-  assert.ok(src.includes('if(scoped)return executeEscalations(options)'));
+  assert.match(route,/runExceptionCapaManagementEscalations\(\{\s*dryRun\s*:\s*true\s*,\s*locationIds\s*:\s*locations\s*\}\)/);
+  assert.match(src,/if\s*\(scoped\)\s*return\s+executeEscalations\(options\)/);
   assert.ok(src.includes('globalEscalationInFlight'));
 });
 
