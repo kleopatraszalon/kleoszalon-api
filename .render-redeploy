@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-20T22:00:00+02:00
-Deploy the latest main, including the public Booking 4 taxonomy/bootstrap repair and the subsequent Booking 4 intelligence, waitlist and rebooking engine.
-Reason: production rebuild requested from the current protected main. Public price list, booking catalog, service availability and the newest Booking 4 intelligence layer must deploy together from the same current base.
+2026-08-20T22:13:00+02:00
+Deploy latest protected main including public Booking 4 taxonomy/bootstrap recovery, live UAT hardening, intelligence, waitlist and rebooking changes.
+Reason: explicit production deploy requested now; rebuild current latest main.
