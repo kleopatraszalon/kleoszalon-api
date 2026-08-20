@@ -50,6 +50,13 @@ export default async function ensureBookingV4(){
       );
       CREATE TABLE IF NOT EXISTS booking_coupon_locations(coupon_id uuid NOT NULL REFERENCES booking_coupon_campaigns(id) ON DELETE CASCADE,location_id uuid NOT NULL REFERENCES locations(id) ON DELETE CASCADE,PRIMARY KEY(coupon_id,location_id));
       CREATE TABLE IF NOT EXISTS booking_coupon_services(coupon_id uuid NOT NULL REFERENCES booking_coupon_campaigns(id) ON DELETE CASCADE,service_id uuid NOT NULL REFERENCES services(id) ON DELETE CASCADE,PRIMARY KEY(coupon_id,service_id));
+      CREATE TABLE IF NOT EXISTS booking_coupon_redemptions(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),coupon_id uuid NOT NULL REFERENCES booking_coupon_campaigns(id) ON DELETE RESTRICT,
+        appointment_id uuid NOT NULL UNIQUE REFERENCES appointments(id) ON DELETE CASCADE,client_id uuid REFERENCES clients(id) ON DELETE SET NULL,
+        discount_amount numeric(12,2) NOT NULL DEFAULT 0,created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_booking_coupon_redemptions_coupon ON booking_coupon_redemptions(coupon_id,created_at);
+      CREATE INDEX IF NOT EXISTS idx_booking_coupon_redemptions_client ON booking_coupon_redemptions(coupon_id,client_id,created_at);
       CREATE TABLE IF NOT EXISTS booking_last_minute_rules(
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text NOT NULL,location_id uuid REFERENCES locations(id) ON DELETE CASCADE,
         service_id uuid REFERENCES services(id) ON DELETE CASCADE,staff_level_id uuid REFERENCES booking_staff_levels(id) ON DELETE SET NULL,
@@ -76,6 +83,23 @@ export default async function ensureBookingV4(){
         source text NOT NULL DEFAULT 'online_booking',consented_at timestamptz,withdrawn_at timestamptz,created_at timestamptz NOT NULL DEFAULT now()
       );
     `);
+    try{
+      await db.query(`
+        WITH parent AS (
+          SELECT id FROM menus WHERE code IN ('appointments','booking','settings')
+          ORDER BY CASE code WHEN 'appointments' THEN 0 WHEN 'booking' THEN 1 ELSE 2 END LIMIT 1
+        )
+        INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+        SELECT 'appointments.booking_v4','Booking 4.0 – foglalás és ajánlatok','CalendarClock','/admin/booking-v4',95,parent.id,'appointments',true FROM parent
+        ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,icon=EXCLUDED.icon,route=EXCLUDED.route,order_index=EXCLUDED.order_index,parent_id=EXCLUDED.parent_id,feature_key=EXCLUDED.feature_key,is_active=true;
+      `);
+      await db.query(`
+        INSERT INTO role_menu_permissions(role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,can_view_financial,can_manage_permissions,scope_type,updated_at)
+        SELECT r.role_key,m.id,true,true,true,false,true,true,true,(r.role_key='admin'),'all_locations',now()
+        FROM (VALUES ('admin'),('manager')) r(role_key) JOIN menus m ON m.code='appointments.booking_v4'
+        ON CONFLICT(role_key,menu_id) DO UPDATE SET can_view=true,can_create=true,can_edit=true,can_approve=true,can_export=true,can_view_financial=true,updated_at=now();
+      `);
+    }catch(error:any){console.warn('[booking-v4] admin menu self-heal skipped',error?.message||error);}
     ready=true;
   })().finally(()=>{running=null});
   return running;
