@@ -1,8 +1,11 @@
 import { Router } from "express";
 import db from "../db";
+import ensureBookingV4 from "../booking/ensureBookingV4";
 
 const router=Router();
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+router.use(async(_req,res,next)=>{try{await ensureBookingV4();next()}catch(error:any){res.status(500).json({error:"A Booking 4.0 adatmodell inicializálása sikertelen.",detail:error?.message||String(error)})}});
 
 router.get("/rules",async(_req,res)=>{
   try{
@@ -71,13 +74,14 @@ router.post("/rebuild",async(req,res)=>{
         ])).rows[0];
         const freePercent=100-(Number(busy?.busy_minutes||0)/workMinutes*100);
         if(freePercent<Number(rule.free_capacity_threshold_percent||50))continue;
-        const starts=(await cx.query(`SELECT gs AS start_time,gs+($5||' minutes')::interval AS end_time FROM generate_series($3::timestamptz,$4::timestamptz-($5||' minutes')::interval,interval '15 minutes') gs
-          WHERE gs>now() AND NOT EXISTS(SELECT 1 FROM appointments a WHERE a.employee_id=$1::uuid AND a.location_id=$2::uuid AND a.status NOT IN ('cancelled','canceled','no_show') AND a.start_time<gs+($5||' minutes')::interval AND a.end_time>gs)
+        const starts=(await cx.query(`SELECT gs AS start_time,gs+make_interval(mins=>$5::int) AS end_time
+          FROM generate_series($3::timestamptz,$4::timestamptz-make_interval(mins=>$5::int),interval '15 minutes') gs
+          WHERE gs>now() AND NOT EXISTS(SELECT 1 FROM appointments a WHERE a.employee_id=$1::uuid AND a.location_id=$2::uuid AND a.status NOT IN ('cancelled','canceled','no_show') AND a.start_time<gs+make_interval(mins=>$5::int) AND a.end_time>gs)
           ORDER BY gs LIMIT 8`,[employee.id,rule.location_id,`${date}T${String(Math.floor(opening/60)).padStart(2,'0')}:${String(opening%60).padStart(2,'0')}:00`,`${date}T${String(Math.floor(closing/60)).padStart(2,'0')}:${String(closing%60).padStart(2,'0')}:00`,service.duration_minutes])).rows;
         for(const candidate of starts){
           const original=Number(service.price||0),offer=Math.max(0,Math.round(original*(1-Number(rule.discount_percent)/100)));
           const inserted=await cx.query(`INSERT INTO booking_last_minute_offers(rule_id,location_id,service_id,employee_id,start_time,end_time,original_price,offer_price,discount_percent,expires_at,status)
-            VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7,$8,$9,LEAST($5::timestamptz,now()+($10||' hours')::interval),'active')
+            VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7,$8,$9,LEAST($5::timestamptz,now()+make_interval(hours=>$10::int)),'active')
             ON CONFLICT DO NOTHING RETURNING id`,[rule.id,rule.location_id,rule.service_id,employee.id,candidate.start_time,candidate.end_time,original,offer,rule.discount_percent,rule.validity_hours]);
           generated+=inserted.rowCount||0;
         }
@@ -87,7 +91,7 @@ router.post("/rebuild",async(req,res)=>{
   }catch(error:any){await cx.query("ROLLBACK");res.status(500).json({error:"A Last Minute ajánlatok generálása sikertelen.",detail:error?.message||String(error)});}finally{cx.release();}
 });
 
-router.get("/offers",async(req,res)=>{
+router.get("/offers",async(_req,res)=>{
   try{const {rows}=await db.query(`SELECT o.*,l.name location_name,s.name service_name,COALESCE(NULLIF(e.full_name,''),concat_ws(' ',e.last_name,e.first_name),'Munkatárs') employee_name FROM booking_last_minute_offers o JOIN locations l ON l.id=o.location_id JOIN services s ON s.id=o.service_id JOIN employees e ON e.id=o.employee_id ORDER BY o.start_time DESC LIMIT 300`);res.json({offers:rows});}
   catch(error:any){res.status(500).json({error:"A Last Minute ajánlatok nem tölthetők be.",detail:error?.message||String(error)});}
 });
