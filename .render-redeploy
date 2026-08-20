@@ -1,4 +1,4 @@
 Render redeploy trigger
-2026-08-18T21:18:00+02:00
-Deploy latest main including Resilience & Recovery business-continuity control, SEV1/SEV2 automatic recovery sessions, service-level RTO/RPO profiles, evidence-based recovery runbooks, automatic change-freeze, two-person exact-SHA emergency change overrides, ALL CLEAR governance, freeze-reactivation protection, System Health readiness, management-only API/menu and business.resilience_recovery Release Control gate.
-Reason: production redeploy after the Major Incident layer was extended into fail-closed service recovery, continuity objectives and controlled release recovery governance.
+2026-08-20T22:00:00+02:00
+Deploy the latest main, including the public Booking 4 taxonomy/bootstrap repair and the subsequent Booking 4 intelligence, waitlist and rebooking engine.
+Reason: production rebuild requested from the current protected main. Public price list, booking catalog, service availability and the newest Booking 4 intelligence layer must deploy together from the same current base.
