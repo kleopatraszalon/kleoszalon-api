@@ -53,6 +53,62 @@ async function repairLegacyMenuCodes() {
   `);
 }
 
+async function ensureCanonicalAdminMenu() {
+  const exists = (await pool.query(`SELECT to_regclass('public.menus') IS NOT NULL ok`)).rows[0]?.ok;
+  if (!exists) return;
+
+  await pool.query(`
+    INSERT INTO menus(code,name,icon,route,order_index,parent_id,feature_key,is_active)
+    VALUES
+      ('dashboard','Irányítópult','LayoutDashboard','/',10,NULL,'dashboard',true),
+      ('appointments','Időpontok és beosztás','CalendarDays',NULL,20,NULL,'appointments',true),
+      ('customers','Ügyfelek és CRM','Users',NULL,30,NULL,'clients',true),
+      ('loyalty','Törzsvásárlói program','Gift',NULL,40,NULL,'loyalty',true),
+      ('team','Munkatársak és HR','UserCog',NULL,50,NULL,'hr',true),
+      ('finance','Pénzügyek','WalletCards',NULL,60,NULL,'finance',true),
+      ('inventory','Raktár és készlet','Boxes',NULL,70,NULL,'inventory',true),
+      ('procurement','Beszerzés','ShoppingBag',NULL,75,NULL,'inventory',true),
+      ('analytics','Vezetői riportok','ChartNoAxesCombined',NULL,80,NULL,'analytics',true),
+      ('locations','Telephelyek','Building2',NULL,85,NULL,'locations',true),
+      ('marketing','Marketing','Megaphone',NULL,90,NULL,'marketing',true),
+      ('online','Online foglalás és alkalmazás','Globe2',NULL,100,NULL,'online',true),
+      ('commerce','Értékesítés és webshop','ShoppingBag',NULL,105,NULL,'commerce',true),
+      ('operations','Működés és minőség','ClipboardCheck',NULL,110,NULL,'operations',true),
+      ('knowledge','Tudásbázis','BookOpenText',NULL,115,NULL,'knowledge_base',true),
+      ('masterdata','Törzsadatok','Database',NULL,145,NULL,'master_data',true),
+      ('settings','Beállítások és adminisztráció','Settings',NULL,190,NULL,'audit',true)
+    ON CONFLICT(code) DO UPDATE SET
+      name=EXCLUDED.name,
+      icon=COALESCE(menus.icon,EXCLUDED.icon),
+      parent_id=NULL,
+      is_active=true
+  `);
+
+  const permissionsExists = (await pool.query(`SELECT to_regclass('public.role_menu_permissions') IS NOT NULL ok`)).rows[0]?.ok;
+  if (!permissionsExists) return;
+
+  await pool.query(`
+    INSERT INTO role_menu_permissions(
+      role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,
+      can_view_financial,can_manage_permissions,scope_type,updated_at
+    )
+    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now()
+      FROM menus m
+     WHERE COALESCE(m.is_active,true)=true
+    ON CONFLICT(role_key,menu_id) DO UPDATE SET
+      can_view=true,
+      can_create=true,
+      can_edit=true,
+      can_delete=true,
+      can_approve=true,
+      can_export=true,
+      can_view_financial=true,
+      can_manage_permissions=true,
+      scope_type='all_locations',
+      updated_at=now()
+  `);
+}
+
 export function ensureVirSpecModules() {
   if (!migrationPromise) {
     migrationPromise = (async () => {
@@ -72,6 +128,7 @@ export function ensureVirSpecModules() {
         await runStep(fileName, () => runSqlFile(fileName));
       }
       await runStep("Torzsadatok menu onjavitas", ensureMasterDataMenuHealth);
+      await runStep("kanonikus admin menu onjavitas", ensureCanonicalAdminMenu);
 
       if (failures.length) {
         throw new Error(`A VIR bootstrap ${failures.length} reszlepese hibazott: ${failures.join(" | ")}`);
