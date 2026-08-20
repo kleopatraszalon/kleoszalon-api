@@ -17,20 +17,20 @@ router.get("/v4/pricelist",async(req,res)=>{
       db.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name`),
       db.query(`
         SELECT s.id,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,
-               COALESCE(st.name,'Egyéb') category_name,
-               CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'
+               COALESCE(bsc.name,st.name,'Egyéb') category_name,
+               COALESCE(bd.code,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'
                     WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet'
-                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END department_code,
-               CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END) department_code,
+               COALESCE(bd.name,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'
                     WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás'
-                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END department_name,
+                    WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END) department_name,
                COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric base_price,
                COALESCE((SELECT jsonb_object_agg(x.code,x.price) FROM (
                  SELECT DISTINCT ON (lvl.code) lvl.code,p.price FROM booking_service_prices_by_level p
                  JOIN booking_staff_levels lvl ON lvl.id=p.staff_level_id AND lvl.is_active=true
                  WHERE p.service_id=s.id AND p.is_active=true AND ($1::uuid IS NULL OR p.location_id=$1::uuid OR p.location_id IS NULL)
                  ORDER BY lvl.code,(p.location_id=$1::uuid) DESC NULLS LAST,p.updated_at DESC) x),'{}'::jsonb) level_prices
-        FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id
+        FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id LEFT JOIN booking_service_taxonomy bst ON bst.service_id=s.id LEFT JOIN booking_service_categories bsc ON bsc.id=bst.category_id AND bsc.is_active=true LEFT JOIN booking_departments bd ON bd.id=bsc.department_id AND bd.is_active=true
         WHERE COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true
           AND ($1::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id)
                OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$1::uuid))
