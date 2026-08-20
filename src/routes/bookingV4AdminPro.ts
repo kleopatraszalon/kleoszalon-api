@@ -3,6 +3,7 @@ import db from "../db";
 import ensureBookingV4 from "../booking/ensureBookingV4";
 import ensureBookingV4Chain from "../booking/ensureBookingV4Chain";
 import ensureOnlineBooking from "../booking/ensureOnlineBooking";
+import bookingV4AutomationRouter from "./bookingV4Automation";
 
 const router=Router();
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -10,6 +11,7 @@ const uuid=(v:unknown)=>{const s=String(v||"").trim();return UUID_RE.test(s)?s:n
 const bounded=(v:unknown,min:number,max:number,fallback:number)=>{const n=Number(v);return Number.isFinite(n)?Math.max(min,Math.min(max,n)):fallback};
 
 router.use(async(_req,res,next)=>{try{await Promise.all([ensureBookingV4(),ensureBookingV4Chain(),ensureOnlineBooking()]);next()}catch(error:any){res.status(500).json({error:"A Booking 4.0 admin központ inicializálása sikertelen.",detail:error?.message||String(error)})}});
+router.use("/automation",bookingV4AutomationRouter);
 
 router.get("/overview",async(req,res)=>{
   try{
