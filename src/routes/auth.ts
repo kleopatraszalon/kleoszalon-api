@@ -22,12 +22,14 @@ function authCookieOptions() {
   const production = process.env.NODE_ENV === "production";
   return {
     httpOnly: true,
-    // Frontend and API are separate Render origins. Production therefore needs
-    // SameSite=None; CSRF protection is enforced by the authenticated middleware.
+    // Frontend and API are separate Render sites. SameSite=None is required,
+    // while Partitioned (CHIPS) keeps the session usable when Chromium blocks
+    // unpartitioned third-party cookies. CSRF remains enforced by auth middleware.
     sameSite: (production ? "none" : "lax") as "none" | "lax",
     secure: production,
+    partitioned: production,
     path: "/",
-  };
+  } as any;
 }
 
 function setAuthCookie(res: Response, token: string) {
