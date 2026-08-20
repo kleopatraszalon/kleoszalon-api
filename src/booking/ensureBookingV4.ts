@@ -8,6 +8,44 @@ export default async function ensureBookingV4(){
   if(running)return running;
   running=(async()=>{
     await db.query(`
+      -- A publikus árlista és /booking/catalog közvetlenül használja ezt a
+      -- taxonómiát. Nem függhet attól, hogy az admin taxonomy route futott-e már.
+      CREATE TABLE IF NOT EXISTS booking_departments(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        code text NOT NULL UNIQUE,
+        name text NOT NULL,
+        sort_order int NOT NULL DEFAULT 100,
+        is_active boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS booking_service_categories(
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        department_id uuid NOT NULL REFERENCES booking_departments(id) ON DELETE CASCADE,
+        code text NOT NULL,
+        name text NOT NULL,
+        sort_order int NOT NULL DEFAULT 100,
+        is_active boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(department_id,code)
+      );
+      CREATE TABLE IF NOT EXISTS booking_service_taxonomy(
+        service_id uuid PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+        category_id uuid NOT NULL REFERENCES booking_service_categories(id) ON DELETE CASCADE,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO booking_departments(code,name,sort_order) VALUES
+        ('hair','Fodrászat',10),
+        ('handsfeet','Kéz- és lábápolás',20),
+        ('beauty','Kozmetika',30),
+        ('massage','Masszázs',40)
+      ON CONFLICT(code) DO UPDATE SET
+        name=EXCLUDED.name,
+        sort_order=EXCLUDED.sort_order,
+        is_active=true,
+        updated_at=now();
+
       CREATE TABLE IF NOT EXISTS booking_staff_levels(
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),code text NOT NULL UNIQUE,name text NOT NULL,
         sort_order int NOT NULL DEFAULT 100,is_active boolean NOT NULL DEFAULT true,
