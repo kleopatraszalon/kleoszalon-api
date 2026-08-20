@@ -1,0 +1,40 @@
+name: Booking taxonomy public catalog
+on:
+  push:
+    branches: [feature/booking-4-taxonomy-optimizer]
+    paths: [.github/workflows/booking-v4-taxonomy-public.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/booking-4-taxonomy-optimizer
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/routes/bookingV4.ts');s=p.read_text()
+          s=s.replace("COALESCE(st.name,'Egyéb') category_name,", "COALESCE(bsc.name,st.name,'Egyéb') category_name,",1)
+          s=s.replace("CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'", "COALESCE(bd.code,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'",1)
+          s=s.replace("WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END department_code,", "WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END) department_code,",1)
+          s=s.replace("CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'", "COALESCE(bd.name,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'",1)
+          s=s.replace("WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END department_name,", "WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END) department_name,",1)
+          old='FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id'
+          new='FROM services s LEFT JOIN service_types st ON st.id=s.service_type_id LEFT JOIN booking_service_taxonomy bst ON bst.service_id=s.id LEFT JOIN booking_service_categories bsc ON bsc.id=bst.category_id AND bsc.is_active=true LEFT JOIN booking_departments bd ON bd.id=bsc.department_id AND bd.is_active=true'
+          if old not in s: raise SystemExit('bookingV4 join anchor missing')
+          s=s.replace(old,new,1);p.write_text(s)
+          p=Path('src/routes/onlineBookingCore.ts');s=p.read_text()
+          old="COALESCE(st.name,'Egyéb szolgáltatások') category_name\n         FROM services s\n         LEFT JOIN service_types st ON st.id=s.service_type_id"
+          new="COALESCE(bsc.name,st.name,'Egyéb szolgáltatások') category_name,\n                COALESCE(bd.code,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage' ELSE 'beauty' END) department_code,\n                COALESCE(bd.name,CASE WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás' WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs' ELSE 'Kozmetika' END) department_name\n         FROM services s\n         LEFT JOIN service_types st ON st.id=s.service_type_id\n         LEFT JOIN booking_service_taxonomy bst ON bst.service_id=s.id\n         LEFT JOIN booking_service_categories bsc ON bsc.id=bst.category_id AND bsc.is_active=true\n         LEFT JOIN booking_departments bd ON bd.id=bsc.department_id AND bd.is_active=true"
+          if old not in s: raise SystemExit('catalog anchor missing')
+          s=s.replace(old,new,1);p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/routes/bookingV4.ts src/routes/onlineBookingCore.ts
+          git diff --cached --quiet || (git commit -m "feat(booking-v4): use persisted taxonomy in public catalog" && git push origin HEAD:feature/booking-4-taxonomy-optimizer)
+# trigger
