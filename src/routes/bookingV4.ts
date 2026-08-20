@@ -9,6 +9,59 @@ const asIds=(v:unknown)=>Array.isArray(v)?v.map(String).filter(Boolean):String(v
 
 router.use(async(_req,res,next)=>{try{await ensureBookingV4();next()}catch(error:any){res.status(500).json({error:"A Booking 4.0 adatmodell inicializálása sikertelen.",detail:error?.message||String(error)})}});
 
+router.get("/v4/pricelist",async(req,res)=>{
+  try{
+    const locationId=String(req.query.location_id||"").trim();
+    if(locationId&&!UUID_RE.test(locationId))return res.status(400).json({error:"Érvénytelen location_id."});
+    const [locationsResult,servicesResult]=await Promise.all([
+      db.query(`SELECT id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name`),
+      db.query(`
+        SELECT s.id,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,
+               COALESCE(st.name,'Egyéb') category_name,
+               CASE
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'hair'
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'handsfeet'
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'massage'
+                 ELSE 'beauty'
+               END department_code,
+               CASE
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(haj|fodr|balayage|melír|dauer)' THEN 'Fodrászat'
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(manik|pedik|köröm|gél ?lakk|kéz|láb)' THEN 'Kéz- és lábápolás'
+                 WHEN lower(COALESCE(st.name,'')||' '||s.name) ~ '(masszázs|massage)' THEN 'Masszázs'
+                 ELSE 'Kozmetika'
+               END department_name,
+               COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric base_price,
+               COALESCE((
+                 SELECT jsonb_object_agg(x.code,x.price)
+                 FROM (
+                   SELECT DISTINCT ON (lvl.code) lvl.code,p.price
+                   FROM booking_service_prices_by_level p
+                   JOIN booking_staff_levels lvl ON lvl.id=p.staff_level_id AND lvl.is_active=true
+                   WHERE p.service_id=s.id AND p.is_active=true
+                     AND ($1::uuid IS NULL OR p.location_id=$1::uuid OR p.location_id IS NULL)
+                   ORDER BY lvl.code,(p.location_id=$1::uuid) DESC NULLS LAST,p.updated_at DESC
+                 ) x
+               ),'{}'::jsonb) level_prices
+        FROM services s
+        LEFT JOIN service_types st ON st.id=s.service_type_id
+        WHERE COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true
+          AND ($1::uuid IS NULL OR NOT EXISTS(SELECT 1 FROM service_locations sl0 WHERE sl0.service_id=s.id)
+               OR EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id=s.id AND sl.location_id=$1::uuid))
+        ORDER BY department_name,category_name,s.name`,[locationId||null])
+    ]);
+    const services=servicesResult.rows.map((row:any)=>({
+      ...row,
+      level_prices:{
+        normal:Number(row.level_prices?.normal??row.base_price??0),
+        top:row.level_prices?.top!=null?Number(row.level_prices.top):null,
+        master:row.level_prices?.master!=null?Number(row.level_prices.master):null,
+        trainee:row.level_prices?.trainee!=null?Number(row.level_prices.trainee):null,
+      }
+    }));
+    res.json({locations:locationsResult.rows,services});
+  }catch(error:any){res.status(500).json({error:"Az árlista nem tölthető be.",detail:error?.message||String(error)});}
+});
+
 router.get("/v4/last-minute",async(req,res)=>{
   try{
     const locationId=String(req.query.location_id||"").trim();
