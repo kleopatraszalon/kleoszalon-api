@@ -50,6 +50,8 @@ router.post("/v4/chain-book",async(req,res)=>{
     else await cx.query(`UPDATE clients SET full_name=$2,name=$2,phone=$3,email=$4,updated_at=now() WHERE id=$1::uuid`,[client.id,fullName,phone,email]);
 
     const baseSubtotal=resolved.reduce((sum,x)=>sum+Number(x.service.price||0),0);
+    const onlineDiscountPercent=Math.max(0,Math.min(100,Number(cfg.online_discount_percent||0)));
+    const subtotalAfterOnline=baseSubtotal*(1-onlineDiscountPercent/100);
     let coupon:any=null,couponDiscount=0;
     const couponCode=normCode(req.body?.coupon_code);
     if(couponCode){
@@ -58,18 +60,18 @@ router.post("/v4/chain-book",async(req,res)=>{
       if(!coupon||!coupon.location_ok||!coupon.service_ok){await cx.query("ROLLBACK");return res.status(400).json({error:"A kupon erre a foglalási láncra nem használható."});}
       if(coupon.max_total_uses!=null&&Number(coupon.total_uses)>=Number(coupon.max_total_uses)){await cx.query("ROLLBACK");return res.status(409).json({error:"A kupon felhasználási kerete elfogyott."});}
       if(coupon.max_uses_per_customer!=null&&Number(coupon.customer_uses)>=Number(coupon.max_uses_per_customer)){await cx.query("ROLLBACK");return res.status(409).json({error:"A kupont már a megengedett alkalommal felhasználtad."});}
-      if(coupon.minimum_booking_value!=null&&baseSubtotal<Number(coupon.minimum_booking_value)){await cx.query("ROLLBACK");return res.status(400).json({error:`A kupon minimum ${Number(coupon.minimum_booking_value).toLocaleString('hu-HU')} Ft foglalási értéktől érvényes.`});}
-      couponDiscount=Math.min(baseSubtotal,coupon.discount_type==='percent'?baseSubtotal*Number(coupon.discount_value)/100:Number(coupon.discount_value));
+      if(coupon.minimum_booking_value!=null&&subtotalAfterOnline<Number(coupon.minimum_booking_value)){await cx.query("ROLLBACK");return res.status(400).json({error:`A kupon minimum ${Number(coupon.minimum_booking_value).toLocaleString('hu-HU')} Ft foglalási értéktől érvényes.`});}
+      couponDiscount=Math.min(subtotalAfterOnline,coupon.discount_type==='percent'?subtotalAfterOnline*Number(coupon.discount_value)/100:Number(coupon.discount_value));
     }
 
     const totalGap=resolved.slice(1).reduce((sum,x,i)=>sum+Math.max(0,Math.round((+new Date(x.start)-+new Date(resolved[i].end))/60000)),0);
     const chain=(await cx.query(`INSERT INTO booking_chains(location_id,client_id,start_time,end_time,total_gap_minutes,booking_source) VALUES($1::uuid,$2::uuid,$3::timestamptz,$4::timestamptz,$5,'online') RETURNING id`,[locationId,client.id,resolved[0].start,resolved[resolved.length-1].end,totalGap])).rows[0];
     const status=cfg.require_staff_confirmation?'pending':'confirmed',appointments:any[]=[];
-    const couponExtraPercent=baseSubtotal>0?couponDiscount/baseSubtotal*100:0;
+    const couponExtraPercent=subtotalAfterOnline>0?couponDiscount/subtotalAfterOnline*100:0;
     for(let i=0;i<resolved.length;i++){
       const x=resolved[i],token=crypto.randomUUID();
       const ap=(await cx.query(`INSERT INTO appointments(employee_id,client_id,location_id,title,start_time,end_time,status,notes,booking_source,cancellation_token,confirmation_required,confirmed_at,updated_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::timestamptz,$6::timestamptz,$7,$8,'online',$9::uuid,$10,$11,now()) RETURNING id`,[x.employee_id,client.id,locationId,x.service.name,x.start,x.end,status,`Booking 4.0 lánc: ${chain.id}`,token,Boolean(cfg.require_staff_confirmation),cfg.require_staff_confirmation?null:new Date().toISOString()])).rows[0];
-      const discount=Math.min(100,Math.max(0,100-(100-Number(cfg.online_discount_percent||0))*(1-couponExtraPercent/100)));
+      const discount=Math.min(100,Math.max(0,100-(100-onlineDiscountPercent)*(1-couponExtraPercent/100)));
       await cx.query(`INSERT INTO appointment_services(appointment_id,service_id,duration_minutes,price,discount_percent,sort_order) VALUES($1::uuid,$2::uuid,$3,$4,$5,0)`,[ap.id,x.service.id,x.service.duration_minutes,x.service.price,discount]);
       await cx.query(`INSERT INTO booking_chain_items(chain_id,appointment_id,sequence_no,service_id,employee_id,start_time,end_time) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5::uuid,$6::timestamptz,$7::timestamptz)`,[chain.id,ap.id,i,x.service.id,x.employee_id,x.start,x.end]);
       await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note) VALUES($1::uuid,'booking_v4_chain_created','public',$2::jsonb,'Booking 4.0 több szakemberes láncfoglalás')`,[ap.id,JSON.stringify({chain_id:chain.id,sequence_no:i,employee_id:x.employee_id,service_id:x.service.id,start_time:x.start,end_time:x.end})]);
@@ -81,7 +83,7 @@ router.post("/v4/chain-book",async(req,res)=>{
     await cx.query("COMMIT");
 
     for(const ap of appointments){try{await cx.query("BEGIN");const wo=await ensureBookingWorkOrder(cx,String(ap.id),"public");await cx.query("COMMIT");ap.work_order_id=wo.work_order_id;ap.work_order_number=wo.work_order_number;}catch(error:any){await cx.query("ROLLBACK").catch(()=>undefined);console.error('[booking-v4-chain] work order deferred',{appointment_id:ap.id,error:error?.message||String(error)});}}
-    res.status(201).json({ok:true,chain_id:chain.id,status,appointments,total_gap_minutes:totalGap,coupon_code:coupon?.code||null,coupon_discount_amount:Math.round(couponDiscount),final_total:Math.max(0,Math.round(baseSubtotal*(1-Number(cfg.online_discount_percent||0)/100)-couponDiscount))});
+    res.status(201).json({ok:true,chain_id:chain.id,status,appointments,total_gap_minutes:totalGap,coupon_code:coupon?.code||null,coupon_discount_amount:Math.round(couponDiscount),final_total:Math.max(0,Math.round(subtotalAfterOnline-couponDiscount))});
   }catch(error:any){await cx.query("ROLLBACK").catch(()=>undefined);res.status(500).json({error:"A több szakemberes foglalási lánc mentése sikertelen.",detail:error?.message||String(error)});}finally{cx.release();}
 });
 
