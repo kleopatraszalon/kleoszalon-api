@@ -1,0 +1,3 @@
+Force production redeploy of the current verified backend after stale Render deployment state.
+Source baseline: 718a020a16212a2a3e818594129bdd6f823dcb67
+Purpose: rerun the normal exact-SHA backend production pipeline without changing application behavior.
