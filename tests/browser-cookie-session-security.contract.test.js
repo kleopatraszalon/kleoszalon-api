@@ -6,11 +6,12 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 
-test('browser login sets a production-compatible HttpOnly cookie', () => {
+test('browser login sets a production-compatible HttpOnly partitioned cookie', () => {
   const source = read('src/routes/auth.ts');
   assert.match(source, /httpOnly:\s*true/);
   assert.match(source, /sameSite:\s*\(production\s*\?\s*"none"\s*:\s*"lax"\)/);
   assert.match(source, /secure:\s*production/);
+  assert.match(source, /partitioned:\s*production/);
   assert.match(source, /Cache-Control/);
 
   const employeeStart = source.indexOf('async function respondAsEmployee');
@@ -44,7 +45,7 @@ test('GitHub UAT bearer bootstrap remains explicit and isolated', () => {
   assert.match(source, /return res\.json\(\{success:true,token,expires_in_seconds:600/);
 });
 
-test('cookie-authenticated mutations fail closed on untrusted browser origins', () => {
+test('cookie-authenticated mutations trust only allowlisted explicit origins and otherwise fail closed', () => {
   const source = read('src/middleware/auth.ts');
   assert.match(source, /browserCookieMutationAllowed/);
   assert.match(source, /CSRF_ORIGIN_REJECTED/);
@@ -53,6 +54,24 @@ test('cookie-authenticated mutations fail closed on untrusted browser origins', 
   assert.match(source, /trustedBrowserOrigins\(\)\.has\(origin\)/);
   assert.match(source, /if \(bearerHeader\(req\)\) return true/);
   assert.match(source, /return fetchSite === "same-origin"/);
+
+  const originCheck = source.indexOf('if (origin) return trustedBrowserOrigins().has(origin)');
+  const crossSiteFallback = source.indexOf('if (fetchSite === "cross-site") return false');
+  assert.ok(originCheck >= 0, 'trusted Origin check must exist');
+  assert.ok(crossSiteFallback > originCheck, 'allowlisted explicit Origin must be checked before generic cross-site rejection');
+});
+
+test('invalid and expired browser JWTs clear the auth cookie with matching production attributes', () => {
+  const source = read('src/middleware/auth.ts');
+  assert.match(source, /function clearBrowserAuthCookie/);
+  assert.match(source, /partitioned:\s*production/);
+  assert.match(source, /sameSite:\s*production\s*\?\s*"none"\s*:\s*"lax"/);
+
+  const expiredStart = source.indexOf('if (err.name === "TokenExpiredError")');
+  const invalidStart = source.indexOf('if (["JsonWebTokenError", "NotBeforeError"]');
+  assert.ok(expiredStart >= 0 && invalidStart > expiredStart);
+  assert.match(source.slice(expiredStart, invalidStart), /clearBrowserAuthCookie\(res\)/);
+  assert.match(source.slice(invalidStart), /clearBrowserAuthCookie\(res\)/);
 });
 
 test('server CORS remains credentialed and allowlist based', () => {
