@@ -12,6 +12,21 @@ test('online booking bootstrap repairs legacy workorder child timestamps before 
   assert.match(src,/ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS paid_at timestamptz NOT NULL DEFAULT now\(\)/);
 });
 
+test('online booking bootstrap is single-flight and retryable after failure',()=>{
+  const src=read('src/booking/ensureOnlineBooking.ts');
+  assert.match(src,/let ready=false/);
+  assert.match(src,/let running:Promise<void>\|null=null/);
+  assert.match(src,/if\(ready\)return/);
+  assert.match(src,/if\(running\)return running/);
+  assert.match(src,/running=\(async\(\)=>\{/);
+  assert.match(src,/ready=true/);
+  assert.match(src,/\.finally\(\(\)=>\{running=null\}\)/);
+  const firstDdl=src.indexOf('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+  const readyGuard=src.indexOf('if(ready)return');
+  const runningGuard=src.indexOf('if(running)return running');
+  assert.ok(readyGuard>=0&&runningGuard>readyGuard&&firstDdl>runningGuard,'DDL must execute only behind ready/running guards');
+});
+
 test('public booking cancellation bootstraps the repaired schema before changing workorder status',()=>{
   const src=read('src/routes/onlineBookingCore.ts');
   const route=src.indexOf('router.post("/cancel/:token"');
