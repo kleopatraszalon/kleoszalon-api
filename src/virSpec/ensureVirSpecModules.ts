@@ -92,8 +92,15 @@ async function ensureCanonicalAdminMenu() {
       role_key,menu_id,can_view,can_create,can_edit,can_delete,can_approve,can_export,
       can_view_financial,can_manage_permissions,scope_type,updated_at
     )
-    SELECT 'admin',m.id,true,true,true,true,true,true,true,true,'all_locations',now()
-      FROM menus m
+    SELECT roles.role_key,m.id,true,true,true,true,true,true,true,true,'all_locations',now()
+      FROM (VALUES
+        ('admin'),
+        ('administrator'),
+        ('rendszergazda'),
+        ('superadmin'),
+        ('super_admin')
+      ) AS roles(role_key)
+      CROSS JOIN menus m
      WHERE COALESCE(m.is_active,true)=true
     ON CONFLICT(role_key,menu_id) DO UPDATE SET
       can_view=true,
