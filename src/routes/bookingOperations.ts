@@ -2,8 +2,10 @@ import {Router} from "express";
 import bookingOperationsCoreRouter from "./bookingOperationsCore";
 import bookingAdvancedRouter from "./bookingAdvanced";
 import bookingSmartWaitlistRouter from "./bookingSmartWaitlist";
+import {startSmartWaitlistAutoWorker} from "../services/smartWaitlistAutoWorker";
 
 const router=Router();
+startSmartWaitlistAutoWorker();
 
 // A meglévő várólista/szünet/áthelyezés/ismétlés útvonalak változatlanul megmaradnak.
 router.use(bookingOperationsCoreRouter);
