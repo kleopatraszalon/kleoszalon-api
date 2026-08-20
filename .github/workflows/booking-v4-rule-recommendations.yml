@@ -1,0 +1,36 @@
+name: Booking 4 configured recommendations
+on:
+  push:
+    branches: [feature/booking-4-growth]
+    paths: [.github/workflows/booking-v4-rule-recommendations.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/booking-4-growth
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/booking/bookingRecommendations.ts');s=p.read_text()
+          s=s.replace("export type BookingRecommendation={type:'service'|'promotion';service_id:string|null;", "export type BookingRecommendation={id?:string;type:'service'|'promotion';service_id:string|null;",1)
+          anchor="  const categoryIds=selectedRows.map((x:any)=>x.service_type_id).filter(Boolean);\n"
+          insert="""  const categoryIds=selectedRows.map((x:any)=>x.service_type_id).filter(Boolean);\n  const configured=selected.length?(await db.query(`SELECT r.id::text recommendation_id,r.recommended_service_id::text service_id,r.recommendation_type,r.label,r.discount_percent,s.name,COALESCE(s.duration_minutes,30)::int duration_minutes,COALESCE(s.promo_price,s.list_price,s.base_price,0)::numeric price,COALESCE(st.name,'Kiegészítő szolgáltatás') category_name FROM booking_service_recommendations r JOIN services s ON s.id=r.recommended_service_id LEFT JOIN service_types st ON st.id=s.service_type_id WHERE r.is_active=true AND r.source_service_id=ANY($1::uuid[]) AND (r.location_id IS NULL OR r.location_id=$2::uuid) AND COALESCE(s.is_active,true)=true AND COALESCE(s.online_bookable,true)=true ORDER BY r.priority,r.updated_at DESC LIMIT 8`,[selected,locationId])).rows:[];\n"""
+          if anchor not in s: raise SystemExit('category anchor missing')
+          s=s.replace(anchor,insert,1)
+          old="  let recommendations:BookingRecommendation[]=services.map((s:any)=>({type:'service',service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}));"
+          new="  const configuredItems:BookingRecommendation[]=configured.map((r:any)=>({id:String(r.recommendation_id),type:'service',service_id:String(r.service_id),name:r.name,price:Number(r.price||0),duration_minutes:Number(r.duration_minutes||30),category_name:r.category_name,title:r.recommendation_type==='upsell'?'Prémium választás':r.recommendation_type==='bundle'?'Csomagban ajánljuk':'Ehhez ajánljuk',message:String(r.label||fallbackMessage(r.name,Number(r.duration_minutes||30))),ai_generated:false}));\n  const configuredServiceIds=new Set(configuredItems.map(x=>String(x.service_id)));\n  let recommendations:BookingRecommendation[]=[...configuredItems,...services.filter((s:any)=>!configuredServiceIds.has(String(s.id))).map((s:any)=>({type:'service' as const,service_id:String(s.id),name:s.name,price:Number(s.price||0),duration_minutes:Number(s.duration_minutes||30),category_name:s.category_name,title:'Ajánlott kiegészítés',message:fallbackMessage(s.name,Number(s.duration_minutes||30)),ai_generated:false}))];"
+          if old not in s: raise SystemExit('recommendations anchor missing')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - run: grep -q configuredItems src/booking/bookingRecommendations.ts
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/booking/bookingRecommendations.ts
+          git diff --cached --quiet || (git commit -m "feat(booking-v4): prioritize configured recommendation rules" && git push origin HEAD:feature/booking-4-growth)
