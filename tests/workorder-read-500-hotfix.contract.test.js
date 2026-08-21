@@ -19,12 +19,13 @@ test('client hotfix handles segments and UUID client detail defensively and tena
   assert.ok(src.includes('client-read-500-tenant-scoped'));
 });
 
-test('tenant isolation readiness stays hard for direct entities but does not 500 on legacy child/master drift', () => {
+test('tenant isolation readiness stays hard for router core entities but does not 500 on auxiliary drift', () => {
   const src = read('src/saas/ensureTenantIsolation.ts');
+  assert.ok(src.includes('ROUTER_CORE_TENANT_TABLES'));
   assert.ok(src.includes('hardExpected'));
   assert.ok(src.includes('softExpected'));
-  assert.ok(src.includes('...LOCATION_SCOPED_TABLES'));
-  assert.ok(src.includes('legacy child/master tables still require tenant migration'));
+  assert.ok(src.includes('...LOCATION_SCOPED_TABLES.filter'));
+  assert.ok(src.includes('legacy auxiliary tables still require tenant migration'));
   assert.ok(src.includes('Parent/location-scoped reads remain enabled'));
 });
 
