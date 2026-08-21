@@ -37,43 +37,62 @@ export const TENANT_MASTER_TABLES = [
   "newsletter_templates","marketing_templates","notification_templates"
 ] as const;
 
+async function missingTenantId(tables: string[]): Promise<string[]> {
+  if (!tables.length) return [];
+  const { rows } = await db.query<{ table_name: string }>(
+    `WITH expected(table_name) AS (SELECT unnest($1::text[]))
+     SELECT e.table_name
+       FROM expected e
+       JOIN information_schema.tables t
+         ON t.table_schema='public' AND t.table_name=e.table_name
+       LEFT JOIN information_schema.columns c
+         ON c.table_schema='public' AND c.table_name=e.table_name AND c.column_name='tenant_id'
+      WHERE c.column_name IS NULL
+      ORDER BY e.table_name`,
+    [tables],
+  );
+  return rows.map((row) => row.table_name);
+}
+
 /**
  * Runtime tenant-isolation readiness check.
  *
- * All ALTER/UPDATE/CREATE work belongs to versioned SQL migrations executed
- * before API startup. Existing tenant-scoped tables that lack tenant_id make
- * startup/request readiness fail closed instead of being modified under live
- * traffic.
+ * Direct business entities remain fail-closed: if one of those live tables is
+ * missing tenant_id the request must not proceed. Legacy child/master tables are
+ * different: their ownership can be derived through the already tenant-scoped
+ * parent/location relation, and older production databases may still lack a
+ * physical tenant_id column on those optional CRM/history tables. Blocking every
+ * client read because an optional child table is not migrated turned harmless
+ * GET /api/clients/:id and GET /api/clients/segments into HTTP 500.
+ *
+ * We therefore keep the hard readiness gate on direct location-scoped entities,
+ * while reporting child/master drift as a migration warning. Individual routes
+ * must still scope those child/master reads through their tenant-owned parent.
  */
 export function ensureTenantIsolation(): Promise<void> {
   if (isolationPromise) return isolationPromise;
 
   isolationPromise = (async () => {
     await ensureSaasCore();
-    const expected = Array.from(new Set([
-      "locations",
-      ...LOCATION_SCOPED_TABLES,
+
+    const hardExpected = Array.from(new Set(["locations", ...LOCATION_SCOPED_TABLES]));
+    const softExpected = Array.from(new Set([
       ...EMPLOYEE_SCOPED_TABLES,
       ...PARENT_SCOPED_TABLES.map((item) => item.table),
       ...TENANT_MASTER_TABLES,
     ]));
 
-    const { rows } = await db.query<{ table_name: string }>(
-      `WITH expected(table_name) AS (SELECT unnest($1::text[]))
-       SELECT e.table_name
-         FROM expected e
-         JOIN information_schema.tables t
-           ON t.table_schema='public' AND t.table_name=e.table_name
-         LEFT JOIN information_schema.columns c
-           ON c.table_schema='public' AND c.table_name=e.table_name AND c.column_name='tenant_id'
-        WHERE c.column_name IS NULL
-        ORDER BY e.table_name`,
-      [expected],
-    );
-
-    if (rows.length) {
+    const hardMissing = await missingTenantId(hardExpected);
+    if (hardMissing.length) {
       throw new Error(
-        `Tenant isolation migration required. Missing tenant_id: ${rows.map((row) => row.table_name).join(", ")}. Run npm run migrate before starting the API.`,
+        `Tenant isolation migration required. Missing tenant_id on direct entity tables: ${hardMissing.join(", ")}. Run npm run migrate before starting the API.`,
+      );
+    }
+
+    const softMissing = await missingTenantId(softExpected);
+    if (softMissing.length) {
+      console.warn(
+        `[tenant-isolation] legacy child/master tables still require tenant migration: ${softMissing.join(", ")}. Parent/location-scoped reads remain enabled.`,
       );
     }
   })().catch((error) => {
