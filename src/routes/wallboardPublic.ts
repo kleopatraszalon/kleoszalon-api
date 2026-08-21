@@ -9,10 +9,10 @@ import { getComplaintMailboxStatus, restartComplaintMailboxWorker } from "../ser
 const router = Router();
 
 function escXml(value: unknown): string {
-  return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");
+  return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;").replace(/'/g,"&apos;");
 }
 function escHtml(value: unknown): string {
-  return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  return String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;").replace(/'/g,"&#39;");
 }
 function stripHtml(value: unknown): string {
   return String(value ?? "").replace(/<br\s*\/?\s*>/gi,"\n").replace(/<\/p>/gi,"\n").replace(/<[^>]+>/g," ").replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/[ \t]+/g," ").trim();
@@ -61,6 +61,39 @@ router.get("/wallboard", async (_req,res,next)=>{
     const discount=a?.discount_text?`<div class="discount">${escHtml(a.discount_text)}</div>`:"";
     res.type("html").send(`<!doctype html><html lang="hu"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="60"><title>Kleopátra WallBoard</title><style>*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#160d0a;color:#fff;font-family:Inter,Arial,sans-serif}.screen{height:100vh;display:grid;grid-template-columns:${a?.image_url?"1.1fr 1fr":"1fr"};background:radial-gradient(circle at 20% 20%,#5c173e 0,#24120e 45%,#120907 100%)}.media{background-size:cover;background-position:center;min-height:100%}.copy{display:flex;flex-direction:column;justify-content:center;padding:7vw}.eyebrow{letter-spacing:.22em;text-transform:uppercase;font-size:1.2vw;opacity:.7}.copy h1{font-size:4.5vw;line-height:1.02;margin:.35em 0 .25em;max-width:15ch}.copy p{font-size:1.8vw;line-height:1.4;max-width:34ch;opacity:.92}.discount{font-size:3vw;font-weight:800;color:#ffd88c;margin-top:.55em}.footer{position:fixed;right:2vw;bottom:1.5vw;font-size:1vw;opacity:.55}@media(max-aspect-ratio:1/1){.screen{grid-template-columns:1fr;grid-template-rows:45% 55%}.copy{padding:7vw}.copy h1{font-size:7vw}.copy p{font-size:3vw}.discount{font-size:5vw}.eyebrow{font-size:2vw}}</style></head><body><main class="screen">${image}<section class="copy"><div class="eyebrow">Kleopátra • Napi akció</div><h1>${escHtml(headline)}</h1><p>${escHtml(description)}</p>${discount}</section></main><div class="footer">Automatikus WallBoard feed • frissítés 60 mp</div></body></html>`);
   } catch(e){ next(e); }
+});
+
+// Privacy-safe birthday signal for salon signage. No guest names, dates of birth,
+// contact details or other identifiers are exposed on the public display feed.
+router.get("/birthdays", async (_req,res)=>{
+  try {
+    const { rows } = await pool.query(`
+      WITH today AS (
+        SELECT timezone('Europe/Budapest', now())::date AS d
+      ), celebrating AS (
+        SELECT DISTINCT a.client_id::text
+        FROM appointments a
+        JOIN clients c ON c.id::text = a.client_id::text
+        CROSS JOIN today t
+        WHERE timezone('Europe/Budapest', a.start_time)::date = t.d
+          AND lower(COALESCE(a.status,'')) NOT IN ('cancelled','canceled','no_show')
+          AND COALESCE(to_jsonb(c)->>'birth_date','') ~ '^\\d{4}-\\d{2}-\\d{2}'
+          AND EXTRACT(MONTH FROM substring(to_jsonb(c)->>'birth_date' from 1 for 10)::date) = EXTRACT(MONTH FROM t.d)
+          AND EXTRACT(DAY FROM substring(to_jsonb(c)->>'birth_date' from 1 for 10)::date) = EXTRACT(DAY FROM t.d)
+      )
+      SELECT count(*)::int AS count FROM celebrating
+    `);
+    const count = Math.max(0, Number(rows?.[0]?.count || 0));
+    const message = count === 1
+      ? "Ma egy vendégünk születésnapját ünnepeljük. Boldog születésnapot kíván a Kleopátra csapata!"
+      : count > 1
+        ? `Ma ${count} vendégünk születésnapját ünnepeljük. Boldog születésnapot kíván a Kleopátra csapata!`
+        : "";
+    res.setHeader("Cache-Control","public, max-age=60, stale-while-revalidate=180");
+    res.json({ celebrating: count > 0, count, message, date: new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Budapest" }), privacy: "no_personal_identifiers", generated_at: new Date().toISOString() });
+  } catch (e:any) {
+    res.json({ celebrating:false, count:0, message:"", privacy:"no_personal_identifiers", generated_at:new Date().toISOString(), error:String(e?.message||e) });
+  }
 });
 
 // Admin-only runtime configuration. Mounted under /api/signage but every route
