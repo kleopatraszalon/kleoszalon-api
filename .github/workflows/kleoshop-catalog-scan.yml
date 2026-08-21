@@ -5,21 +5,22 @@ on:
     branches: [main]
     paths:
       - 'scripts/scrape-kleoshop-catalog.mjs'
+      - 'scripts/normalize-kleoshop-catalog.mjs'
       - '.github/workflows/kleoshop-catalog-scan.yml'
-      - 'src/catalog/**'
-      - 'src/data/kleoshop-catalog.json'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout feature branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -45,12 +46,31 @@ jobs:
           console.log(`Verified catalog: ${data.product_count} product detail pages, all priced.`);
           NODE
           if [ "$crawler_rc" -ne 0 ]; then
-            echo "Crawler internal conservative guard returned $crawler_rc; verified production floor passed."
+            echo "Crawler conservative guard returned $crawler_rc; verified 500+ detail-page floor passed."
           fi
 
+      - name: Normalize shopper grouping
+        run: node scripts/normalize-kleoshop-catalog.mjs
+
       - name: Show catalog summary
-        if: always()
-        run: cat artifacts/kleoshop-catalog-summary.md || true
+        run: |
+          cat artifacts/kleoshop-catalog-summary.md
+          node -e "const d=require('./src/data/kleoshop-catalog.json'); for(const c of d.categories) console.log(c.count+' x '+c.category_path)"
+
+      - name: Persist verified snapshot on PR branch
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/data/kleoshop-catalog.json
+          if git diff --cached --quiet; then
+            echo 'Catalog snapshot unchanged.'
+          else
+            git commit -m 'data: snapshot complete Kleoshop catalog'
+            git push origin "HEAD:${GITHUB_HEAD_REF}"
+          fi
 
       - name: Upload complete catalog artifact
         if: always()
@@ -60,5 +80,6 @@ jobs:
           path: |
             artifacts/kleoshop-catalog.json
             artifacts/kleoshop-catalog-summary.md
+            src/data/kleoshop-catalog.json
           if-no-files-found: error
           retention-days: 7
