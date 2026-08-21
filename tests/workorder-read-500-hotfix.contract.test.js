@@ -1,29 +1,41 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-describe('work-order read 500 hotfix wiring', () => {
-  test('client hotfix handles segments and UUID client detail defensively', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'clientRead500Hotfix.ts'), 'utf8');
-    expect(src).toContain('router.get("/segments"');
-    expect(src).toContain('router.get("/:id"');
-    expect(src).toContain('safeRows');
-    expect(src).toContain('return res.json([])');
-  });
+function read(relativePath) {
+  return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+}
 
-  test('retail hotfix uses JSON-safe stock and product reads', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'retailProducts500Hotfix.ts'), 'utf8');
-    expect(src).toContain('router.get("/retail/products"');
-    expect(src).toContain("to_jsonb(p)");
-    expect(src).toContain("to_jsonb(s)");
-    expect(src).toContain('return res.json([])');
-  });
+test('client hotfix handles segments and UUID client detail defensively', () => {
+  const src = read('src/routes/clientRead500Hotfix.ts');
+  assert.ok(src.includes('router.get("/segments"'));
+  assert.ok(src.includes('router.get("/:id"'));
+  assert.ok(src.includes('safeRows'));
+  assert.ok(src.includes('return res.json([])'));
+});
 
-  test('aggregators place recovery routers before legacy handlers', () => {
-    const clients = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'clients.ts'), 'utf8');
-    const transactions = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'transactions.ts'), 'utf8');
-    expect(clients.indexOf('clientRead500HotfixRouter')).toBeGreaterThanOrEqual(0);
-    expect(clients.indexOf('router.use(clientRead500HotfixRouter)')).toBeLessThan(clients.indexOf('router.use(clientDetailRecoveryRouter)'));
-    expect(transactions.indexOf('retailProducts500HotfixRouter')).toBeGreaterThanOrEqual(0);
-    expect(transactions.indexOf('retailProducts500HotfixRouter')).toBeLessThan(transactions.lastIndexOf('workOrderCashierFastRouter'));
-  });
+test('retail hotfix uses JSON-safe stock and product reads', () => {
+  const src = read('src/routes/retailProducts500Hotfix.ts');
+  assert.ok(src.includes('router.get("/retail/products"'));
+  assert.ok(src.includes('to_jsonb(p)'));
+  assert.ok(src.includes('to_jsonb(s)'));
+  assert.ok(src.includes('return res.json([])'));
+});
+
+test('aggregators place recovery routers before legacy handlers', () => {
+  const clients = read('src/routes/clients.ts');
+  const transactions = read('src/routes/transactions.ts');
+
+  const clientHotfixMount = clients.indexOf('router.use(clientRead500HotfixRouter)');
+  const legacyClientMount = clients.indexOf('router.use(clientDetailRecoveryRouter)');
+  assert.ok(clientHotfixMount >= 0, 'client hotfix router must be mounted');
+  assert.ok(legacyClientMount >= 0, 'legacy client recovery router must remain mounted');
+  assert.ok(clientHotfixMount < legacyClientMount, 'client hotfix must run before legacy recovery');
+
+  const retailHotfixMount = transactions.indexOf('retailProducts500HotfixRouter);');
+  const legacyCashierMount = transactions.lastIndexOf('workOrderCashierFastRouter);');
+  assert.ok(retailHotfixMount >= 0, 'retail hotfix router must be mounted');
+  assert.ok(legacyCashierMount >= 0, 'legacy cashier router must remain mounted');
+  assert.ok(retailHotfixMount < legacyCashierMount, 'retail hotfix must run before legacy cashier');
 });
