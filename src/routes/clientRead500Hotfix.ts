@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { clientLatenessStats } from "../services/clientLateness";
+import { resolveTenantIdentity, tenantLocationIds } from "../saas/tenantAccess";
 
 const router = Router();
 router.use(requireAuth);
@@ -30,14 +31,24 @@ function isAdmin(req: AuthRequest): boolean {
   );
 }
 
-function effectiveLocation(req: AuthRequest): string {
-  if (isAdmin(req)) return String(req.query.location_id || "").trim();
-  return String(req.user?.location_id || "").trim();
-}
-
 async function tableExists(name: string): Promise<boolean> {
   try {
     const result = await db.query("SELECT to_regclass($1) IS NOT NULL ok", [`public.${name}`]);
+    return Boolean(result.rows[0]?.ok);
+  } catch {
+    return false;
+  }
+}
+
+async function columnExists(table: string, column: string): Promise<boolean> {
+  try {
+    const result = await db.query(
+      `SELECT EXISTS(
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+       ) ok`,
+      [table, column],
+    );
     return Boolean(result.rows[0]?.ok);
   } catch {
     return false;
@@ -53,55 +64,103 @@ async function safeRows(label: string, query: Promise<any>): Promise<any[]> {
   }
 }
 
+async function requestTenantScope(req: AuthRequest): Promise<{ tenantId: string; locations: string[] } | null> {
+  try {
+    const tenant = await resolveTenantIdentity(req);
+    if (!tenant) return null;
+    const allLocations = await tenantLocationIds(tenant.id);
+    const locationSet = new Set(allLocations.map(String));
+    const requested = String(req.query.location_id || "").trim();
+    const own = String(req.user?.location_id || "").trim();
+
+    if (isAdmin(req)) {
+      if (requested) return locationSet.has(requested) ? { tenantId: tenant.id, locations: [requested] } : null;
+      return { tenantId: tenant.id, locations: allLocations };
+    }
+
+    if (!own || !locationSet.has(own)) return null;
+    return { tenantId: tenant.id, locations: [own] };
+  } catch (error: any) {
+    console.warn("[client-read-500-hotfix] tenant scope unavailable", error?.code || "", error?.message || error);
+    return null;
+  }
+}
+
 /**
  * Production recovery for CRM installations where optional tag tables were only
  * partially bootstrapped because legacy client IDs use a different SQL type.
- * A read-only work-order screen must never fail merely because CRM tags are absent.
+ * The result is always derived from the authenticated tenant/location scope.
  */
 router.get("/segments", async (req: AuthRequest, res) => {
   try {
+    const scope = await requestTenantScope(req);
+    if (!scope) return res.status(403).json({ error: "A vendégadatokhoz nincs érvényes tenant/telephely hozzáférés." });
     if (!(await tableExists("crm_tags"))) return res.json([]);
 
-    const locationId = effectiveLocation(req);
     const hasClientTags = await tableExists("crm_client_tags");
     const hasClients = await tableExists("clients");
+    const tagsHaveTenant = await columnExists("crm_tags", "tenant_id");
 
     if (!hasClientTags || !hasClients) {
+      if (!tagsHaveTenant) return res.json([]);
       const rows = await safeRows(
-        "segments-base",
-        db.query(`
-          SELECT t.id::text id,
-            COALESCE(NULLIF(to_jsonb(t)->>'name',''),'Címke') name,
-            COALESCE(NULLIF(to_jsonb(t)->>'color',''),'#7c5ce5') color,
-            CASE WHEN lower(COALESCE(NULLIF(to_jsonb(t)->>'is_active',''),'true')) IN ('false','0','no','nem') THEN false ELSE true END is_active,
-            0::int client_count
-          FROM crm_tags t
-          ORDER BY 2
-        `),
+        "segments-tenant-base",
+        db.query(
+          `SELECT t.id::text id,
+             COALESCE(NULLIF(to_jsonb(t)->>'name',''),'Címke') name,
+             COALESCE(NULLIF(to_jsonb(t)->>'color',''),'#7c5ce5') color,
+             CASE WHEN lower(COALESCE(NULLIF(to_jsonb(t)->>'is_active',''),'true')) IN ('false','0','no','nem') THEN false ELSE true END is_active,
+             0::int client_count
+           FROM crm_tags t
+           WHERE COALESCE(to_jsonb(t)->>'tenant_id','')=$1
+           ORDER BY 2`,
+          [scope.tenantId],
+        ),
       );
       return res.json(rows);
     }
 
-    const rows = await safeRows(
-      "segments",
-      db.query(
-        `
-          SELECT t.id::text id,
-            COALESCE(NULLIF(to_jsonb(t)->>'name',''),'Címke') name,
-            COALESCE(NULLIF(to_jsonb(t)->>'color',''),'#7c5ce5') color,
-            CASE WHEN lower(COALESCE(NULLIF(to_jsonb(t)->>'is_active',''),'true')) IN ('false','0','no','nem') THEN false ELSE true END is_active,
-            COUNT(c.id)::int client_count
-          FROM crm_tags t
-          LEFT JOIN crm_client_tags ct ON (to_jsonb(ct)->>'tag_id')=t.id::text
-          LEFT JOIN clients c
-            ON c.id::text=(to_jsonb(ct)->>'client_id')
-           AND ($1::text='' OR COALESCE(to_jsonb(c)->>'location_id','')=$1::text)
-          GROUP BY t.id
-          ORDER BY 2
-        `,
-        [locationId],
-      ),
-    );
+    if (!scope.locations.length) return res.json([]);
+
+    const rows = tagsHaveTenant
+      ? await safeRows(
+          "segments-tenant",
+          db.query(
+            `SELECT t.id::text id,
+               COALESCE(NULLIF(to_jsonb(t)->>'name',''),'Címke') name,
+               COALESCE(NULLIF(to_jsonb(t)->>'color',''),'#7c5ce5') color,
+               CASE WHEN lower(COALESCE(NULLIF(to_jsonb(t)->>'is_active',''),'true')) IN ('false','0','no','nem') THEN false ELSE true END is_active,
+               COUNT(DISTINCT c.id)::int client_count
+             FROM crm_tags t
+             LEFT JOIN crm_client_tags ct ON (to_jsonb(ct)->>'tag_id')=t.id::text
+             LEFT JOIN clients c
+               ON c.id::text=(to_jsonb(ct)->>'client_id')
+              AND COALESCE(to_jsonb(c)->>'location_id','')=ANY($1::text[])
+             WHERE COALESCE(to_jsonb(t)->>'tenant_id','')=$2
+             GROUP BY t.id
+             ORDER BY 2`,
+            [scope.locations, scope.tenantId],
+          ),
+        )
+      : await safeRows(
+          "segments-parent-scoped",
+          db.query(
+            `SELECT t.id::text id,
+               COALESCE(NULLIF(to_jsonb(t)->>'name',''),'Címke') name,
+               COALESCE(NULLIF(to_jsonb(t)->>'color',''),'#7c5ce5') color,
+               CASE WHEN lower(COALESCE(NULLIF(to_jsonb(t)->>'is_active',''),'true')) IN ('false','0','no','nem') THEN false ELSE true END is_active,
+               COUNT(DISTINCT c.id)::int client_count
+             FROM crm_tags t
+             JOIN crm_client_tags ct ON (to_jsonb(ct)->>'tag_id')=t.id::text
+             JOIN clients c
+               ON c.id::text=(to_jsonb(ct)->>'client_id')
+              AND COALESCE(to_jsonb(c)->>'location_id','')=ANY($1::text[])
+             GROUP BY t.id
+             ORDER BY 2`,
+            [scope.locations],
+          ),
+        );
+
     return res.json(rows);
   } catch (error: any) {
     console.error("[client-read-500-hotfix] segments failed closed to empty", error?.code || "", error?.message || error);
@@ -111,13 +170,16 @@ router.get("/segments", async (req: AuthRequest, res) => {
 
 /**
  * Lightweight, schema-drift-tolerant client context used by the digital work
- * order. Optional history must degrade independently instead of taking the whole
+ * order. Optional history degrades independently instead of taking the whole
  * guest step down with HTTP 500.
  */
 router.get("/:id", async (req: AuthRequest, res, next) => {
   if (!UUID_RE.test(String(req.params.id || ""))) return next();
 
   try {
+    const scope = await requestTenantScope(req);
+    if (!scope) return res.status(403).json({ error: "A vendégadathoz nincs érvényes tenant/telephely hozzáférés." });
+
     const clientResult = await db.query(
       `SELECT c.*,
         COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'') display_name
@@ -129,10 +191,16 @@ router.get("/:id", async (req: AuthRequest, res, next) => {
     const client = clientResult.rows[0];
     if (!client) return res.status(404).json({ error: "Az ügyfél nem található." });
 
-    const locationId = effectiveLocation(req);
     const clientLocation = String(client.location_id || "").trim();
-    if (locationId && clientLocation && locationId !== clientLocation) {
+    const clientTenant = String(client.tenant_id || "").trim();
+    if (clientTenant && clientTenant !== scope.tenantId) {
+      return res.status(404).json({ error: "Az ügyfél nem található ebben a tenantban." });
+    }
+    if (clientLocation && !scope.locations.includes(clientLocation)) {
       return res.status(404).json({ error: "Az ügyfél nem található ezen a telephelyen." });
+    }
+    if (!clientTenant && !clientLocation) {
+      return res.status(404).json({ error: "A régi ügyfélrekordhoz nincs biztonságosan meghatározható tenant/telephely." });
     }
 
     let locationName: string | null = null;
@@ -193,7 +261,7 @@ router.get("/:id", async (req: AuthRequest, res, next) => {
       consents,
       lateness,
       recovery: true,
-      hotfix: "client-read-500",
+      hotfix: "client-read-500-tenant-scoped",
     });
   } catch (error: any) {
     console.error("[client-read-500-hotfix] client base read failed", error?.code || "", error?.message || error);
