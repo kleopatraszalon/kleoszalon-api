@@ -16,8 +16,18 @@ const ownLocation=(req:any)=>req.user?.location_id==null?null:String(req.user.lo
 function fail(status:number,message:string,code?:string):never{const e:any=new Error(message);e.status=status;e.code=code;e.publicCode=code;throw e}
 function sendError(err:any,res:any,next:any){if(err?.status)return res.status(Number(err.status)).json({message:String(err.message||err),code:err.code||err.publicCode});return next(err)}
 function ensureScope(req:any,warehouse:any){if(isGlobal(req))return;const own=ownLocation(req),loc=warehouse.location_id==null?null:String(warehouse.location_id);if(!own||loc!==own)fail(403,"Ehhez a raktárhoz nincs jogosultsága.","inventory_warehouse_forbidden")}
+function needsLotSchema(path:string){
+  const p=String(path||"");
+  return p==="/operations"||p.startsWith("/lots")||p.startsWith("/catalog/products/")||/^\/reservations\/[^/]+\/allocate-lot$/.test(p)||/^\/transfers\/[^/]+\/(allocations|receipt)$/.test(p);
+}
 
-router.use(async(_req,_res,next)=>{try{await ensureInventoryLotSchema();next()}catch(e){next(e)}});
+// This router is mounted before the generic inventory-operations router. Do not
+// run LOT DDL for unrelated endpoints (for example /ops/warehouses), otherwise
+// one legacy lot-table drift can make the whole inventory screen return 500.
+router.use(async(req,_res,next)=>{
+  if(!needsLotSchema(req.path))return next();
+  try{await ensureInventoryLotSchema();next()}catch(e){next(e)}
+});
 
 router.get('/lots/products',async(req:any,res,next)=>{try{
   const {rows}=await db.query(`SELECT p.id::text,p.name,p.internal_code,p.barcode,p.brand,

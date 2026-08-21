@@ -28,6 +28,8 @@ async function applySchema(queryable:any){
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS product_id uuid NULL REFERENCES products(id) ON DELETE RESTRICT;
+    ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS lot_code text NULL;
     ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS manufactured_at date NULL;
     ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS expires_at date NULL;
     ALTER TABLE inventory_lots ADD COLUMN IF NOT EXISTS supplier_id bigint NULL;
@@ -51,9 +53,13 @@ async function applySchema(queryable:any){
       updated_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE(warehouse_id,lot_id)
     );
+    ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS warehouse_id bigint NULL REFERENCES inventory_warehouses(id) ON DELETE CASCADE;
+    ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS lot_id uuid NULL REFERENCES inventory_lots(id) ON DELETE RESTRICT;
     ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS quantity numeric(16,3) NOT NULL DEFAULT 0;
     ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS unit_cost numeric(16,4) NOT NULL DEFAULT 0;
     ALTER TABLE inventory_warehouse_lot_balances ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+    CREATE UNIQUE INDEX IF NOT EXISTS inventory_warehouse_lot_balances_warehouse_lot_uq
+      ON inventory_warehouse_lot_balances(warehouse_id,lot_id);
     CREATE INDEX IF NOT EXISTS inventory_warehouse_lot_balances_fefo_idx
       ON inventory_warehouse_lot_balances(warehouse_id,lot_id,quantity);
 
@@ -67,6 +73,7 @@ async function applySchema(queryable:any){
       allocation_kind text NOT NULL DEFAULT 'lot' CHECK(allocation_kind IN('lot','legacy_untracked')),
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS movement_id text NULL;
     ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS lot_id uuid NULL REFERENCES inventory_lots(id) ON DELETE RESTRICT;
     ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS lot_code_snapshot text NULL;
     ALTER TABLE inventory_movement_lot_allocations ADD COLUMN IF NOT EXISTS quantity numeric(16,3) NOT NULL DEFAULT 0;
@@ -90,6 +97,8 @@ async function applySchema(queryable:any){
       allocation_kind text NOT NULL DEFAULT 'lot' CHECK(allocation_kind IN('lot','legacy_untracked')),
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS source_type text NULL;
+    ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS source_id text NULL;
     ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS product_id uuid NULL REFERENCES products(id) ON DELETE RESTRICT;
     ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS lot_id uuid NULL REFERENCES inventory_lots(id) ON DELETE RESTRICT;
     ALTER TABLE inventory_transfer_lot_allocations ADD COLUMN IF NOT EXISTS lot_code_snapshot text NULL;
