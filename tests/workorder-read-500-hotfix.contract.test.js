@@ -7,12 +7,25 @@ function read(relativePath) {
   return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
 }
 
-test('client hotfix handles segments and UUID client detail defensively', () => {
+test('client hotfix handles segments and UUID client detail defensively and tenant-scoped', () => {
   const src = read('src/routes/clientRead500Hotfix.ts');
   assert.ok(src.includes('router.get("/segments"'));
   assert.ok(src.includes('router.get("/:id"'));
   assert.ok(src.includes('safeRows'));
-  assert.ok(src.includes('return res.json([])'));
+  assert.ok(src.includes('resolveTenantIdentity'));
+  assert.ok(src.includes('tenantLocationIds'));
+  assert.ok(src.includes('scope.locations'));
+  assert.ok(src.includes('clientTenant !== scope.tenantId'));
+  assert.ok(src.includes('client-read-500-tenant-scoped'));
+});
+
+test('tenant isolation readiness stays hard for direct entities but does not 500 on legacy child/master drift', () => {
+  const src = read('src/saas/ensureTenantIsolation.ts');
+  assert.ok(src.includes('hardExpected'));
+  assert.ok(src.includes('softExpected'));
+  assert.ok(src.includes('...LOCATION_SCOPED_TABLES'));
+  assert.ok(src.includes('legacy child/master tables still require tenant migration'));
+  assert.ok(src.includes('Parent/location-scoped reads remain enabled'));
 });
 
 test('retail hotfix uses JSON-safe stock and product reads', () => {
