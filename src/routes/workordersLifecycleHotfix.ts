@@ -32,6 +32,17 @@ async function workOrderColumnTypes(){
   return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]));
 }
 
+async function minimalLifecycleUpdate(id:string,status:string){
+  try{
+    const updated=(await db.query(`UPDATE work_orders SET status=$2 WHERE id::text=$1 RETURNING *`,[id,status])).rows[0]||null;
+    if(updated)console.warn('[workorders-lifecycle-hotfix] minimal status-only fallback used',id,status);
+    return updated;
+  }catch(error:any){
+    console.warn('[workorders-lifecycle-hotfix] minimal fallback failed',error?.code||'',error?.constraint||'',error?.message||error);
+    return null;
+  }
+}
+
 router.get('/dashboard/summary',async(req:AuthRequest,res,next)=>{
   if(!isAccounting(req.user?.role))return next();
   try{
@@ -110,8 +121,19 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     console.error('[workorders-lifecycle-hotfix] failed',code,e?.table||'',e?.column||'',e?.constraint||'',e?.message||e);
     if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',error_code:code});
     if(code==='57014'||code==='55P03'||CONNECTION_CODES.has(code))return res.status(503).json({message:'Az adatbázis kapcsolata, zárolása vagy timeout akadályozta a státuszváltást. Próbálja újra néhány másodperc múlva.',error_code:code||'DB_UNAVAILABLE'});
+    if(row&&requested&&STATUSES.has(requested)){
+      const fallback=await minimalLifecycleUpdate(String(req.params.id),requested);
+      if(fallback){
+        let lateness:any=null;
+        if(requested==='arrived'||requested==='in_progress'){
+          try{lateness=await recordWorkOrderArrival(String(req.params.id))}catch(error:any){console.warn('[workorders-lifecycle-hotfix] fallback lateness skipped',error?.code||'',error?.message||error)}
+        }
+        return res.json({...fallback,hotfix:true,fallback_update:true,lateness});
+      }
+    }
     if(requested==='in_progress'&&row)return res.json({...row,status:'in_progress',hotfix:true,virtual_transition:true,warning:'A régi adatbázis státuszlogikája nem engedte a fizikai státuszírást; a lezárási folyamat folytatható.'});
     if(code==='23514')return res.status(409).json({message:'A régi adatbázis státuszkorlátozása blokkolja az állapotváltást.',error_code:code,constraint:e?.constraint||undefined,detail:e?.message||undefined});
+    if(row&&requested&&STATUSES.has(requested))return res.status(409).json({message:'A munkalap állapotváltását egy régi adatbázis-korlátozás blokkolta. Az adat nem veszett el; próbálja újra vagy zárja be és nyissa meg újra a munkalapot.',error_code:code||'LIFECYCLE_WRITE_FAILED',constraint:e?.constraint||undefined});
     return next(e);
   }
 });

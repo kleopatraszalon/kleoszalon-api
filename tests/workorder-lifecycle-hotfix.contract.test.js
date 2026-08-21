@@ -37,3 +37,10 @@ test('lifecycle hotfix only writes optional timestamps when the live column type
   assert.match(hotfix,/addTimestamp\('started_at'/);
   assert.match(hotfix,/status=\$2/);
 });
+
+test('lifecycle hotfix retries a minimal status-only update before surfacing a server error',()=>{
+  assert.match(hotfix,/async function minimalLifecycleUpdate/);
+  assert.match(hotfix,/UPDATE work_orders SET status=\$2 WHERE id::text=\$1 RETURNING \*/);
+  assert.match(hotfix,/fallback_update:true/);
+  assert.match(hotfix,/LIFECYCLE_WRITE_FAILED/);
+});
