@@ -1,4 +1,5 @@
 Render redeploy trigger
-2026-08-20T22:13:00+02:00
-Deploy latest protected main including public Booking 4 taxonomy/bootstrap recovery, live UAT hardening, intelligence, waitlist and rebooking changes.
-Reason: explicit production deploy requested now; rebuild current latest main.
+2026-08-21T20:03:30+02:00
+Deploy exact latest main aa4983b203812619ab652dd2bd135989166b42bd.
+Reason: sequential production rollout requested now. Deploy backend/API first so signage birthday and public smart-data endpoints are live before the frontends.
+Expected service: kleoszalon-api-1.onrender.com
