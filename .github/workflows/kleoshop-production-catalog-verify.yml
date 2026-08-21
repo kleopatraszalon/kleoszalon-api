@@ -1,0 +1,74 @@
+name: Kleoshop production catalog verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/data/kleoshop-catalog.json'
+      - 'src/catalog/syncKleoshopCatalog.ts'
+      - 'src/dbMigrations.ts'
+      - 'src/routes/publicWebshopSecure.ts'
+      - '.github/workflows/kleoshop-production-catalog-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Wait for exact production catalog
+        shell: bash
+        env:
+          STATUS_URL: https://kleoszalon-api-1.onrender.com/api/public/webshop/catalog-status
+          EXPECTED: '511'
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 90); do
+            code="$(curl -sS --max-time 25 -H 'Cache-Control: no-cache' -o /tmp/catalog.json -w '%{http_code}' "${STATUS_URL}?verify=${GITHUB_SHA}-${attempt}" || true)"
+            if [ "$code" = "200" ]; then
+              if node - <<'NODE'
+          const fs=require('fs');
+          const x=JSON.parse(fs.readFileSync('/tmp/catalog.json','utf8'));
+          const expected=Number(process.env.EXPECTED);
+          const keys=['total','visible','retail','priced','distinct_urls'];
+          if(x.ok===true && Number(x.expected)===expected && keys.every(k=>Number(x[k])===expected)){
+            console.log(JSON.stringify(x,null,2));
+            process.exit(0);
+          }
+          console.error('Catalog not complete yet:',x);
+          process.exit(1);
+          NODE
+              then
+                ok=1
+                break
+              fi
+            else
+              echo "Production catalog not ready ($attempt/90; HTTP ${code:-network-error})."
+              cat /tmp/catalog.json 2>/dev/null || true
+            fi
+            sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo 'Production did not expose the complete 511-product Kleoshop catalog.' >&2
+            exit 1
+          fi
+
+      - name: Verify public webshop product feed contains all source products
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 -H 'Cache-Control: no-cache' \
+            'https://kleoszalon-api-1.onrender.com/api/public/webshop/products?catalog_verify=1' \
+            -o /tmp/products.json
+          node - <<'NODE'
+          const fs=require('fs');
+          const body=JSON.parse(fs.readFileSync('/tmp/products.json','utf8'));
+          const rows=Array.isArray(body)?body:(Array.isArray(body.items)?body.items:[]);
+          const valid=rows.filter(p=>p && p.web_is_visible!==false && Number(p.retail_price_gross||p.sale_price||0)>0);
+          if(valid.length<511) throw new Error(`Public feed has only ${valid.length} valid visible products; expected at least 511.`);
+          console.log(`Public webshop feed PASS: ${valid.length} valid visible products.`);
+          NODE
