@@ -26,9 +26,16 @@ async function priceCart(client: any, rawItems: unknown): Promise<{ items: Price
   const ids = requested.map(x => x.product_id);
   const { rows } = await client.query(
     `SELECT id::text id,COALESCE(display_name_hu,name_hu,name,'Termék') name,
-            COALESCE(NULLIF(sale_price,0),retail_price_gross,0)::numeric unit_price
+            CASE
+              WHEN COALESCE(sale_price,0) > 0
+               AND (COALESCE(retail_price_gross,0) <= 0 OR sale_price < retail_price_gross)
+                THEN sale_price
+              ELSE COALESCE(retail_price_gross,0)
+            END::numeric unit_price
        FROM products
-      WHERE id=ANY($1::uuid[]) AND COALESCE(is_retail,false)=true AND COALESCE(web_is_visible,false)=true`,
+      WHERE id=ANY($1::uuid[])
+        AND COALESCE(is_retail,false)=true
+        AND COALESCE(web_is_visible,false)=true`,
     [ids]
   );
   if (rows.length !== ids.length) throw Object.assign(new Error("A kosár egy vagy több terméke már nem rendelhető."), { status: 409 });
@@ -36,7 +43,7 @@ async function priceCart(client: any, rawItems: unknown): Promise<{ items: Price
   const items = requested.map(req => {
     const product: any = byId.get(req.product_id);
     const unitPrice = money(Number(product.unit_price || 0));
-    if (!(unitPrice >= 0)) throw Object.assign(new Error("Érvénytelen termékár."), { status: 409 });
+    if (!(unitPrice > 0)) throw Object.assign(new Error("A kosár egy vagy több termékének nincs érvényes webshopára."), { status: 409 });
     return { product_id: req.product_id, name: String(product.name || "Termék"), quantity: req.quantity, unit_price: unitPrice, line_total: money(unitPrice * req.quantity) };
   });
   return { items, subtotal: money(items.reduce((sum, item) => sum + item.line_total, 0)) };
@@ -97,8 +104,8 @@ router.post("/order", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Név, e-mail és cím megadása kötelező." });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(customer.email))) return res.status(400).json({ error: "Érvénytelen e-mail cím." });
-  if (!['cod','card'].includes(paymentMethod)) return res.status(400).json({ error: "Érvénytelen fizetési mód." });
-  if (paymentMethod === 'card') {
+  if (!["cod", "card"].includes(paymentMethod)) return res.status(400).json({ error: "Érvénytelen fizetési mód." });
+  if (paymentMethod === "card") {
     return res.status(503).json({ error: "A bankkártyás fizetési szolgáltató még nincs élesítve. Kérjük, válassza az utánvétet." });
   }
 
@@ -116,8 +123,8 @@ router.post("/order", async (req: Request, res: Response) => {
        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'HUF',$9,'new',$10,$11,$12,$13::jsonb)
        RETURNING id`,
       [
-        String(customer.full_name).trim(), String(customer.email).trim().toLowerCase(), String(customer.phone || '').trim() || null,
-        String(customer.address).trim(), String(customer.note || '').trim() || null,
+        String(customer.full_name).trim(), String(customer.email).trim().toLowerCase(), String(customer.phone || "").trim() || null,
+        String(customer.address).trim(), String(customer.note || "").trim() || null,
         priced.subtotal, coupon.discount, total, paymentMethod, coupon.couponId, coupon.code, coupon.discount, JSON.stringify(priced.items),
       ]
     );
