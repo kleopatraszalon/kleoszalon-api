@@ -2,6 +2,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import db from "./db";
+import { syncKleoshopCatalog } from "./catalog/syncKleoshopCatalog";
 
 const MIGRATION_LOCK_KEY_A = 20260819;
 const MIGRATION_LOCK_KEY_B = 1;
@@ -29,9 +30,6 @@ function resolveMigrationDir() {
 }
 
 async function configureMigrationSession(client: any) {
-  // The normal API pool intentionally uses an ~8s statement timeout. Schema
-  // migrations are startup work and can legitimately take longer on production
-  // tables, so they must not inherit the request-path timeout.
   await client.query("SELECT set_config('statement_timeout',$1,false)", [`${MIGRATION_STATEMENT_TIMEOUT_MS}ms`]);
   await client.query("SELECT set_config('lock_timeout',$1,false)", [`${MIGRATION_LOCK_TIMEOUT_MS}ms`]);
 }
@@ -114,6 +112,15 @@ export async function runMigrations() {
       }
       console.log(`[migration] applied: ${file} (${Date.now() - startedAt}ms)`);
     }
+
+    // The storefront catalog is version-controlled and verified before merge.
+    // Sync it under the same global migration lock so two Render instances can
+    // never race product/category creation during a rolling production deploy.
+    const catalogStats = await syncKleoshopCatalog(client);
+    console.log(
+      `[migration] Kleoshop catalog ready: total=${catalogStats.total}, inserted=${catalogStats.inserted}, ` +
+      `updated=${catalogStats.updated}, matched_by_name=${catalogStats.matchedByName}`,
+    );
   } finally {
     if (locked) {
       await client.query("SELECT pg_advisory_unlock($1,$2)", [MIGRATION_LOCK_KEY_A, MIGRATION_LOCK_KEY_B]).catch(() => undefined);
@@ -132,10 +139,6 @@ async function main() {
     if (MIGRATION_FAILURE_MODE === "strict" || integrityFailure) {
       process.exitCode = 1;
     } else {
-      // Production recovery mode: allow the API process to start after a
-      // non-integrity migration error. Runtime tenant/schema readiness stays
-      // fail-closed and the deployment health gate decides whether this release
-      // is safe to promote. Checksum/ledger integrity errors never use this path.
       console.error(
         "[migration] non-integrity failure deferred to runtime readiness; API startup may continue in fail-closed readiness mode.",
       );

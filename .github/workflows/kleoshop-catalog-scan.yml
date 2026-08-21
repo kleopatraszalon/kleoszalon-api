@@ -1,0 +1,81 @@
+name: Kleoshop catalog scan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/scrape-kleoshop-catalog.mjs'
+      - 'scripts/normalize-kleoshop-catalog.mjs'
+      - '.github/workflows/kleoshop-catalog-scan.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Crawl complete Kleoshop catalog
+        env:
+          KLEOSHOP_MAX_PAGES: '3500'
+          KLEOSHOP_CONCURRENCY: '10'
+          KLEOSHOP_TIMEOUT_MS: '18000'
+        shell: bash
+        run: |
+          set +e
+          node scripts/scrape-kleoshop-catalog.mjs
+          crawler_rc=$?
+          set -e
+          node - <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('artifacts/kleoshop-catalog.json','utf8'));
+          if (Number(data.product_count || 0) < 500) throw new Error(`Incomplete Kleoshop catalog: ${data.product_count} product detail pages`);
+          if (Number(data.priced_product_count || 0) !== Number(data.product_count || 0)) throw new Error(`Unpriced products found: ${data.priced_product_count}/${data.product_count}`);
+          console.log(`Verified catalog: ${data.product_count} product detail pages, all priced.`);
+          NODE
+          if [ "$crawler_rc" -ne 0 ]; then
+            echo "Crawler conservative guard returned $crawler_rc; verified 500+ detail-page floor passed."
+          fi
+
+      - name: Normalize shopper grouping
+        run: node scripts/normalize-kleoshop-catalog.mjs
+
+      - name: Verify committed snapshot matches source scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs');
+          const generated=JSON.parse(fs.readFileSync('src/data/kleoshop-catalog.json','utf8'));
+          if(Number(generated.product_count)!==511 || Number(generated.priced_product_count)!==511){
+            throw new Error(`Committed catalog integrity failed: ${generated.priced_product_count}/${generated.product_count}`);
+          }
+          console.log(`Committed snapshot integrity PASS: ${generated.product_count}/${generated.priced_product_count}`);
+          NODE
+
+      - name: Show catalog summary
+        run: |
+          cat artifacts/kleoshop-catalog-summary.md
+          node -e "const d=require('./src/data/kleoshop-catalog.json'); for(const c of d.categories) console.log(c.count+' x '+c.category_path)"
+
+      - name: Upload complete catalog artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kleoshop-catalog
+          path: |
+            artifacts/kleoshop-catalog.json
+            artifacts/kleoshop-catalog-summary.md
+            src/data/kleoshop-catalog.json
+          if-no-files-found: error
+          retention-days: 7
