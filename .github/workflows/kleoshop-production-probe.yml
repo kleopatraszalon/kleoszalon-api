@@ -1,0 +1,47 @@
+name: Kleoshop production probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/kleoshop-production-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe production catalog status
+        shell: bash
+        run: |
+          set -u
+          status_url='https://kleoszalon-api-1.onrender.com/api/public/webshop/catalog-status?probe=1'
+          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -o /tmp/catalog.json -w '%{http_code}' "$status_url" || true)"
+          echo "CATALOG_HTTP=$code"
+          echo '--- catalog body ---'
+          cat /tmp/catalog.json 2>/dev/null || true
+          echo
+
+      - name: Probe public product feed
+        shell: bash
+        run: |
+          set -u
+          feed_url='https://kleoszalon-api-1.onrender.com/api/public/webshop/products?probe=1'
+          code="$(curl -sS --max-time 30 -H 'Cache-Control: no-cache' -o /tmp/products.json -w '%{http_code}' "$feed_url" || true)"
+          echo "PRODUCTS_HTTP=$code"
+          node - <<'NODE'
+          const fs=require('fs');
+          try {
+            const body=JSON.parse(fs.readFileSync('/tmp/products.json','utf8'));
+            const rows=Array.isArray(body)?body:(Array.isArray(body.items)?body.items:[]);
+            const valid=rows.filter(p=>p && p.web_is_visible!==false && Number(p.retail_price_gross||p.sale_price||0)>0);
+            const source=rows.filter(p=>p && p.web_source==='kleoshop');
+            console.log(JSON.stringify({rows:rows.length,valid:valid.length,kleoshop_source:source.length},null,2));
+          } catch (e) {
+            console.log('PRODUCT_FEED_PARSE_ERROR='+String(e));
+            try { console.log(fs.readFileSync('/tmp/products.json','utf8').slice(0,4000)); } catch {}
+          }
+          NODE
