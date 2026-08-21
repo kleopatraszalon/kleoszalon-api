@@ -23,14 +23,20 @@ test('retail hotfix uses JSON-safe stock and product reads', () => {
   assert.ok(src.includes('return res.json([])'));
 });
 
-test('aggregators place recovery routers before legacy handlers', () => {
+test('aggregators place recovery routers before bootstrap and legacy handlers', () => {
   const clients = read('src/routes/clients.ts');
   const transactions = read('src/routes/transactions.ts');
 
   const clientHotfixMount = clients.indexOf('router.use(clientRead500HotfixRouter)');
+  const governanceMount = clients.indexOf('router.use(clientGovernanceRouter)');
+  const receptionMount = clients.indexOf('router.use(clientReceptionContextRouter)');
   const legacyClientMount = clients.indexOf('router.use(clientDetailRecoveryRouter)');
   assert.ok(clientHotfixMount >= 0, 'client hotfix router must be mounted');
+  assert.ok(governanceMount >= 0, 'client governance router must remain mounted');
+  assert.ok(receptionMount >= 0, 'client reception router must remain mounted');
   assert.ok(legacyClientMount >= 0, 'legacy client recovery router must remain mounted');
+  assert.ok(clientHotfixMount < governanceMount, 'client read hotfix must run before governance schema bootstrap');
+  assert.ok(clientHotfixMount < receptionMount, 'client read hotfix must run before reception schema bootstrap');
   assert.ok(clientHotfixMount < legacyClientMount, 'client hotfix must run before legacy recovery');
 
   const retailHotfixMount = transactions.indexOf('retailProducts500HotfixRouter);');
