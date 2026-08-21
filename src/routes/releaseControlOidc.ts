@@ -2,11 +2,14 @@ import { Router, type Request, type Response } from "express";
 import axios from "axios";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import db from "../db";
+import { syncKleoshopCatalog } from "../catalog/syncKleoshopCatalog";
 import { currentReleaseRef, recordReleaseComponent, recordReleaseEvidence } from "./releaseControl";
 
 const router = Router();
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const RELEASE_CONTROL_AUDIENCE = "kleoszalon-release-control";
+const CATALOG_SYNC_WORKFLOW = "kleopatraszalon/kleoszalon-api/.github/workflows/kleoshop-production-catalog-verify.yml@refs/heads/main";
 
 type EvidenceScope = "backend" | "frontend" | "operational";
 type WorkflowRule = { repository: string; workflow_ref: string; keys: Set<string>; scope: EvidenceScope };
@@ -15,6 +18,12 @@ const WORKFLOW_RULES: WorkflowRule[] = [
     repository: "kleopatraszalon/kleoszalon-api",
     workflow_ref: "kleopatraszalon/kleoszalon-api/.github/workflows/render-deploy.yml@refs/heads/main",
     keys: new Set(["tests.backend", "build.backend", "tests.integration", "tests.financial", "tests.saas", "tests.rbac"]),
+    scope: "backend",
+  },
+  {
+    repository: "kleopatraszalon/kleoszalon-api",
+    workflow_ref: CATALOG_SYNC_WORKFLOW,
+    keys: new Set<string>(),
     scope: "backend",
   },
   {
@@ -64,6 +73,51 @@ async function verifyGitHubWorkflow(token: string) {
   if (!rule) throw new Error("Nem engedélyezett GitHub release workflow.");
   return { claims, rule };
 }
+
+router.post("/catalog-sync", async (req: Request, res: Response) => {
+  const oidcToken = bearerToken(req);
+  if (!oidcToken) return res.status(401).json({ error: "GitHub OIDC token szükséges." });
+  try {
+    const { claims, rule } = await verifyGitHubWorkflow(oidcToken);
+    if (rule.workflow_ref !== CATALOG_SYNC_WORKFLOW) {
+      return res.status(403).json({ error: "A workflow nem jogosult production katalógus-szinkronra." });
+    }
+    const currentBackendRef = currentReleaseRef();
+    const expectedRef = String(req.body?.expected_release_ref || "").trim();
+    if (!expectedRef || expectedRef !== currentBackendRef) {
+      return res.status(409).json({
+        error: "release_ref_mismatch",
+        expected_release_ref: expectedRef || null,
+        current_release_ref: currentBackendRef,
+      });
+    }
+
+    const client = await db.connect();
+    try {
+      const stats = await syncKleoshopCatalog(client);
+      console.info("[KLEOSHOP-CATALOG] OIDC production sync completed", {
+        release_ref: currentBackendRef,
+        workflow_ref: String(claims?.workflow_ref || ""),
+        run_id: String(claims?.run_id || ""),
+        ...stats,
+      });
+      return res.json({ ok: true, release_ref: currentBackendRef, ...stats });
+    } catch (error: any) {
+      console.error("[KLEOSHOP-CATALOG] OIDC production sync failed", error);
+      return res.status(500).json({
+        ok: false,
+        error: "catalog_sync_failed",
+        code: error?.code || null,
+        detail: error?.message || String(error),
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    console.warn("[KLEOSHOP-CATALOG] GitHub OIDC sync rejected:", error?.message || String(error));
+    return res.status(401).json({ error: "Érvénytelen vagy nem engedélyezett GitHub release workflow." });
+  }
+});
 
 router.post("/evidence", async (req: Request, res: Response) => {
   const oidcToken = bearerToken(req);
