@@ -8,11 +8,13 @@ on:
       - 'src/catalog/syncKleoshopCatalog.ts'
       - 'src/dbMigrations.ts'
       - 'src/routes/publicWebshopSecure.ts'
+      - 'src/routes/releaseControlOidc.ts'
       - '.github/workflows/kleoshop-production-catalog-verify.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
   statuses: write
 
 jobs:
@@ -28,6 +30,40 @@ jobs:
           set -euo pipefail
           body="$(node -e 'process.stdout.write(JSON.stringify({state:"pending",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Verifying complete 511-product production catalog",context:"kleoshop/production-catalog"}))')"
           curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+
+      - name: Run secured production catalog sync on exact release
+        shell: bash
+        env:
+          SYNC_URL: https://kleoszalon-api-1.onrender.com/api/uat/release-control/catalog-sync
+        run: |
+          set -euo pipefail
+          synced=0
+          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA}))')"
+          for attempt in $(seq 1 90); do
+            response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
+            oidc="$(printf '%s' "$response" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s).value||''))")"
+            test -n "$oidc"
+            rm -f /tmp/catalog-sync.json
+            code="$(curl -sS --max-time 60 -o /tmp/catalog-sync.json -w '%{http_code}' \
+              -H "Authorization: Bearer $oidc" -H 'Content-Type: application/json' \
+              --data "$payload" "$SYNC_URL" || true)"
+            if [ "$code" = "200" ]; then
+              echo 'Production catalog sync PASS:'
+              cat /tmp/catalog-sync.json
+              synced=1
+              break
+            fi
+            if [ "$code" = "404" ] || [ "$code" = "409" ]; then
+              echo "Waiting for exact backend catalog-sync endpoint ($attempt/90; HTTP $code)"
+              cat /tmp/catalog-sync.json 2>/dev/null || true
+              sleep 10
+              continue
+            fi
+            echo "Production catalog sync failed with HTTP ${code:-network-error}:" >&2
+            cat /tmp/catalog-sync.json >&2 || true
+            exit 1
+          done
+          test "$synced" -eq 1 || { echo 'Exact production catalog sync did not become available.' >&2; exit 1; }
 
       - name: Wait for exact production catalog
         shell: bash
