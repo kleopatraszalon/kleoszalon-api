@@ -92,8 +92,12 @@ function getTokenFromReq(req: Request): string | null {
     (req.headers["authorization"] as string | undefined) ||
     (req.headers["Authorization"] as string | undefined);
 
-  if (authHeader && /^Bearer\s+/i.test(authHeader)) {
-    return authHeader.replace(/^Bearer\s+/i, "").trim() || null;
+  if (authHeader && /^Bearer\s*/i.test(authHeader)) {
+    const bearerToken = authHeader.replace(/^Bearer\s*/i, "").trim();
+    if (bearerToken) return bearerToken;
+    // Legacy browser pages can still emit an empty `Authorization: Bearer `
+    // header. Do not let that obsolete empty value shadow a valid HttpOnly
+    // session cookie; simply continue to the cookie transport below.
   }
 
   const cookieToken = (req as any).cookies?.token;
