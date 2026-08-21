@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import pool from "../db";
+import catalog from "../data/kleoshop-catalog.json";
 
 const router = Router();
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -74,6 +75,53 @@ async function calculateCoupon(client: any, rawCode: unknown, subtotal: number, 
   if (discount <= 0) throw Object.assign(new Error("A kupon nem ad kedvezményt erre a rendelésre."), { status: 400 });
   return { couponId: String(coupon.id), code: String(coupon.code || code).toUpperCase(), discount, finalTotal: money(subtotal - discount) };
 }
+
+router.get("/catalog-status", async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        count(*)::int AS total,
+        count(*) FILTER (WHERE COALESCE(web_is_visible,false)=true)::int AS visible,
+        count(*) FILTER (WHERE COALESCE(is_retail,false)=true)::int AS retail,
+        count(*) FILTER (WHERE COALESCE(retail_price_gross,0)>0)::int AS priced,
+        count(DISTINCT web_source_url)::int AS distinct_urls,
+        max(web_source_catalog_at) AS catalog_at,
+        max(web_source_synced_at) AS synced_at
+      FROM products
+      WHERE web_source='kleoshop' AND web_source_url IS NOT NULL
+    `);
+    const categoryRows = await pool.query(`
+      SELECT main_category,sub_category,count(*)::int AS product_count
+      FROM products
+      WHERE web_source='kleoshop' AND web_source_url IS NOT NULL
+      GROUP BY main_category,sub_category
+      ORDER BY main_category,sub_category
+    `);
+    const row = rows[0] || {};
+    const expected = Number(catalog.product_count);
+    const ok =
+      Number(row.total || 0) === expected &&
+      Number(row.visible || 0) === expected &&
+      Number(row.retail || 0) === expected &&
+      Number(row.priced || 0) === expected &&
+      Number(row.distinct_urls || 0) === expected;
+    return res.status(ok ? 200 : 503).json({
+      ok,
+      expected,
+      total: Number(row.total || 0),
+      visible: Number(row.visible || 0),
+      retail: Number(row.retail || 0),
+      priced: Number(row.priced || 0),
+      distinct_urls: Number(row.distinct_urls || 0),
+      catalog_at: row.catalog_at || null,
+      synced_at: row.synced_at || null,
+      categories: categoryRows.rows,
+    });
+  } catch (error: any) {
+    console.error("Kleoshop catalog status error:", error);
+    return res.status(503).json({ ok: false, expected: catalog.product_count, error: "catalog_status_unavailable", detail: error?.message || String(error) });
+  }
+});
 
 router.post("/validate-coupon", async (req: Request, res: Response) => {
   const client = await pool.connect();
