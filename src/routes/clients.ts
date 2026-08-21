@@ -9,6 +9,7 @@ import clientDetailRecoveryRouter from './clientDetailRecovery';
 import customerIntelligenceRouter from './customerIntelligence';
 import nbaMarketingAutomationRouter from './nbaMarketingAutomation';
 import nbaAttributionAdminRouter from './nbaAttributionAdmin';
+import clientRead500HotfixRouter from './clientRead500Hotfix';
 import clientsCoreRouter from './clientsCore';
 
 const router=Router();
@@ -18,6 +19,7 @@ router.use(clientFormVersionsFinalRouter);
 router.use(clientGovernanceRouter);
 router.use(clientReceptionContextRouter);
 router.use('/marketing-automation',marketingAutomationRouter);
+router.use(clientRead500HotfixRouter);
 router.use(clientDetailRecoveryRouter);
 router.use('/intelligence/attribution',nbaAttributionAdminRouter);
 router.use('/intelligence/marketing',nbaMarketingAutomationRouter);
