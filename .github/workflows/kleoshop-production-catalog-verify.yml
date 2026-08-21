@@ -13,12 +13,22 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 22
     steps:
+      - name: Mark production catalog verification pending
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"pending",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Verifying complete 511-product production catalog",context:"kleoshop/production-catalog"}))')"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+
       - name: Wait for exact production catalog
         shell: bash
         env:
@@ -72,3 +82,22 @@ jobs:
           if(valid.length<511) throw new Error(`Public feed has only ${valid.length} valid visible products; expected at least 511.`);
           console.log(`Public webshop feed PASS: ${valid.length} valid visible products.`);
           NODE
+
+      - name: Mark production catalog verified
+        if: ${{ success() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"success",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"511/511 production catalog and public feed verified",context:"kleoshop/production-catalog"}))')"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
+
+      - name: Mark production catalog verification failed
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"failure",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"511-product production catalog verification failed",context:"kleoshop/production-catalog"}))')"
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
