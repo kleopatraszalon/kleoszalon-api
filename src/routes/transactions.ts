@@ -7,6 +7,7 @@ import cashierRouter from "./cashier";
 import cashierRegisterRouter from "./cashierRegister";
 import cashierShiftRouter from "./cashierShift";
 import cashierAltegioParityRouter from "./cashierAltegioParity";
+import retailProducts500HotfixRouter from "./retailProducts500Hotfix";
 import workOrderCashierFastRouter from "./workOrderCashierFast";
 import financeOperationsRouter from "./financeOperations";
 import financeAltegioRouter from "./financeAltegio";
@@ -144,6 +145,7 @@ router.use("/workorder-materials",workOrderMaterialsRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
+router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
@@ -160,6 +162,7 @@ router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
 
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
 
