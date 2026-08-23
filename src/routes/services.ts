@@ -6,7 +6,13 @@ import servicesImportRouter from "./servicesImportV2";
 
 const router = Router();
 router.use(requireAuth);
-router.use(requireMenuPermissionByMethod("masterdata.services"));
+const requireServiceManagementPermission = requireMenuPermissionByMethod("masterdata.services");
+router.use((req, res, next) => {
+  // A foglalási felületnek minden hitelesített felhasználó esetén olvasnia kell
+  // a szolgáltatásokat. A törzsadat-módosítások továbbra is jogosultsághoz kötöttek.
+  if (req.method === "GET" || req.method === "HEAD") return next();
+  return requireServiceManagementPermission(req, res, next);
+});
 router.use(servicesImportRouter);
 
 let altegioSchemaReady: Promise<void> | null = null;
