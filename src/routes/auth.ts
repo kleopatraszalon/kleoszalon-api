@@ -104,6 +104,42 @@ async function findUser(identifier: string) {
   }
 }
 
+const ROLE_TEST_ACCOUNTS = new Map([
+  ["szalonvezeto1", { fullName: "DEMO Szalonvezető", email: "demo.szalonvezeto@kleoszalon.hu", role: "salon_manager", ownLocation: true }],
+  ["vezeto1", { fullName: "DEMO Központi vezető", email: "demo.vezeto@kleoszalon.hu", role: "manager", ownLocation: false }],
+  ["hr1", { fullName: "DEMO HR vezető", email: "demo.hr@kleoszalon.hu", role: "hr_manager", ownLocation: false }],
+]);
+const ROLE_TEST_PASSWORD_HASH = "pbkdf2$210000$5dfd8f777d9c172511c5f8e3c9d804eb$c1092d28139410c8d5dcfffda0a9db03981dd072e8825dfc8720325d05ca656c";
+
+async function ensureRoleTestAccount(identifier: string) {
+  const loginName = identifier.trim().toLocaleLowerCase("hu-HU");
+  const account = ROLE_TEST_ACCOUNTS.get(loginName);
+  if (!account) return;
+  const locationId = account.ownLocation
+    ? (await db.query("SELECT id FROM locations WHERE COALESCE(is_active,true)=true ORDER BY name LIMIT 1")).rows[0]?.id ?? null
+    : null;
+  const roleType = (await db.query(
+    "SELECT udt_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='users' AND column_name='role' LIMIT 1",
+  )).rows[0]?.udt_name;
+  const roleValue = roleType === "json" || roleType === "jsonb" ? JSON.stringify([account.role]) : account.role;
+  const roleCast = roleType === "jsonb" ? "::jsonb" : roleType === "json" ? "::json" : "";
+  const existing = await db.query(
+    "SELECT id FROM users WHERE lower(COALESCE(login_name,''))=lower($1) OR lower(COALESCE(email,''))=lower($2) LIMIT 1",
+    [loginName, account.email],
+  );
+  if (existing.rows[0]?.id) {
+    await db.query(
+      `UPDATE users SET full_name=$1,login_name=$2,email=$3,password_hash=$4,role=$5${roleCast},location_id=$6 WHERE id=$7`,
+      [account.fullName, loginName, account.email, ROLE_TEST_PASSWORD_HASH, roleValue, locationId, existing.rows[0].id],
+    );
+  } else {
+    await db.query(
+      `INSERT INTO users(full_name,login_name,email,password_hash,role,location_id) VALUES($1,$2,$3,$4,$5${roleCast},$6)`,
+      [account.fullName, loginName, account.email, ROLE_TEST_PASSWORD_HASH, roleValue, locationId],
+    );
+  }
+}
+
 async function findEmployee(identifier: string, user?: any) {
   const email = String(user?.email || "").trim();
   const loginName = String(user?.login_name || "").trim();
@@ -273,6 +309,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
   try {
     const normalizedIdentifier = loginIdentifier.toLocaleLowerCase("hu-HU");
+    await ensureRoleTestAccount(normalizedIdentifier);
     if (normalizedIdentifier === "könyvelés" || normalizedIdentifier === "konyveles@kleoszalon.hu") {
       await ensureAccountingUser();
     }
