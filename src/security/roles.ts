@@ -3,6 +3,7 @@ export type CanonicalRole =
   | "manager"
   | "location_manager"
   | "salon_manager"
+  | "hr_manager"
   | "receptionist"
   | "employee"
   | "customer";
@@ -28,6 +29,12 @@ const ALIASES: Record<string, CanonicalRole> = {
   salon_manager: "salon_manager",
   "szalonvezető": "salon_manager",
   szalonvezeto: "salon_manager",
+
+  hr: "hr_manager",
+  hr_manager: "hr_manager",
+  human_resources: "hr_manager",
+  "személyügy": "hr_manager",
+  szemelyugy: "hr_manager",
 
   receptionist: "receptionist",
   reception: "receptionist",

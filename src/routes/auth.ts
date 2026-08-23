@@ -13,6 +13,14 @@ import releaseControlOidcRouter from "./releaseControlOidc";
 const router = express.Router();
 const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
 const GITHUB_UAT_REPOSITORY="kleopatraszalon/kleoszalon-api";
+async function verifyPassword(password:string,hash:string){
+  if(!hash.startsWith("pbkdf2$"))return bcrypt.compare(password,hash);
+  const[,roundsRaw,salt,expectedHex]=hash.split("$");const rounds=Number(roundsRaw);
+  if(!Number.isInteger(rounds)||rounds<100000||!salt||!expectedHex)return false;
+  const actual=crypto.pbkdf2Sync(password,salt,rounds,expectedHex.length/2,"sha256");
+  const expected=Buffer.from(expectedHex,"hex");
+  return actual.length===expected.length&&crypto.timingSafeEqual(actual,expected);
+}
 const ACCOUNTING_UAT_AUDIENCE="kleoszalon-accounting-uat";
 const ACCOUNTING_UAT_WORKFLOW="kleopatraszalon/kleoszalon-api/.github/workflows/accounting-authenticated-uat.yml@refs/heads/main";
 const NAV_TEST_UAT_AUDIENCE="kleoszalon-nav-test-uat";
@@ -132,7 +140,9 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   if (!employee.password_hash) {
     return res.status(401).json({ error: "Ehhez a munkatárshoz még nincs jelszó beállítva." });
   }
-  const ok = await bcrypt.compare(password, employee.password_hash);
+  const ok = String(employee.password_hash).startsWith("pbkdf2$")
+    ? await verifyPassword(password, employee.password_hash)
+    : await bcrypt.compare(password, employee.password_hash);
   if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
   if (!employee.location_id) {
     return res.status(409).json({ error: "A munkatárshoz nincs telephely rendelve. Kérlek jelezd az adminisztrátornak." });
@@ -284,7 +294,9 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(500).json({ error: "A felhasználóhoz nincs jelszó beállítva." });
     }
 
-    const ok = await bcrypt.compare(password, hash);
+    const ok = String(hash).startsWith("pbkdf2$")
+      ? await verifyPassword(password, hash)
+      : await bcrypt.compare(password, hash);
     if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
 
     const admin = isAdminRole(user.role);
