@@ -140,7 +140,9 @@ async function respondAsEmployee(res: Response, employee: any, password: string,
   if (!employee.password_hash) {
     return res.status(401).json({ error: "Ehhez a munkatárshoz még nincs jelszó beállítva." });
   }
-  const ok = await verifyPassword(password, employee.password_hash);
+  const ok = String(employee.password_hash).startsWith("pbkdf2$")
+    ? await verifyPassword(password, employee.password_hash)
+    : await bcrypt.compare(password, employee.password_hash);
   if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
   if (!employee.location_id) {
     return res.status(409).json({ error: "A munkatárshoz nincs telephely rendelve. Kérlek jelezd az adminisztrátornak." });
@@ -292,7 +294,9 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(500).json({ error: "A felhasználóhoz nincs jelszó beállítva." });
     }
 
-    const ok = await verifyPassword(password, hash);
+    const ok = String(hash).startsWith("pbkdf2$")
+      ? await verifyPassword(password, hash)
+      : await bcrypt.compare(password, hash);
     if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
 
     const admin = isAdminRole(user.role);
