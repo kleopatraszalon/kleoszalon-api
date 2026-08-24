@@ -12,6 +12,7 @@ const RUNTIME_FILES = [
   "20260808_CHECKLISTS_V1.sql",
   "20260808_EMPLOYEE_SELF_SERVICE_V1.sql",
   "20260809_ADMIN_CHECKLIST_V1.sql",
+  "20260824_POSITION_REVENUE_TARGET.sql",
 ];
 
 async function ensureSafeHrCore() {
@@ -43,6 +44,7 @@ async function ensureSafeHrCore() {
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`);
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+  await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS revenue_target_per_hour numeric(14,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_name text`);
