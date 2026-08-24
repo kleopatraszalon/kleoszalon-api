@@ -3,6 +3,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 
 const sql=fs.readFileSync('src/migrations/20260824_002_role_dashboard_permissions.sql','utf8');
+const runtime=fs.readFileSync('src/virSpec/ensureVirSpecModules.ts','utf8');
 
 test('every internal occupational role receives a scoped dashboard capability',()=>{
   for(const role of ['manager','hr_manager','accounting','location_manager','salon_manager','receptionist','employee']){
@@ -15,4 +16,11 @@ test('dashboard repair grants read-only menu access without financial or admin e
   assert.match(sql,/m\.code='dashboard'/);
   assert.match(sql,/SELECT r\.role_key,m\.id,true,false,false,false,false,false,false,false/);
   assert.doesNotMatch(sql,/m\.code='analytics(?:\.main)?'/);
+});
+
+
+test('startup self-heal restores dashboard capability when deploy skips migration command',()=>{
+  assert.match(runtime,/INSERT INTO role_feature_permissions[\s\S]*'management_dashboard',true/);
+  assert.match(runtime,/m\.code='dashboard'[\s\S]*can_view=true/);
+  for(const role of ['hr_manager','salon_manager','receptionist','employee'])assert.ok(runtime.includes(`('${role}'`));
 });
