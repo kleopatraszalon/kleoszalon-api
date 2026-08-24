@@ -1,5 +1,6 @@
 Render redeploy trigger
-2026-08-21T20:20:00+02:00
-Deploy exact latest main 7fd63a745173dbe0f9e26cba5237243e4d0d983f.
-Reason: explicit deploy-all request. Redeploy backend/API first in the ordered production rollout before VIR frontend and public web/signage.
+2026-08-24T17:24:00+02:00
+Force production redeploy from current main.
+Reason: explicit deploy-all request after latest Booking/API changes.
+Deploy order: API first, then VIR frontend, then public web/signage.
 Expected service: kleoszalon-api-1.onrender.com
