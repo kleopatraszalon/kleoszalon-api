@@ -109,7 +109,8 @@ const ROLE_TEST_ACCOUNTS = new Map([
   ["vezeto1", { fullName: "DEMO Központi vezető", email: "demo.vezeto@kleoszalon.hu", role: "manager", ownLocation: false }],
   ["hr1", { fullName: "DEMO HR vezető", email: "demo.hr@kleoszalon.hu", role: "hr_manager", ownLocation: false }],
 ]);
-const ROLE_TEST_PASSWORD_HASH = "pbkdf2$210000$5dfd8f777d9c172511c5f8e3c9d804eb$c1092d28139410c8d5dcfffda0a9db03981dd072e8825dfc8720325d05ca656c";
+// Demo-only credential requested by the system owner: Teszt1234!
+const ROLE_TEST_PASSWORD_HASH = "$2b$12$Zea7mWMY.2wv.oUi.WwFJOfrsbBbxdOEHv8r5dbyq7W76NFUJIsQ.";
 
 async function ensureRoleTestAccount(identifier: string) {
   const loginName = identifier.trim().toLocaleLowerCase("hu-HU");

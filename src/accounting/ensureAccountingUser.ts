@@ -3,7 +3,8 @@ import db from '../db';
 const ACCOUNTING_LOGIN='könyvelés';
 const ACCOUNTING_EMAIL='konyveles@kleoszalon.hu';
 const ACCOUNTING_NAME='Könyvelés';
-const ACCOUNTING_PASSWORD_HASH='$2b$12$7yCjqwhiLLMvIH0H8wzDIud7cTOHC.uU2MZUKIDWrYhbzGZvocwsO';
+// Demo-only credential requested by the system owner: Teszt1234!
+const ACCOUNTING_PASSWORD_HASH='$2b$12$Zea7mWMY.2wv.oUi.WwFJOfrsbBbxdOEHv8r5dbyq7W76NFUJIsQ.';
 
 async function safeQuery(label:string,sql:string){
   try{
