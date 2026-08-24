@@ -236,6 +236,7 @@ router.get("/", async (req: AuthRequest, res) => {
         a.title,
         a.start_time,
         a.end_time,
+        NULLIF(to_jsonb(a)->>'created_at','') AS created_at,
         a.status,
         CASE
           WHEN lower(COALESCE(a.status,'')) IN ('completed','paid')
