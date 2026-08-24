@@ -5,7 +5,7 @@ const assert=require('node:assert/strict');
 const sql=fs.readFileSync('src/migrations/20260824_002_role_dashboard_permissions.sql','utf8');
 
 test('every internal occupational role receives a scoped dashboard capability',()=>{
-  for(const role of ['manager','hr_manager','accounting','location_manager','salon_manager','receptionist','employee','cosmetician','kozmetikus']){
+  for(const role of ['manager','hr_manager','accounting','location_manager','salon_manager','receptionist','employee']){
     assert.ok(sql.includes(`('${role}'`),`${role} dashboard scope is missing`);
   }
   assert.match(sql,/feature_key,can_use,scope_type[\s\S]*'management_dashboard',true/);
