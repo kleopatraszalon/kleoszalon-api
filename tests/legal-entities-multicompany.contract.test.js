@@ -74,5 +74,6 @@ test('payments invoices movements and receipts inherit the work order company',(
 test('NAV receipt batches are separated by legal entity',()=>{
   assert.match(receiptDaily,/legal_entity_id/);
   assert.match(receiptDaily,/legal_entity_name/);
-  assert.match(receiptDaily,/legal_entity_tax_number/);
+  assert.match(receiptDaily,/issuer_tax_number/);
+  assert.match(receiptDaily,/batchFor\(r\.legal_entity_id\)/);
 });
