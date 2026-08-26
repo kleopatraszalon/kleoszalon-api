@@ -1,5 +1,6 @@
 import { Router } from "express";
 import db from "../db";
+import receiptDocumentsCompliance from "./receiptDocumentsCompliance";
 import receiptComplianceV2 from "./receiptComplianceV2";
 import receiptIssuance from "./receiptIssuance";
 
@@ -42,6 +43,7 @@ router.use("/documents", async (_req, _res, next) => {
   try { await ensureReceiptPrerequisites(); next(); }
   catch (error) { next(error); }
 });
+router.use(receiptDocumentsCompliance);
 router.use(receiptComplianceV2);
 router.use(receiptIssuance);
 
