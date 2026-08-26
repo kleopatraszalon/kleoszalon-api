@@ -1,0 +1,46 @@
+name: Booking production diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'hotfix/booking-uat-diagnostics-20260826'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reproduce live booking and print safe DB detail
+        shell: bash
+        run: |
+          node <<'NODE'
+          const BASE='https://kleoszalon-api-1.onrender.com/api/public/marketing/booking';
+          const req=async(path,opt={})=>{const r=await fetch(BASE+path,{...opt,headers:{'content-type':'application/json','user-agent':'Kleopatra-VIR-Diagnostic/1.0',...(opt.headers||{})}});const t=await r.text();let b;try{b=JSON.parse(t)}catch{b={raw:t}}return{status:r.status,body:b}};
+          const fmt=d=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Budapest',year:'numeric',month:'2-digit',day:'2-digit'}).format(d);
+          let token=null;
+          try{
+            const root=await req('/catalog');
+            const loc=(root.body.locations||[]).find(x=>/Eger/i.test(x.name||'')) || root.body.locations?.[0];
+            if(!loc)throw new Error('No location');
+            const scoped=await req('/catalog?location_id='+encodeURIComponent(loc.id));
+            const svc=(scoped.body.services||[]).find(x=>/Alkalmi konty/i.test(x.name||'')) || scoped.body.services?.[0];
+            if(!svc)throw new Error('No service');
+            let slot=null;
+            for(let day=1;day<=7&&!slot;day++){
+              const date=fmt(new Date(Date.now()+day*86400000));
+              const av=await req('/availability?location_id='+encodeURIComponent(loc.id)+'&date='+date+'&service_ids='+encodeURIComponent(svc.id));
+              if(av.status===200&&av.body.slots?.length)slot=av.body.slots[0];
+            }
+            if(!slot)throw new Error('No slot');
+            const payload={location_id:loc.id,employee_id:slot.employee_id,service_ids:[svc.id],client_name:'VIR DIAGNOSTIC UAT',phone:'',email:'vir-booking-uat@example.com',marketing_consent:false,start_time:slot.start,booking_source:'online',note:'Temporary production diagnostic; auto cleanup'};
+            const created=await req('/book',{method:'POST',body:JSON.stringify(payload)});
+            console.log('DIAGNOSTIC_BOOK_RESPONSE',JSON.stringify({status:created.status,body:created.body}));
+            token=created.body?.cancellation_token||null;
+            if(created.status>=400)process.exitCode=2;
+          } finally {
+            if(token){const cleaned=await req('/manage/'+encodeURIComponent(token)+'/cancel',{method:'POST',body:JSON.stringify({reason:'VIR diagnostic cleanup'})});console.log('DIAGNOSTIC_CLEANUP',JSON.stringify({status:cleaned.status,body:cleaned.body}));}
+          }
+          NODE
