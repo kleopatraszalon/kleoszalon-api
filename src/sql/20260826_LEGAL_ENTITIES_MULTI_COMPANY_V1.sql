@@ -78,20 +78,19 @@ DECLARE cfg record; entity_id uuid;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM legal_entities) AND to_regclass('public.nav_online_invoice_settings') IS NOT NULL THEN
     SELECT * INTO cfg FROM nav_online_invoice_settings WHERE active=true ORDER BY created_at NULLS LAST LIMIT 1;
-    IF cfg IS NOT NULL AND NULLIF(regexp_replace(COALESCE(cfg.supplier_tax_number,''),'\D','','g'),'') IS NOT NULL THEN
+    IF cfg IS NOT NULL AND length(regexp_replace(COALESCE(cfg.supplier_tax_number,''),'\D','','g')) >= 11 THEN
       INSERT INTO legal_entities(
-        entity_type,legal_name,short_name,tax_number,registered_country_code,
+        entity_type,legal_name,short_name,company_register_number,tax_number,registered_country_code,
         registered_postal_code,registered_city,registered_address_line,currency,
         default_vat_rate,invoice_prefix,receipt_prefix,accounting_ledger_code,created_by
       ) VALUES(
-        'COMPANY',COALESCE(NULLIF(cfg.supplier_name,''),'Kleopatra2003 Kft'),COALESCE(NULLIF(cfg.supplier_name,''),'Kleopatra2003 Kft'),
+        'COMPANY',COALESCE(NULLIF(cfg.supplier_name,''),'Kleopatra2003 Kft'),COALESCE(NULLIF(cfg.supplier_name,''),'Kleopatra2003 Kft'),'ADATPOTLAS-SZUKSEGES',
         left(regexp_replace(cfg.supplier_tax_number,'\D','','g'),11),COALESCE(NULLIF(cfg.supplier_country_code,''),'HU'),
         COALESCE(NULLIF(cfg.supplier_postal_code,''),'0000'),COALESCE(NULLIF(cfg.supplier_city,''),'Ismeretlen'),
         COALESCE(NULLIF(cfg.supplier_address,''),'Adatpótlás szükséges'),COALESCE(NULLIF(cfg.currency,''),'HUF'),
         CASE WHEN COALESCE(cfg.default_vat_rate,0.27)<=1 THEN COALESCE(cfg.default_vat_rate,0.27)*100 ELSE cfg.default_vat_rate END,
         COALESCE(NULLIF(cfg.invoice_prefix,''),'KLEO'),'KLEO-NY','LE-0001','migration'
       ) RETURNING id INTO entity_id;
-      UPDATE legal_entities SET company_register_number=COALESCE(company_register_number,'ADATPOTLAS-SZUKSEGES') WHERE id=entity_id;
     END IF;
   END IF;
 END $$;
