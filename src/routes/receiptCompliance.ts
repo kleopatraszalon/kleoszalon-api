@@ -3,6 +3,7 @@ import db from "../db";
 import receiptDocumentsCompliance from "./receiptDocumentsCompliance";
 import receiptComplianceV2 from "./receiptComplianceV2";
 import receiptIssuance from "./receiptIssuance";
+import receiptCompanyIssuanceOverride from "./receiptCompanyIssuanceOverride";
 import legalEntitiesRouter from "./legalEntities";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 
@@ -47,6 +48,7 @@ router.use("/documents", async (_req, _res, next) => {
 });
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
+router.use(receiptCompanyIssuanceOverride);
 router.use(receiptDocumentsCompliance);
 router.use(receiptComplianceV2);
 router.use(receiptIssuance);
