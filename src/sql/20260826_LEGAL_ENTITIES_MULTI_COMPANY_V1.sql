@@ -60,9 +60,11 @@ ALTER TABLE work_order_payments ADD COLUMN IF NOT EXISTS legal_entity_id uuid RE
 ALTER TABLE finance_invoices ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
 ALTER TABLE financial_movements ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
 ALTER TABLE nav_online_invoice_settings ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
-ALTER TABLE vir_receipt_report_batches ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
 
 DO $$ BEGIN
+  IF to_regclass('public.vir_receipt_report_batches') IS NOT NULL THEN
+    ALTER TABLE vir_receipt_report_batches ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
+  END IF;
   IF to_regclass('public.retail_sales') IS NOT NULL THEN
     ALTER TABLE retail_sales ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE RESTRICT;
   END IF;
