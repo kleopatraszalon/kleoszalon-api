@@ -15,9 +15,10 @@ test('legacy document_status CHECK repair runs before the first work_orders UPDA
   assert.ok(normalize>sync,'document status normalization must run after safe timestamp synchronization');
 });
 
-test('legacy timestamp backfill cannot block Finance/NAV on a pre-existing CHECK conflict',()=>{
+test('legacy timestamp backfill cannot block Finance/NAV on compatibility-only legacy conflicts',()=>{
   assert.match(workflow,/async function runCompatibilityStage/);
-  assert.match(workflow,/String\(error\?\.code\|\|''\)==='23514'/);
+  assert.match(workflow,/const code=String\(error\?\.code\|\|''\)/);
+  assert.match(workflow,/if\(code==='23514'\|\|code==='55000'\)/);
   assert.match(workflow,/compatibility backfill skipped/);
   assert.match(workflow,/runCompatibilityStage\(pool,'sync_timestamps'/);
 });

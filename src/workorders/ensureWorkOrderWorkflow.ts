@@ -12,14 +12,16 @@ async function runCompatibilityStage(pool:Pool,substage:string,sql:string){
   try{return await pool.query(sql)}
   catch(error:any){
     // Legacy élő adatbázisokban előfordulhat, hogy egy régi, a mostani
-    // workflow-tól független CHECK már meglévő sorokat érvénytelennek tekint.
-    // PostgreSQL bármely UPDATE-nél újraértékeli az ilyen CHECK-et. A timestamp
-    // backfill viszont csak kompatibilitási adatjavítás; nem NAV/pénzügyi
-    // invariáns, ezért 23514 esetén nem blokkolhatja a teljes Finance/NAV sémát.
-    if(String(error?.code||'')==='23514'){
+    // workflow-tól független CHECK már meglévő sorokat érvénytelennek tekint,
+    // illetve az archivált munkalapok immutability triggere (55000) helyesen
+    // megtilt minden UPDATE-et. A timestamp backfill csak kompatibilitási
+    // adatjavítás; nem NAV/pénzügyi invariáns, ezért egyik eset sem blokkolhatja
+    // a teljes Finance/NAV sémát.
+    const code=String(error?.code||'');
+    if(code==='23514'||code==='55000'){
       console.warn('[work-order-workflow] compatibility backfill skipped',{
         substage,
-        code:String(error.code),
+        code,
         constraint:error?.constraint?String(error.constraint):null
       });
       return null;
