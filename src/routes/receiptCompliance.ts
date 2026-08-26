@@ -8,6 +8,7 @@ let prereqReady: Promise<void> | null = null;
 
 function ensureReceiptPrerequisites() {
   if (!prereqReady) prereqReady = db.query(`
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
     CREATE TABLE IF NOT EXISTS retail_sales(
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       location_id text NOT NULL,
