@@ -4,6 +4,7 @@ import receiptDocumentsCompliance from "./receiptDocumentsCompliance";
 import receiptComplianceV2 from "./receiptComplianceV2";
 import receiptIssuance from "./receiptIssuance";
 import receiptCompanyIssuanceOverride from "./receiptCompanyIssuanceOverride";
+import receiptCompanyLifecycleV2 from "./receiptCompanyLifecycleV2";
 import legalEntitiesRouter from "./legalEntities";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 
@@ -48,6 +49,9 @@ router.use("/documents", async (_req, _res, next) => {
 });
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
+// A V2 életciklus kezeli elsőként a kibocsátást és sztornót. A régi route-ok
+// csak a kompatibilis olvasási/PDF/e-mail/audit végpontokhoz maradnak meg.
+router.use(receiptCompanyLifecycleV2);
 router.use(receiptCompanyIssuanceOverride);
 router.use(receiptDocumentsCompliance);
 router.use(receiptComplianceV2);
