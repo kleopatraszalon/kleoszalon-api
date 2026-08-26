@@ -19,7 +19,7 @@ router.post('/pending-selection',async(req:AuthRequest,res:Response)=>{try{
  const ownLocation=String(req.user?.location_id||'').trim();
  const q=await db.query(`SELECT e.id::text,e.legal_name,e.short_name,e.tax_number,e.accounting_ledger_code,COALESCE(json_agg(json_build_object('id',l.id::text,'name',l.name,'city',l.city,'is_default',el.is_default) ORDER BY l.name) FILTER(WHERE l.id IS NOT NULL),'[]'::json) locations FROM legal_entities e LEFT JOIN legal_entity_locations el ON el.legal_entity_id=e.id AND el.active=true LEFT JOIN locations l ON l.id=el.location_id WHERE e.id::text=$1 AND e.active=true GROUP BY e.id`,[legalEntityId]);
  const entity=q.rows[0];if(!entity)return res.status(404).json({message:'A kiválasztott cég nem található vagy inaktív.'});
- if(!global(req)&&ownLocation&&!Array.isArray(entity.locations)||false)return res.status(403).json({message:'A cég nem választható.'});
+ if(!global(req)&&ownLocation&&!Array.isArray(entity.locations))return res.status(403).json({message:'A cég nem választható.'});
  if(!global(req)&&ownLocation&&!entity.locations.some((x:any)=>String(x.id)===ownLocation))return res.status(403).json({message:'A kiválasztott cég nincs hozzárendelve a saját szalonhoz.'});
  await db.query(`INSERT INTO legal_entity_workorder_selections(actor_key,legal_entity_id,selected_at) VALUES($1,$2::uuid,now()) ON CONFLICT(actor_key) DO UPDATE SET legal_entity_id=EXCLUDED.legal_entity_id,selected_at=now()`,[actor(req),legalEntityId]);
  return res.json({ok:true,legal_entity:entity,expires_in_minutes:120,one_time:true});
