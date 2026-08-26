@@ -12,7 +12,7 @@ const ensure=read('src/finance/ensureFinanceNav.ts');
 const entities=read('src/routes/legalEntities.ts');
 const workorder=read('src/routes/workOrderLegalEntity.ts');
 const receiptRouter=read('src/routes/receiptCompliance.ts');
-const receiptOverride=read('src/routes/receiptCompanyIssuanceOverride.ts');
+const lifecycle=read('src/routes/receiptCompanyLifecycleV2.ts');
 const receiptDaily=read('src/routes/receiptDocumentsCompliance.ts');
 
 test('legal entity schema separates company, salon and accounting dimensions',()=>{
@@ -60,6 +60,31 @@ test('company master data and per-company accounting APIs are present',()=>{
   assert.match(entities,/default_for_location_ids/);
 });
 
+test('receipt lifecycle V2 is first and company-aware',()=>{
+  const lifecycleIndex=receiptRouter.indexOf('router.use(receiptCompanyLifecycleV2)');
+  const legacyIndex=receiptRouter.indexOf('router.use(receiptIssuance)');
+  assert.ok(lifecycleIndex>=0&&legacyIndex>lifecycleIndex,'V2 lifecycle must shadow legacy issue/void routes');
+  assert.match(lifecycle,/legal_entity_id/);
+  assert.match(lifecycle,/entity\.id.*entity\.prefix/);
+});
+
+test('receipt issue preserves product and service VAT and never mutates locked work order headers',()=>{
+  assert.match(lifecycle,/LEFT JOIN products p/);
+  assert.match(lifecycle,/LEFT JOIN services s/);
+  assert.match(lifecycle,/product\.vat_rate \?\? service\.vat_rate/);
+  assert.match(lifecycle,/Boolean\(j\.locked_at \|\| j\.archived_at\)/);
+  assert.match(lifecycle,/type === "WORK_ORDER" && !source\.locked/);
+});
+
+test('receipt void uses audited refund, ledger and cash-register models',()=>{
+  assert.match(lifecycle,/work_order_payment_refunds/);
+  assert.match(lifecycle,/INSERT INTO financial_movements\(location_id,legal_entity_id/);
+  assert.match(lifecycle,/reference_type,reference_id/);
+  assert.match(lifecycle,/cash_register_movements/);
+  assert.match(lifecycle,/finance_integrity_events/);
+  assert.match(lifecycle,/locked_work_order_header_unchanged/);
+});
+
 test('payments invoices movements and receipts inherit the work order company',()=>{
   assert.match(v3,/trg_work_order_payments_legal_entity/);
   assert.match(v3,/trg_finance_invoices_legal_entity/);
@@ -67,13 +92,13 @@ test('payments invoices movements and receipts inherit the work order company',(
   assert.match(v3,/trg_vir_receipts_legal_entity/);
   assert.match(receiptRouter,/legalEntitiesRouter/);
   assert.match(receiptRouter,/workOrderLegalEntityRouter/);
-  assert.match(receiptRouter,/receiptCompanyIssuanceOverride/);
-  assert.match(receiptOverride,/legal_entity_id/);
 });
 
-test('NAV receipt batches are separated by legal entity',()=>{
+test('NAV receipt batches are separated by legal entity and actual document issue date',()=>{
+  assert.match(receiptDaily,/FROM vir_receipts r/);
   assert.match(receiptDaily,/legal_entity_id/);
   assert.match(receiptDaily,/legal_entity_name/);
   assert.match(receiptDaily,/issuer_tax_number/);
   assert.match(receiptDaily,/batchFor\(r\.legal_entity_id\)/);
+  assert.match(receiptDaily,/document_type === "VOID"/);
 });
