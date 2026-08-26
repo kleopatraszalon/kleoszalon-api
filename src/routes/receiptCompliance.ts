@@ -4,6 +4,7 @@ import receiptDocumentsCompliance from "./receiptDocumentsCompliance";
 import receiptComplianceV2 from "./receiptComplianceV2";
 import receiptIssuance from "./receiptIssuance";
 import legalEntitiesRouter from "./legalEntities";
+import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 
 const router = Router();
 let prereqReady: Promise<void> | null = null;
@@ -45,6 +46,7 @@ router.use("/documents", async (_req, _res, next) => {
   catch (error) { next(error); }
 });
 router.use("/legal-entities",legalEntitiesRouter);
+router.use("/legal-entities",workOrderLegalEntityRouter);
 router.use(receiptDocumentsCompliance);
 router.use(receiptComplianceV2);
 router.use(receiptIssuance);
