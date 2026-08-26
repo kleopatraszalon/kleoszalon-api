@@ -3,6 +3,7 @@ import db from "../db";
 import receiptDocumentsCompliance from "./receiptDocumentsCompliance";
 import receiptComplianceV2 from "./receiptComplianceV2";
 import receiptIssuance from "./receiptIssuance";
+import legalEntitiesRouter from "./legalEntities";
 
 const router = Router();
 let prereqReady: Promise<void> | null = null;
@@ -43,6 +44,7 @@ router.use("/documents", async (_req, _res, next) => {
   try { await ensureReceiptPrerequisites(); next(); }
   catch (error) { next(error); }
 });
+router.use("/legal-entities",legalEntitiesRouter);
 router.use(receiptDocumentsCompliance);
 router.use(receiptComplianceV2);
 router.use(receiptIssuance);
