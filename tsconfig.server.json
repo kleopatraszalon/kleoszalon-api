@@ -11,7 +11,11 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "axios": ["src/types/axiosAny.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": [
