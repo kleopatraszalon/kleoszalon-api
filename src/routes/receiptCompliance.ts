@@ -8,7 +8,6 @@ import receiptCompanyLifecycleV2 from "./receiptCompanyLifecycleV2";
 import legalEntitiesRouter from "./legalEntities";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 import externalFinancialDocumentsRouter from "./externalFinancialDocuments";
-import externalFinancialDocumentSettingsOverride from "./externalFinancialDocumentSettingsOverride";
 
 const router = Router();
 let prereqReady: Promise<void> | null = null;
@@ -49,7 +48,6 @@ router.use("/documents", async (_req, _res, next) => {
   try { await ensureReceiptPrerequisites(); next(); }
   catch (error) { next(error); }
 });
-router.use("/external-documents", externalFinancialDocumentSettingsOverride);
 router.use("/external-documents", externalFinancialDocumentsRouter);
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
