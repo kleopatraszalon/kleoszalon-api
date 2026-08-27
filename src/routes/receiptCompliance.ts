@@ -6,6 +6,7 @@ import receiptIssuance from "./receiptIssuance";
 import receiptCompanyIssuanceOverride from "./receiptCompanyIssuanceOverride";
 import receiptCompanyLifecycleV2 from "./receiptCompanyLifecycleV2";
 import legalEntitiesRouter from "./legalEntities";
+import legalEntitiesImportRouter from "./legalEntitiesImport";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 import externalFinancialDocumentsRouter from "./externalFinancialDocuments";
 import externalFinancialDocumentsAltegioRouter from "./externalFinancialDocumentsAltegio";
@@ -56,6 +57,7 @@ router.use("/documents", async (_req, _res, next) => {
 router.use("/external-documents", externalFinancialDocumentsAltegioRouter);
 router.use("/external-documents", externalInvoiceNavBridgeRouter);
 router.use("/external-documents", externalFinancialDocumentsRouter);
+router.use("/legal-entities",legalEntitiesImportRouter);
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
 // A V2 életciklus kezeli elsőként a kibocsátást és sztornót. A régi route-ok
