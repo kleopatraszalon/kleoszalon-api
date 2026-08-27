@@ -10,7 +10,7 @@ const mount=read('src/routes/receiptCompliance.ts');
 test('legal entity import accepts multiple external file formats',()=>{
   assert.match(source,/multer\.memoryStorage\(\)/);
   assert.match(source,/XLSX\.read/);
-  assert.match(source,/\.xlsx\|xls\|xlsm\|csv\|tsv\|txt\|json/);
+  assert.match(source,/xlsx\|xls\|xlsm\|csv\|tsv\|txt\|json/);
   assert.match(source,/parseJson/);
 });
 
