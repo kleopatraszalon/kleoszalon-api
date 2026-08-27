@@ -7,6 +7,7 @@ import receiptCompanyIssuanceOverride from "./receiptCompanyIssuanceOverride";
 import receiptCompanyLifecycleV2 from "./receiptCompanyLifecycleV2";
 import legalEntitiesRouter from "./legalEntities";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
+import externalFinancialDocumentsRouter from "./externalFinancialDocuments";
 
 const router = Router();
 let prereqReady: Promise<void> | null = null;
@@ -47,6 +48,7 @@ router.use("/documents", async (_req, _res, next) => {
   try { await ensureReceiptPrerequisites(); next(); }
   catch (error) { next(error); }
 });
+router.use("/external-documents", externalFinancialDocumentsRouter);
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
 // A V2 életciklus kezeli elsőként a kibocsátást és sztornót. A régi route-ok
