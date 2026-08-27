@@ -48,7 +48,6 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@types/axios": "^0.9.36",
     "@types/bcrypt": "^6.0.0",
     "@types/bcryptjs": "^2.4.3",
     "@types/cookie-parser": "^1.4.10",
