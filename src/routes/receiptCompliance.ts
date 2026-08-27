@@ -9,6 +9,7 @@ import legalEntitiesRouter from "./legalEntities";
 import workOrderLegalEntityRouter from "./workOrderLegalEntity";
 import externalFinancialDocumentsRouter from "./externalFinancialDocuments";
 import externalFinancialDocumentsAltegioRouter from "./externalFinancialDocumentsAltegio";
+import externalInvoiceNavBridgeRouter from "./externalInvoiceNavBridge";
 
 const router = Router();
 let prereqReady: Promise<void> | null = null;
@@ -53,6 +54,7 @@ router.use("/documents", async (_req, _res, next) => {
 // a provider státuszt és az Altegio location ID megőrzését. Az általános
 // külső bizonylat router továbbra is kezeli az Altegio exportfájl-importot.
 router.use("/external-documents", externalFinancialDocumentsAltegioRouter);
+router.use("/external-documents", externalInvoiceNavBridgeRouter);
 router.use("/external-documents", externalFinancialDocumentsRouter);
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
