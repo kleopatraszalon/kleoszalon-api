@@ -1,0 +1,24 @@
+name: Runtime infrastructure config diagnostic
+
+on:
+  push:
+    branches:
+      - diag/node24-booking-write-20260828
+    paths:
+      - .github/workflows/runtime-infrastructure-config-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Render configuration presence without exposing values
+        env:
+          DB_URL: ${{ secrets.BACKUP_SOURCE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "${DB_URL:-}"
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -c "SELECT setting_key, CASE WHEN is_secret THEN COALESCE(length(value_encrypted),0)>0 ELSE COALESCE(length(value_text),0)>0 END AS configured, is_secret, updated_at FROM vir_runtime_settings WHERE setting_key IN ('VIR_RENDER_API_KEY','VIR_RENDER_SERVICE_ID','VIR_RENDER_POSTGRES_ID') ORDER BY setting_key;"
