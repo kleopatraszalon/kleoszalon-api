@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Kleoszalon API - Node.js + TypeScript + Express",
   "private": true,
-  "engines": {"node": ">=18.18 <21"},
+  "engines": {
+    "node": ">=24 <25"
+  },
   "type": "commonjs",
   "main": "dist/server.js",
   "scripts": {
