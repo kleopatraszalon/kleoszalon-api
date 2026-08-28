@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AuthRequest } from "../middleware/auth";
 import db from "../db";
+import virWave2Router from "./virWave2";
 import {
   buildWave1Preview,
   calculateClientNoShowRisk,
@@ -14,6 +15,9 @@ const router = Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const uuid = (value: unknown) => { const text = String(value || "").trim(); return UUID_RE.test(text) ? text : null; };
 const actor = (req: AuthRequest) => req.user?.email || String(req.user?.id || "management");
+
+// VIR II. hullám külön bootstrapot használ, ezért a Wave I sémamiddleware előtt fut.
+router.use("/wave2", virWave2Router);
 
 router.use(async (_req, res, next) => {
   try { await ensureVirWave1Schema(); next(); }
