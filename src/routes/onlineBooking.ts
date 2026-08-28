@@ -2,6 +2,7 @@ import {Router} from "express";
 import bookingScheduleRouter from "./bookingSchedule";
 import onlineBookingHealthRouter from "./onlineBookingHealth";
 import onlineBookingClientBlockRouter from "./onlineBookingClientBlock";
+import onlineBookingWave1RiskRouter from "./onlineBookingWave1Risk";
 import onlineBookingResourcesRouter from "./onlineBookingResources";
 import onlineBookingNbaAttributionRouter from "./onlineBookingNbaAttribution";
 import bookingGlobalCatalogRouter from "./bookingGlobalCatalog";
@@ -27,6 +28,10 @@ router.use(bookingGlobalCatalogRouter);
 // Stage16 CRM governance: a tiltólistás ügyfél sem közvetlen online foglalást,
 // sem online várólista-bejegyzést nem hozhat létre. A tiltás indoka nem kerül ki publikus válaszba.
 router.use(onlineBookingClientBlockRouter);
+
+// VIR I. hullám: no-show kockázat + dinamikus előleg a tényleges foglalási
+// válaszhoz kapcsolva. Fail-soft: AI/policy hiba nem állíthatja le a foglalást.
+router.use(onlineBookingWave1RiskRouter);
 router.use(onlineBookingResourcesRouter);
 router.use(onlineBookingCoreRouter);
 
