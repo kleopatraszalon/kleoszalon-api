@@ -73,15 +73,28 @@ jobs:
 
       - name: Verify runtime declarations
         run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const pkg = require('./package.json');
-          if (pkg.engines?.node !== '>=24 <25') throw new Error(`Unexpected engines.node: ${pkg.engines?.node}`);
-          if (fs.readFileSync('.nvmrc', 'utf8').trim() !== '24') throw new Error('.nvmrc must be 24');
-          const cp = require('child_process');
-          const out = cp.execSync("grep -RInE 'node-version:[[:space:]]*[\\\"\\\x27]?20([.]x)?[\\\"\\\x27]?([[:space:]]|$)' .github/workflows --exclude=node24-runtime-apply.yml || true", {encoding:'utf8'}).trim();
-          if (out) throw new Error('Node 20 workflow declaration remains:\n' + out);
-          NODE
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          package = json.loads(Path('package.json').read_text(encoding='utf-8'))
+          if package.get('engines', {}).get('node') != '>=24 <25':
+              raise SystemExit(f"Unexpected engines.node: {package.get('engines', {}).get('node')}")
+          if Path('.nvmrc').read_text(encoding='utf-8').strip() != '24':
+              raise SystemExit('.nvmrc must be 24')
+
+          remaining = []
+          pattern = re.compile(r'node-version:\s*["\']?20(?:\.x)?["\']?(?:\s|$)')
+          for path in sorted(Path('.github/workflows').glob('*.y*ml')):
+              if path.name == 'node24-runtime-apply.yml':
+                  continue
+              for line_no, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  if pattern.search(line):
+                      remaining.append(f'{path}:{line_no}:{line.strip()}')
+          if remaining:
+              raise SystemExit('Node 20 workflow declaration remains:\n' + '\n'.join(remaining))
+          print('Runtime declarations are consistently pinned to Node 24.')
+          PY
 
       - name: Clean Node 24 install
         run: npm ci --no-audit --no-fund
