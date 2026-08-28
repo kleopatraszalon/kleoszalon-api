@@ -24,7 +24,7 @@
     "start:strict-migrations": "MIGRATION_FAILURE_MODE=strict npm run migrate && node -r ./scripts/workorder-recipient-env.cjs dist/server.js",
     "seed:demo": "node dist/demo/seedRunner.js",
     "demo:cleanup:vir": "node dist/demo/cleanupVirDemoData.js",
-    "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json src/server.ts\""
+    "dev": "nodemon --watch src --ext ts --exec \"ts-node --project tsconfig.server.json -r ./src/routes/employeeSkillsPatch.ts src/server.ts\""
   },
   "dependencies": {
     "@types/web-push": "^3.6.4",
