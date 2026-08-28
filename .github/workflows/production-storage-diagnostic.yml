@@ -1,0 +1,56 @@
+name: Production PostgreSQL storage diagnostic
+
+on:
+  push:
+    branches:
+      - diag/node24-booking-write-20260828
+    paths:
+      - .github/workflows/production-storage-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require production backup source secret
+        env:
+          DB_URL: ${{ secrets.BACKUP_SOURCE_DATABASE_URL }}
+        run: test -n "${DB_URL:-}"
+
+      - name: Inspect database and relation sizes read-only
+        env:
+          DB_URL: ${{ secrets.BACKUP_SOURCE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          echo '=== DATABASE SIZE ==='
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -c "SELECT current_database() AS database, pg_size_pretty(pg_database_size(current_database())) AS database_size, pg_database_size(current_database()) AS database_bytes;"
+
+          echo '=== LARGEST USER RELATIONS ==='
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -c "SELECT n.nspname AS schema, c.relname AS relation, c.relkind, pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size, pg_total_relation_size(c.oid) AS total_bytes, pg_size_pretty(pg_relation_size(c.oid)) AS heap_size, pg_size_pretty(pg_indexes_size(c.oid)) AS index_size FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','m') ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 40;"
+
+          echo '=== TABLE BLOAT SIGNALS ==='
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -c "SELECT schemaname, relname, n_live_tup, n_dead_tup, CASE WHEN n_live_tup+n_dead_tup=0 THEN 0 ELSE round(100.0*n_dead_tup/(n_live_tup+n_dead_tup),1) END AS dead_pct, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze FROM pg_stat_user_tables ORDER BY n_dead_tup DESC NULLS LAST LIMIT 40;"
+
+          echo '=== LARGEST INDEXES ==='
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off -c "SELECT schemaname, tablename, indexname, pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, pg_relation_size(indexrelid) AS index_bytes FROM pg_stat_user_indexes ORDER BY pg_relation_size(indexrelid) DESC LIMIT 40;"
+
+          echo '=== CANDIDATE EPHEMERAL/LOG TABLE COUNTS ==='
+          docker run --rm --network host postgres:17 psql "$DB_URL" -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+          DO $$
+          DECLARE r record; cnt bigint; oldest timestamptz; newest timestamptz;
+          BEGIN
+            FOR r IN
+              SELECT table_schema, table_name
+              FROM information_schema.tables
+              WHERE table_schema='public'
+                AND (table_name ILIKE '%log%' OR table_name ILIKE '%audit%' OR table_name ILIKE '%queue%' OR table_name ILIKE '%event%' OR table_name ILIKE '%notification%' OR table_name ILIKE '%uat%' OR table_name ILIKE '%demo%' OR table_name ILIKE '%telemetry%')
+              ORDER BY table_name
+            LOOP
+              EXECUTE format('SELECT count(*) FROM %I.%I',r.table_schema,r.table_name) INTO cnt;
+              RAISE NOTICE 'TABLE % rows=%',r.table_name,cnt;
+            END LOOP;
+          END $$;
+          SQL
