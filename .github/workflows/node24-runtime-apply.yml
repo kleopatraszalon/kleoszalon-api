@@ -1,0 +1,122 @@
+name: Apply Node 24 runtime modernization
+
+on:
+  push:
+    branches:
+      - modernize/node24-runtime-20260828
+    paths:
+      - .github/workflows/node24-runtime-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  modernize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: modernize/node24-runtime-20260828
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Verify Node 24 runner
+        run: |
+          node --version
+          node -e "if (!process.version.startsWith('v24.')) throw new Error('Expected Node 24, got ' + process.version)"
+
+      - name: Migrate runtime and CI contracts to Node 24
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          package_path = Path('package.json')
+          package = json.loads(package_path.read_text(encoding='utf-8'))
+          package.setdefault('engines', {})['node'] = '>=24 <25'
+          package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          Path('.nvmrc').write_text('24\n', encoding='utf-8')
+
+          changed = []
+          patterns = [
+              (re.compile(r'(node-version:\s*)20(?=\s*(?:#.*)?$)', re.M), r'\g<1>24'),
+              (re.compile(r'(node-version:\s*["\'])20(["\'])'), r'\g<1>24\2'),
+              (re.compile(r'(node-version:\s*)20\.x(?=\s*(?:#.*)?$)', re.M), r'\g<1>24'),
+              (re.compile(r'(node-version:\s*["\'])20\.x(["\'])'), r'\g<1>24\2'),
+          ]
+          for path in sorted(Path('.github/workflows').glob('*.y*ml')):
+              if path.name == 'node24-runtime-apply.yml':
+                  continue
+              text = path.read_text(encoding='utf-8')
+              updated = text
+              for pattern, replacement in patterns:
+                  updated = pattern.sub(replacement, updated)
+              if updated != text:
+                  path.write_text(updated, encoding='utf-8')
+                  changed.append(str(path))
+
+          if not changed:
+              raise SystemExit('No existing Node 20 workflow declarations were migrated')
+          print(f'Migrated {len(changed)} workflow files to Node 24')
+          for path in changed:
+              print(path)
+          PY
+
+      - name: Refresh lockfile under Node 24
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Verify runtime declarations
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          if (pkg.engines?.node !== '>=24 <25') throw new Error(`Unexpected engines.node: ${pkg.engines?.node}`);
+          if (fs.readFileSync('.nvmrc', 'utf8').trim() !== '24') throw new Error('.nvmrc must be 24');
+          const cp = require('child_process');
+          const out = cp.execSync("grep -RInE 'node-version:[[:space:]]*[\\\"\\\x27]?20([.]x)?[\\\"\\\x27]?([[:space:]]|$)' .github/workflows --exclude=node24-runtime-apply.yml || true", {encoding:'utf8'}).trim();
+          if (out) throw new Error('Node 20 workflow declaration remains:\n' + out);
+          NODE
+
+      - name: Clean Node 24 install
+        run: npm ci --no-audit --no-fund
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Full backend regression suite
+        run: npm test
+
+      - name: Requirements validation
+        run: npm run requirements:check
+
+      - name: Critical requirements automation
+        run: npm run test:requirements-critical
+
+      - name: Financial integrity contracts
+        run: npm run test:financial-integrity
+
+      - name: Workorder and RBAC contracts
+        run: npm run test:workorders
+
+      - name: Production TypeScript build
+        run: npm run build
+
+      - name: Verify built server under Node 24
+        run: |
+          node -e "if (!process.version.startsWith('v24.')) throw new Error(process.version); require('fs').accessSync('dist/server.js')"
+
+      - name: Commit Node 24 modernization
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json .nvmrc .github/workflows
+          git reset .github/workflows/node24-runtime-apply.yml
+          git diff --cached --check
+          git commit -m "Modernize backend runtime and CI to Node 24"
+          git push origin HEAD:modernize/node24-runtime-20260828
