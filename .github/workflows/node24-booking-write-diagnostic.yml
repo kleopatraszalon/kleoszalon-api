@@ -1,0 +1,54 @@
+name: Node24 booking write diagnostic
+
+on:
+  push:
+    branches:
+      - diag/node24-booking-write-20260828
+    paths:
+      - .github/workflows/node24-booking-write-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Probe real booking write and print server detail
+        env:
+          BASE: https://kleoszalon-api-1.onrender.com/api/public/marketing/booking
+        run: |
+          node --input-type=module <<'NODE'
+          const BASE=process.env.BASE;
+          const req=async(path,options={})=>{const r=await fetch(BASE+path,{...options,headers:{'content-type':'application/json','user-agent':'Kleopatra-Node24-Diagnostic/1.0',...(options.headers||{})}});const text=await r.text();let body;try{body=JSON.parse(text)}catch{body={raw:text}};return{status:r.status,body}};
+          const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Budapest',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(Date.now()+86400000));
+          const root=await req('/catalog');
+          if(root.status!==200)throw new Error('catalog '+root.status+' '+JSON.stringify(root.body));
+          let selected=null;
+          for(const location of (root.body.locations||[]).slice(0,20)){
+            const scoped=await req('/catalog?location_id='+encodeURIComponent(location.id));
+            for(const service of (scoped.body?.services||[]).slice(0,12)){
+              const av=await req('/availability?location_id='+encodeURIComponent(location.id)+'&date='+day()+'&service_ids='+encodeURIComponent(service.id));
+              if(av.status===200&&av.body?.slots?.length){selected={location,service,slot:av.body.slots[0]};break}
+            }
+            if(selected)break;
+          }
+          if(!selected)throw new Error('No slot found');
+          console.log('Selected',JSON.stringify({location:selected.location.name,service:selected.service.name,start:selected.slot.start,employee_id:selected.slot.employee_id}));
+          const payload={location_id:selected.location.id,employee_id:selected.slot.employee_id,service_ids:[selected.service.id],client_name:'VIR NODE24 DIAG',phone:'',email:'vir-node24-diagnostic@example.com',marketing_consent:false,start_time:selected.slot.start,booking_source:'online',note:'Temporary Node24 production diagnostic; auto-cancel if created'};
+          const created=await req('/book',{method:'POST',body:JSON.stringify(payload)});
+          console.log('BOOK_RESPONSE_STATUS='+created.status);
+          console.log('BOOK_RESPONSE_BODY='+JSON.stringify(created.body));
+          if([200,201].includes(created.status)&&created.body?.cancellation_token){
+            const token=encodeURIComponent(created.body.cancellation_token);
+            const cancelled=await req('/manage/'+token+'/cancel',{method:'POST',body:JSON.stringify({reason:'Node24 diagnostic cleanup'})});
+            console.log('CLEANUP_STATUS='+cancelled.status);
+            console.log('CLEANUP_BODY='+JSON.stringify(cancelled.body));
+          }
+          if(![200,201].includes(created.status))process.exitCode=2;
+          NODE
