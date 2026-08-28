@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db";
 import type { AuthRequest } from "../middleware/auth";
+import bookingV4AutopilotRouter from "./bookingV4Autopilot";
 
 const router = Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -98,6 +99,8 @@ router.use(async (_req, res, next) => {
     res.status(500).json({ error: "A Booking Automation adatmodell inicializálása sikertelen.", detail: error?.message || String(error) });
   }
 });
+
+router.use("/autopilot", bookingV4AutopilotRouter);
 
 router.get("/policy", async (req: AuthRequest, res) => {
   try {
