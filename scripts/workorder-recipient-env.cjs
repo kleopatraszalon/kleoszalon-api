@@ -27,4 +27,12 @@ function normalizeWorkOrderCloseEmails(input){
 const normalized=normalizeWorkOrderCloseEmails(process.env.WORKORDER_CLOSE_EMAILS);
 process.env.WORKORDER_CLOSE_EMAILS=normalized.join(',');
 
+function preloadEmployeeSkillRoutesForApi(){
+  const entry=String(process.argv[1]||'').replace(/\\/g,'/');
+  if(!entry.endsWith('/dist/server.js')&&entry!=='dist/server.js')return;
+  require('../dist/routes/employeeSkillsPatch.js');
+}
+
+preloadEmployeeSkillRoutesForApi();
+
 module.exports={TARGET_RECIPIENTS,LEGACY_DEMO_RECIPIENT,normalizeWorkOrderCloseEmails};
