@@ -74,6 +74,70 @@ export async function applyGitHubReleaseEnvironment(): Promise<any> {
   return { ok: true, owner, reviewer, environment, repositories: results };
 }
 
+const FRONTEND_MAIN_REQUIRED_CHECKS = [
+  "Frontend strict quality / build",
+  "test-build-security",
+  "verify",
+  "build",
+  "vite-shadow-build",
+] as const;
+
+export async function applyFrontendMainBranchProtection(): Promise<any> {
+  const token = await getRuntimeSecret("VIR_GITHUB_TOKEN");
+  const owner = (await getRuntimeValue("VIR_GITHUB_OWNER")) || "kleopatraszalon";
+  const repo = "kleoszalon-frontend";
+  const branch = "main";
+  if (!token) throw Object.assign(new Error("A GitHub admin token nincs beállítva a VIR-ben."), { status: 400, code: "GITHUB_TOKEN_MISSING" });
+
+  await externalJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${repo}/branches/${branch}/protection`,
+    {
+      method: "PUT",
+      headers: githubHeaders(token),
+      body: JSON.stringify({
+        required_status_checks: { strict: true, contexts: [...FRONTEND_MAIN_REQUIRED_CHECKS] },
+        enforce_admins: true,
+        required_pull_request_reviews: {
+          dismiss_stale_reviews: false,
+          require_code_owner_reviews: false,
+          required_approving_review_count: 0,
+          require_last_push_approval: false,
+        },
+        restrictions: null,
+        required_linear_history: false,
+        allow_force_pushes: false,
+        allow_deletions: false,
+        block_creations: false,
+        required_conversation_resolution: false,
+        lock_branch: false,
+        allow_fork_syncing: false,
+      }),
+    },
+    "github",
+  );
+
+  const current = await externalJson(
+    `https://api.github.com/repos/${encodeURIComponent(owner)}/${repo}/branches/${branch}`,
+    { headers: githubHeaders(token) },
+    "github",
+  );
+  if (current?.protected !== true) throw Object.assign(new Error("A frontend main branch protection visszaellenőrzése sikertelen."), { status: 502, code: "BRANCH_PROTECTION_VERIFY_FAILED" });
+
+  return {
+    ok: true,
+    repository: `${owner}/${repo}`,
+    branch,
+    protected: true,
+    enforce_admins: true,
+    require_pull_request: true,
+    required_approving_review_count: 0,
+    required_status_checks: [...FRONTEND_MAIN_REQUIRED_CHECKS],
+    strict_status_checks: true,
+    allow_force_pushes: false,
+    allow_deletions: false,
+  };
+}
+
 function renderHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: "application/json", "Content-Type": "application/json" };
 }
