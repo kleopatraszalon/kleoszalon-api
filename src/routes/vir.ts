@@ -8,12 +8,14 @@ import deviceBridgeResultRouter from "./deviceBridgeResult";
 import fitnessRouter, { fitnessOticBridgeRouter } from "./fitness";
 import fitnessLockerRouter, { fitnessLockerBridgeRouter } from "./fitnessLockers";
 import migrationCenterRouter from "./migrationCenter";
+import virManagementRouter from "./virManagement";
 
 const router = Router();
 // A helyi OTIC és locker bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
 router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
 router.use("/fitness/locker-bridge", fitnessLockerBridgeRouter);
 router.use(requireAuth);
+router.use("/management", virManagementRouter);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
 router.use("/device-control", deviceBridgeResultRouter);
