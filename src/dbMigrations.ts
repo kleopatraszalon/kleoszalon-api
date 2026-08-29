@@ -1,3 +1,4 @@
+import bcrypt from "bcrypt";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -48,6 +49,66 @@ async function ensureMigrationLedger(client: any) {
 function isMigrationIntegrityFailure(error: unknown) {
   const message = String((error as any)?.message || error || "");
   return message.includes("Migration checksum mismatch") || message.includes("recorded without a checksum");
+}
+
+function isSupportedPasswordHash(value: unknown) {
+  const credential = String(value || "").trim();
+  if (!credential) return false;
+  if (/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(credential)) return true;
+  if (credential.startsWith("pbkdf2$")) return true;
+  return false;
+}
+
+async function tableHasColumn(client: any, tableName: string, columnName: string) {
+  const { rowCount } = await client.query(
+    `SELECT 1
+       FROM information_schema.columns
+      WHERE table_schema=current_schema()
+        AND table_name=$1
+        AND column_name=$2
+      LIMIT 1`,
+    [tableName, columnName],
+  );
+  return Boolean(rowCount);
+}
+
+async function upgradeLegacyPasswordHashes(client: any) {
+  const tables = ["users", "employees"] as const;
+  let upgraded = 0;
+
+  for (const tableName of tables) {
+    const tableExists = await client.query("SELECT to_regclass($1) AS name", [tableName]);
+    if (!tableExists.rows[0]?.name) continue;
+    if (!(await tableHasColumn(client, tableName, "password_hash"))) continue;
+
+    const hasLegacyPassword = await tableHasColumn(client, tableName, "password");
+    const { rows } = await client.query(
+      `SELECT id, password_hash${hasLegacyPassword ? ", password" : ""} FROM ${tableName}`,
+    );
+
+    for (const row of rows) {
+      const storedHash = String(row.password_hash || "").trim();
+      if (isSupportedPasswordHash(storedHash)) continue;
+
+      const legacyPassword = hasLegacyPassword ? String(row.password || "").trim() : "";
+      const plaintextCandidate = storedHash && !storedHash.startsWith("$")
+        ? storedHash
+        : (legacyPassword && !legacyPassword.startsWith("$") ? legacyPassword : "");
+
+      if (!plaintextCandidate) {
+        if (storedHash) {
+          console.warn(`[migration] ${tableName} credential skipped: unsupported hash format`, { id: row.id });
+        }
+        continue;
+      }
+
+      const passwordHash = await bcrypt.hash(plaintextCandidate, 12);
+      await client.query(`UPDATE ${tableName} SET password_hash=$1 WHERE id=$2`, [passwordHash, row.id]);
+      upgraded += 1;
+    }
+  }
+
+  console.log(`[migration] legacy login credentials upgraded=${upgraded}`);
 }
 
 export async function runMigrations() {
@@ -112,6 +173,11 @@ export async function runMigrations() {
       }
       console.log(`[migration] applied: ${file} (${Date.now() - startedAt}ms)`);
     }
+
+    // Older production records may still carry the pre-hash plaintext credential.
+    // Upgrade them under the global migration lock before the API starts so bcrypt
+    // never receives a malformed/plaintext hash and valid users do not get HTTP 500.
+    await upgradeLegacyPasswordHashes(client);
 
     // The storefront catalog is version-controlled and verified before merge.
     // Sync it under the same global migration lock so two Render instances can
