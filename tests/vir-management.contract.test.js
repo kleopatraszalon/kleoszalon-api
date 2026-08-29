@@ -15,10 +15,21 @@ test("VIR management endpoints are management-only and persist unified actions",
   for(const marker of ["router.use(requireManagement)","CREATE TABLE IF NOT EXISTS vir_action_items",'router.get("/cockpit"','router.get("/actions"','router.post("/actions"','router.patch("/actions/:id"',"assignee_name","due_at","evidence","requires_approval"])assert.ok(source.includes(marker),`missing ${marker}`);
 });
 
+test("VIR management is tenant-isolated for reads, writes and location selection",()=>{
+  const source=read("src/routes/virManagement.ts");
+  for(const marker of ["tenant_id uuid NOT NULL","tenant_id=$1::uuid","AND tenant_id=$2::uuid","locations WHERE id=$1::uuid AND tenant_id=$2::uuid","vir_action_items_tenant_source_ref_uidx"])assert.ok(source.includes(marker),`missing ${marker}`);
+});
+
 test("Manager Cockpit derives operational signals from real VIR data",()=>{
   const source=read("src/routes/virManagement.ts");
   for(const marker of ["public.vir_dashboard_summary","vir_kpi_targets","work_shifts","Napi árbevételi terv elmaradás","Magas no-show arány","Magas lemondási arány"])assert.ok(source.includes(marker),`missing ${marker}`);
   assert.ok(!source.includes("demoRevenue"));
+});
+
+test("Manager Cockpit defaults to Budapest business date instead of UTC date",()=>{
+  const source=read("src/routes/virManagement.ts");
+  assert.ok(source.includes('Europe/Budapest'));
+  assert.ok(source.includes('businessDate()'));
 });
 
 test("action queue has governed priority and status vocabulary",()=>{
