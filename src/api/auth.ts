@@ -1,4 +1,4 @@
-// src/routes/auth.ts
+// src/api/auth.ts
 
 import express, { Request, Response } from "express";
 import db from "../db";
@@ -7,13 +7,19 @@ import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
+async function safePasswordCompare(password: string, hash: string) {
+  try {
+    return await bcrypt.compare(password, hash);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * POST /api/login
- * Body: { email?: string, identifier?: string, username?: string, login?: string, phone?: string, password: string, location_id?: string | null }
+ * Legacy auth router retained for compatibility. The production server mounts
+ * src/routes/auth.ts, but this copy must still follow the same security rules.
  */
 router.post("/login", async (req: Request, res: Response) => {
-  console.log("[/api/login] body:", req.body);
-
   const {
     email,
     identifier,
@@ -21,7 +27,6 @@ router.post("/login", async (req: Request, res: Response) => {
     login,
     phone,
     password,
-    location_id,
   } = (req.body || {}) as {
     email?: string;
     identifier?: string;
@@ -35,57 +40,51 @@ router.post("/login", async (req: Request, res: Response) => {
   const loginIdentifier = (identifier || email || username || login || phone || "").trim();
 
   if (!loginIdentifier || !password) {
-    console.warn("[/api/login] Hiányzó loginIdentifier vagy password.");
     return res.status(400).json({ error: "Hiányzó azonosító vagy jelszó." });
   }
 
   try {
     const result = await db.query(
-      `
-      SELECT *
-      FROM users
-      WHERE email = $1
-      `,
+      `SELECT * FROM users WHERE lower(COALESCE(email,''))=lower($1) LIMIT 1`,
       [loginIdentifier]
     );
 
     if (result.rowCount === 0) {
-      console.warn("[/api/login] Nincs ilyen felhasználó:", loginIdentifier);
       return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
     }
 
     const user: any = result.rows[0];
-
-    // Elfogadjuk, ha a DB-ben password_hash VAGY password van
     const hash: string | undefined = user.password_hash || user.password;
 
     if (!hash) {
-      console.error("[/api/login] Nincs password_hash vagy password mező a users táblában!");
-      return res.status(500).json({
-        error: "A jelszó mező hiányzik a szerveren. Kérlek jelezd a rendszergazdának.",
-      });
+      return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
     }
 
-    const ok = await bcrypt.compare(password, hash);
+    const ok = await safePasswordCompare(password, String(hash));
     if (!ok) {
-      console.warn("[/api/login] Hibás jelszó:", loginIdentifier);
       return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      console.error("[AUTH] JWT_SECRET hiányzik; legacy login letiltva.");
+      return res.status(503).json({ error: "A bejelentkezési szolgáltatás átmenetileg nem elérhető." });
     }
 
     const token = jwt.sign(
       { userId: user.id, role: user.role },
-      process.env.JWT_SECRET || "dev-secret",
-      { expiresIn: "7d" }
+      secret,
+      { expiresIn: "8h" }
     );
 
-    // Token süti
     res.cookie("token", token, {
       httpOnly: true,
-      sameSite: "lax",
-      secure: false, // Renderen https alatt majd lehet true
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 8 * 60 * 60 * 1000,
     });
-
-    console.log("[/api/login] Sikeres belépés:", loginIdentifier);
+    res.setHeader("Cache-Control", "no-store");
 
     return res.json({
       success: true,
@@ -97,7 +96,7 @@ router.post("/login", async (req: Request, res: Response) => {
       token,
     });
   } catch (err) {
-    console.error("[AUTH] /api/login hiba:", err);
+    console.error("[AUTH] legacy /api/login hiba:", err);
     return res
       .status(500)
       .json({ error: "Szerver hiba a bejelentkezés közben." });
