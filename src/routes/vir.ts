@@ -13,6 +13,7 @@ import virIntelligenceRouter from "./virIntelligence";
 import virP1Router from "./virP1";
 import virP2Router from "./virP2";
 import virP3Router from "./virP3";
+import virRevenueLeakageRouter from "./virRevenueLeakage";
 
 const router = Router();
 // A helyi OTIC és locker bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
@@ -23,6 +24,7 @@ router.use("/management", virManagementRouter);
 router.use("/intelligence", virIntelligenceRouter);
 router.use("/p1", virP1Router);
 router.use("/p2", virP2Router);
+router.use("/p3/revenue-leakage", virRevenueLeakageRouter);
 router.use("/p3", virP3Router);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
