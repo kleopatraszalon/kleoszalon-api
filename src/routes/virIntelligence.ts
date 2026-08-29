@@ -3,6 +3,7 @@ import pool from "../db";
 import type { AuthRequest } from "../middleware/auth";
 import { requireManagement } from "../middleware/requireRoles";
 import { findCalendarGaps, matchWaitlist, upcomingRiskCandidates } from "../booking/virWave1Engine";
+import { profitEngine } from "../services/virWave2Engine";
 
 const router=Router();
 router.use(requireManagement);
@@ -13,71 +14,25 @@ function dateValue(v:unknown,fallback:string){const s=String(v||"");return /^\d{
 async function resolveScope(req:AuthRequest,res:Response):Promise<Scope|undefined>{const tenantId=String(req.user?.tenant_id||"").trim();if(!tenantId){res.status(403).json({ok:false,error:"A felhasználóhoz nincs tenant rendelve."});return}const requested=String(req.query.locationId||req.query.location_id||"").trim();if(!requested)return{tenantId,locationId:null};const {rows}=await pool.query(`SELECT id::text FROM locations WHERE id=$1::uuid AND tenant_id=$2::uuid LIMIT 1`,[requested,tenantId]);if(!rows[0]){res.status(403).json({ok:false,error:"A telephely nem tartozik a felhasználó tenantjához."});return}return{tenantId,locationId:requested}}
 async function tenantLocations(scope:Scope){if(scope.locationId)return[scope.locationId];const {rows}=await pool.query(`SELECT id::text FROM locations WHERE tenant_id=$1::uuid ORDER BY name`,[scope.tenantId]);return rows.map((r:any)=>String(r.id))}
 
-const profitabilityCte=`
-  WITH base AS (
-    SELECT w.id,w.location_id,w.employee_id,w.appointment_id,
-      COALESCE(NULLIF(to_jsonb(w)->>'total_amount','')::numeric,NULLIF(to_jsonb(w)->>'grand_total','')::numeric,NULLIF(to_jsonb(w)->>'total','')::numeric,
-        (SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'line_total','')::numeric,0)),0) FROM work_order_items i WHERE i.work_order_id=w.id),0)::numeric revenue
-    FROM work_orders w
-    WHERE w.tenant_id=$1::uuid AND w.created_at::date BETWEEN $2::date AND $3::date
-      AND ($4::uuid IS NULL OR w.location_id=$4::uuid)
-      AND lower(COALESCE(w.status,'')) NOT IN('waiting','arrived','in_progress','cancelled','no_show')
-  ), economics AS (
-    SELECT b.*,
-      COALESCE((SELECT SUM(CASE WHEN lower(COALESCE(i.item_type,''))='product' THEN COALESCE(NULLIF(to_jsonb(i)->>'cost_total','')::numeric,NULLIF(to_jsonb(i)->>'cost_price','')::numeric*COALESCE(NULLIF(to_jsonb(i)->>'quantity','')::numeric,1),0) ELSE 0 END) FROM work_order_items i WHERE i.work_order_id=b.id),0)::numeric material_cost,
-      COALESCE((SELECT SUM(COALESCE(NULLIF(to_jsonb(c)->>'amount','')::numeric,NULLIF(to_jsonb(c)->>'commission_amount','')::numeric,0)) FROM work_order_commission_events c WHERE c.work_order_id=b.id),0)::numeric commission_cost,
-      COALESCE(
-        GREATEST(0,EXTRACT(EPOCH FROM(a.end_time-a.start_time))/3600),
-        (SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'duration_minutes','')::numeric,0)),0)/60 FROM work_order_items i WHERE i.work_order_id=b.id),0
-      )::numeric work_hours,
-      COALESCE(
-        NULLIF(to_jsonb(ca)->>'hourly_rate','')::numeric,
-        NULLIF(to_jsonb(cp)->>'hourly_rate','')::numeric,
-        NULLIF(to_jsonb(e)->>'hourly_wage','')::numeric,
-        NULLIF(to_jsonb(p)->>'base_hourly_wage','')::numeric,
-        NULLIF(to_jsonb(ca)->>'monthly_base','')::numeric/174.0,
-        NULLIF(to_jsonb(cp)->>'monthly_base','')::numeric/174.0,
-        NULLIF(to_jsonb(e)->>'monthly_wage','')::numeric/174.0,
-        NULLIF(to_jsonb(p)->>'base_monthly_wage','')::numeric/174.0,
-        0
-      )::numeric labor_rate
-    FROM base b
-    LEFT JOIN appointments a ON a.id=b.appointment_id
-    LEFT JOIN employees e ON e.id=b.employee_id
-    LEFT JOIN hr_positions p ON p.id=e.position_id
-    LEFT JOIN LATERAL (
-      SELECT x.* FROM employee_compensation_assignments x
-      WHERE x.employee_id=b.employee_id AND x.is_active=true AND x.valid_from<=$3::date AND (x.valid_to IS NULL OR x.valid_to>=$2::date)
-      ORDER BY x.valid_from DESC LIMIT 1
-    ) ca ON true
-    LEFT JOIN compensation_plans cp ON cp.id=ca.compensation_plan_id
-  ), x AS (
-    SELECT economics.*,(work_hours*labor_rate)::numeric labor_cost,
-      (revenue-material_cost-commission_cost-(work_hours*labor_rate))::numeric contribution_margin
-    FROM economics
-  )`;
-
 router.get("/profitability",async(req:AuthRequest,res:Response)=>{try{
-  const scope=await resolveScope(req,res);if(!scope)return;const today=businessDate(),from=dateValue(req.query.from,today),to=dateValue(req.query.to,today);
-  const {rows}=await pool.query(`${profitabilityCte}
-    SELECT COALESCE(SUM(revenue),0)::numeric revenue,COALESCE(SUM(material_cost),0)::numeric material_cost,COALESCE(SUM(commission_cost),0)::numeric commission_cost,
-      COALESCE(SUM(labor_cost),0)::numeric labor_cost,COALESCE(SUM(contribution_margin),0)::numeric contribution_margin,
-      CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(contribution_margin)/SUM(revenue)*100,2) ELSE 0 END margin_percent,
-      COUNT(*)::int closed_workorders,COALESCE(SUM(work_hours),0)::numeric productive_hours
-    FROM x`,[scope.tenantId,from,to,scope.locationId]);
-  const byLocation=await pool.query(`${profitabilityCte}
-    SELECT x.location_id,l.name location_name,COALESCE(SUM(revenue),0)::numeric revenue,COALESCE(SUM(material_cost),0)::numeric material_cost,
-      COALESCE(SUM(commission_cost),0)::numeric commission_cost,COALESCE(SUM(labor_cost),0)::numeric labor_cost,
-      COALESCE(SUM(contribution_margin),0)::numeric contribution_margin,
-      CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(contribution_margin)/SUM(revenue)*100,2) ELSE 0 END margin_percent,
-      COUNT(*)::int closed_workorders,COALESCE(SUM(work_hours),0)::numeric productive_hours
-    FROM x LEFT JOIN locations l ON l.id=x.location_id GROUP BY x.location_id,l.name ORDER BY contribution_margin DESC`,[scope.tenantId,from,to,scope.locationId]);
-  return res.json({ok:true,from,to,summary:rows[0]||{},by_location:byLocation.rows,cost_model:{includes_material_cost:true,includes_commission_cost:true,includes_direct_labor:true,monthly_hours_standard:174,excludes_employer_contributions_and_overhead:true}});
+  const scope=await resolveScope(req,res);if(!scope)return;const today=businessDate(),from=dateValue(req.query.from,today),to=dateValue(req.query.to,today),targetMargin=Math.max(0,Math.min(100,Number(req.query.targetMargin||35)||35));
+  const ids=await tenantLocations(scope);const locationNames=new Map<string,string>();
+  if(ids.length){const {rows}=await pool.query(`SELECT id::text,name FROM locations WHERE tenant_id=$1::uuid AND id=ANY($2::uuid[])`,[scope.tenantId,ids]);for(const row of rows)locationNames.set(String(row.id),String(row.name||"Telephely"));}
+  const runs=await Promise.all(ids.map(async locationId=>({locationId,result:await profitEngine({locationId,from,to,targetMargin})})));
+  const summary={revenue:0,material_cost:0,labor_cost:0,commission_cost:0,gross_profit:0,margin_percent:0,below_target:0,missing_recipe:0};
+  const serviceMap=new Map<string,any>();
+  const by_location=runs.map(({locationId,result})=>{const s=result.summary as any;summary.revenue+=Number(s.revenue||0);summary.material_cost+=Number(s.material_cost||0);summary.labor_cost+=Number(s.labor_cost||0);summary.commission_cost+=Number(s.commission_cost||0);summary.gross_profit+=Number(s.gross_profit||0);summary.below_target+=Number(s.below_target||0);summary.missing_recipe+=Number(s.missing_recipe||0);
+    for(const row of result.services as any[]){const key=String(row.service_id),cur=serviceMap.get(key)||{service_id:key,service_name:row.service_name,revenue:0,material_cost:0,labor_cost:0,commission_cost:0,gross_profit:0,completed_lines:0,service_quantity:0,recipe_complete:true};for(const k of["revenue","material_cost","labor_cost","commission_cost","gross_profit","completed_lines","service_quantity"])cur[k]+=Number(row[k]||0);cur.recipe_complete=cur.recipe_complete&&Boolean(row.recipe_complete);serviceMap.set(key,cur);}
+    return{location_id:locationId,location_name:locationNames.get(locationId)||"Telephely",...s};});
+  summary.margin_percent=summary.revenue>0?Math.round(summary.gross_profit/summary.revenue*10000)/100:0;
+  const services=Array.from(serviceMap.values()).map((r:any)=>({...r,margin_percent:r.revenue>0?Math.round(r.gross_profit/r.revenue*10000)/100:0,profit_per_minute:null,below_target:r.revenue>0?r.gross_profit/r.revenue*100<targetMargin:false})).sort((a:any,b:any)=>b.gross_profit-a.gross_profit);
+  return res.json({ok:true,from,to,target_margin_percent:targetMargin,summary,by_location,services,cost_model:{canonical_engine:"VIR Wave II profitEngine",includes_material_cost:true,includes_direct_labor:true,includes_commission_cost:true,cost_basis:"current_recipe_and_stock_unit_cost",excludes_employer_contributions_and_overhead:true}});
 }catch(error:any){return res.status(500).json({ok:false,error:error?.message||"vir_profitability_failed"})}});
 
 router.get("/capacity",async(req:AuthRequest,res:Response)=>{try{
   const scope=await resolveScope(req,res);if(!scope)return;const horizon=Math.max(1,Math.min(31,Number(req.query.horizonDays||7)||7));const ids=await tenantLocations(scope);const gaps:any[]=[];
   for(const locationId of ids){const localGaps=await findCalendarGaps(locationId,horizon);const matches=await matchWaitlist(locationId,localGaps);for(const gap of localGaps){const match=matches.find((m:any)=>m.employee_id===gap.employee_id&&m.gap_start===gap.start);gaps.push({...gap,waitlist_match:match||null});}}
+  gaps.sort((a,b)=>Number(b.estimated_value||0)-Number(a.estimated_value||0));
   const summary={gaps:gaps.length,gap_minutes:gaps.reduce((s,x)=>s+Number(x.minutes||0),0),estimated_open_capacity_value:gaps.reduce((s,x)=>s+Number(x.estimated_value||0),0),matched_gaps:gaps.filter(x=>x.waitlist_match).length};
   return res.json({ok:true,horizon_days:horizon,summary,gaps:gaps.slice(0,160)});
 }catch(error:any){return res.status(500).json({ok:false,error:error?.message||"vir_capacity_failed"})}});
