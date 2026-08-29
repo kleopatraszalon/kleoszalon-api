@@ -12,12 +12,13 @@ test("VIR intelligence router is authenticated, management-only and mounted",()=
 
 test("VIR intelligence is tenant-scoped and validates requested location",()=>{
  const source=read("src/routes/virIntelligence.ts");
- for(const marker of ["req.user?.tenant_id","locations WHERE id=$1::uuid AND tenant_id=$2::uuid","work_orders w","w.tenant_id=$1::uuid"])assert.ok(source.includes(marker),`missing ${marker}`);
+ for(const marker of ["req.user?.tenant_id","locations WHERE id=$1::uuid AND tenant_id=$2::uuid","tenantLocations(scope)"])assert.ok(source.includes(marker),`missing ${marker}`);
 });
 
-test("profitability engine includes revenue, material, commission and direct labor economics",()=>{
- const source=read("src/routes/virIntelligence.ts");
- for(const marker of ["material_cost","commission_cost","labor_cost","contribution_margin","employee_compensation_assignments","hourly_wage","base_hourly_wage","monthly_hours_standard:174"])assert.ok(source.includes(marker),`missing ${marker}`);
+test("profitability intelligence reuses canonical Wave II profit engine and tenant aggregates it",()=>{
+ const source=read("src/routes/virIntelligence.ts"),wave2=read("src/services/virWave2Engine.ts");
+ for(const marker of ["profitEngine","canonical_engine","material_cost","labor_cost","commission_cost","gross_profit","margin_percent","by_location","services"])assert.ok(source.includes(marker),`missing ${marker}`);
+ for(const marker of ["service_material_requirements","hourly_wage","commission_percent","profit_per_minute"])assert.ok(wave2.includes(marker),`Wave II missing ${marker}`);
 });
 
 test("capacity optimizer reuses governed Wave1 gap and waitlist engines",()=>{
