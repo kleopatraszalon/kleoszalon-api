@@ -13,37 +13,66 @@ function dateValue(v:unknown,fallback:string){const s=String(v||"");return /^\d{
 async function resolveScope(req:AuthRequest,res:Response):Promise<Scope|undefined>{const tenantId=String(req.user?.tenant_id||"").trim();if(!tenantId){res.status(403).json({ok:false,error:"A felhasználóhoz nincs tenant rendelve."});return}const requested=String(req.query.locationId||req.query.location_id||"").trim();if(!requested)return{tenantId,locationId:null};const {rows}=await pool.query(`SELECT id::text FROM locations WHERE id=$1::uuid AND tenant_id=$2::uuid LIMIT 1`,[requested,tenantId]);if(!rows[0]){res.status(403).json({ok:false,error:"A telephely nem tartozik a felhasználó tenantjához."});return}return{tenantId,locationId:requested}}
 async function tenantLocations(scope:Scope){if(scope.locationId)return[scope.locationId];const {rows}=await pool.query(`SELECT id::text FROM locations WHERE tenant_id=$1::uuid ORDER BY name`,[scope.tenantId]);return rows.map((r:any)=>String(r.id))}
 
+const profitabilityCte=`
+  WITH base AS (
+    SELECT w.id,w.location_id,w.employee_id,w.appointment_id,
+      COALESCE(NULLIF(to_jsonb(w)->>'total_amount','')::numeric,NULLIF(to_jsonb(w)->>'grand_total','')::numeric,NULLIF(to_jsonb(w)->>'total','')::numeric,
+        (SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'line_total','')::numeric,0)),0) FROM work_order_items i WHERE i.work_order_id=w.id),0)::numeric revenue
+    FROM work_orders w
+    WHERE w.tenant_id=$1::uuid AND w.created_at::date BETWEEN $2::date AND $3::date
+      AND ($4::uuid IS NULL OR w.location_id=$4::uuid)
+      AND lower(COALESCE(w.status,'')) NOT IN('waiting','arrived','in_progress','cancelled','no_show')
+  ), economics AS (
+    SELECT b.*,
+      COALESCE((SELECT SUM(CASE WHEN lower(COALESCE(i.item_type,''))='product' THEN COALESCE(NULLIF(to_jsonb(i)->>'cost_total','')::numeric,NULLIF(to_jsonb(i)->>'cost_price','')::numeric*COALESCE(NULLIF(to_jsonb(i)->>'quantity','')::numeric,1),0) ELSE 0 END) FROM work_order_items i WHERE i.work_order_id=b.id),0)::numeric material_cost,
+      COALESCE((SELECT SUM(COALESCE(NULLIF(to_jsonb(c)->>'amount','')::numeric,NULLIF(to_jsonb(c)->>'commission_amount','')::numeric,0)) FROM work_order_commission_events c WHERE c.work_order_id=b.id),0)::numeric commission_cost,
+      COALESCE(
+        GREATEST(0,EXTRACT(EPOCH FROM(a.end_time-a.start_time))/3600),
+        (SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'duration_minutes','')::numeric,0)),0)/60 FROM work_order_items i WHERE i.work_order_id=b.id),0
+      )::numeric work_hours,
+      COALESCE(
+        NULLIF(to_jsonb(ca)->>'hourly_rate','')::numeric,
+        NULLIF(to_jsonb(cp)->>'hourly_rate','')::numeric,
+        NULLIF(to_jsonb(e)->>'hourly_wage','')::numeric,
+        NULLIF(to_jsonb(p)->>'base_hourly_wage','')::numeric,
+        NULLIF(to_jsonb(ca)->>'monthly_base','')::numeric/174.0,
+        NULLIF(to_jsonb(cp)->>'monthly_base','')::numeric/174.0,
+        NULLIF(to_jsonb(e)->>'monthly_wage','')::numeric/174.0,
+        NULLIF(to_jsonb(p)->>'base_monthly_wage','')::numeric/174.0,
+        0
+      )::numeric labor_rate
+    FROM base b
+    LEFT JOIN appointments a ON a.id=b.appointment_id
+    LEFT JOIN employees e ON e.id=b.employee_id
+    LEFT JOIN hr_positions p ON p.id=e.position_id
+    LEFT JOIN LATERAL (
+      SELECT x.* FROM employee_compensation_assignments x
+      WHERE x.employee_id=b.employee_id AND x.is_active=true AND x.valid_from<=$3::date AND (x.valid_to IS NULL OR x.valid_to>=$2::date)
+      ORDER BY x.valid_from DESC LIMIT 1
+    ) ca ON true
+    LEFT JOIN compensation_plans cp ON cp.id=ca.compensation_plan_id
+  ), x AS (
+    SELECT economics.*,(work_hours*labor_rate)::numeric labor_cost,
+      (revenue-material_cost-commission_cost-(work_hours*labor_rate))::numeric contribution_margin
+    FROM economics
+  )`;
+
 router.get("/profitability",async(req:AuthRequest,res:Response)=>{try{
   const scope=await resolveScope(req,res);if(!scope)return;const today=businessDate(),from=dateValue(req.query.from,today),to=dateValue(req.query.to,today);
-  const {rows}=await pool.query(`
-    WITH base AS (
-      SELECT w.id,w.location_id,w.employee_id,
-        COALESCE(NULLIF(to_jsonb(w)->>'total_amount','')::numeric,NULLIF(to_jsonb(w)->>'grand_total','')::numeric,NULLIF(to_jsonb(w)->>'total','')::numeric,
-          (SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'line_total','')::numeric,0)),0) FROM work_order_items i WHERE i.work_order_id=w.id),0)::numeric revenue
-      FROM work_orders w
-      WHERE w.tenant_id=$1::uuid AND w.created_at::date BETWEEN $2::date AND $3::date
-        AND ($4::uuid IS NULL OR w.location_id=$4::uuid)
-        AND lower(COALESCE(w.status,'')) NOT IN('waiting','arrived','in_progress','cancelled','no_show')
-    ), costs AS (
-      SELECT b.id,
-        COALESCE((SELECT SUM(CASE WHEN lower(COALESCE(i.item_type,''))='product' THEN COALESCE(NULLIF(to_jsonb(i)->>'cost_total','')::numeric,NULLIF(to_jsonb(i)->>'cost_price','')::numeric*COALESCE(NULLIF(to_jsonb(i)->>'quantity','')::numeric,1),0) ELSE 0 END) FROM work_order_items i WHERE i.work_order_id=b.id),0)::numeric material_cost,
-        COALESCE((SELECT SUM(COALESCE(NULLIF(to_jsonb(c)->>'amount','')::numeric,NULLIF(to_jsonb(c)->>'commission_amount','')::numeric,0)) FROM work_order_commission_events c WHERE c.work_order_id=b.id),0)::numeric commission_cost
-      FROM base b
-    ), x AS (SELECT b.*,c.material_cost,c.commission_cost,(b.revenue-c.material_cost-c.commission_cost)::numeric contribution_margin FROM base b JOIN costs c ON c.id=b.id)
+  const {rows}=await pool.query(`${profitabilityCte}
     SELECT COALESCE(SUM(revenue),0)::numeric revenue,COALESCE(SUM(material_cost),0)::numeric material_cost,COALESCE(SUM(commission_cost),0)::numeric commission_cost,
-      COALESCE(SUM(contribution_margin),0)::numeric contribution_margin,CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(contribution_margin)/SUM(revenue)*100,2) ELSE 0 END margin_percent,COUNT(*)::int closed_workorders
+      COALESCE(SUM(labor_cost),0)::numeric labor_cost,COALESCE(SUM(contribution_margin),0)::numeric contribution_margin,
+      CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(contribution_margin)/SUM(revenue)*100,2) ELSE 0 END margin_percent,
+      COUNT(*)::int closed_workorders,COALESCE(SUM(work_hours),0)::numeric productive_hours
     FROM x`,[scope.tenantId,from,to,scope.locationId]);
-  const byLocation=await pool.query(`
-    WITH base AS (
-      SELECT w.id,w.location_id,COALESCE(NULLIF(to_jsonb(w)->>'total_amount','')::numeric,NULLIF(to_jsonb(w)->>'grand_total','')::numeric,NULLIF(to_jsonb(w)->>'total','')::numeric,(SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(i)->>'line_total','')::numeric,0)),0) FROM work_order_items i WHERE i.work_order_id=w.id),0)::numeric revenue
-      FROM work_orders w WHERE w.tenant_id=$1::uuid AND w.created_at::date BETWEEN $2::date AND $3::date AND ($4::uuid IS NULL OR w.location_id=$4::uuid) AND lower(COALESCE(w.status,'')) NOT IN('waiting','arrived','in_progress','cancelled','no_show')
-    ), x AS (
-      SELECT b.*,COALESCE((SELECT SUM(CASE WHEN lower(COALESCE(i.item_type,''))='product' THEN COALESCE(NULLIF(to_jsonb(i)->>'cost_total','')::numeric,NULLIF(to_jsonb(i)->>'cost_price','')::numeric*COALESCE(NULLIF(to_jsonb(i)->>'quantity','')::numeric,1),0) ELSE 0 END) FROM work_order_items i WHERE i.work_order_id=b.id),0)::numeric material_cost,
-      COALESCE((SELECT SUM(COALESCE(NULLIF(to_jsonb(c)->>'amount','')::numeric,NULLIF(to_jsonb(c)->>'commission_amount','')::numeric,0)) FROM work_order_commission_events c WHERE c.work_order_id=b.id),0)::numeric commission_cost FROM base b)
-    SELECT x.location_id,l.name location_name,COALESCE(SUM(revenue),0)::numeric revenue,COALESCE(SUM(material_cost),0)::numeric material_cost,COALESCE(SUM(commission_cost),0)::numeric commission_cost,
-      COALESCE(SUM(revenue-material_cost-commission_cost),0)::numeric contribution_margin,CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(revenue-material_cost-commission_cost)/SUM(revenue)*100,2) ELSE 0 END margin_percent,COUNT(*)::int closed_workorders
+  const byLocation=await pool.query(`${profitabilityCte}
+    SELECT x.location_id,l.name location_name,COALESCE(SUM(revenue),0)::numeric revenue,COALESCE(SUM(material_cost),0)::numeric material_cost,
+      COALESCE(SUM(commission_cost),0)::numeric commission_cost,COALESCE(SUM(labor_cost),0)::numeric labor_cost,
+      COALESCE(SUM(contribution_margin),0)::numeric contribution_margin,
+      CASE WHEN COALESCE(SUM(revenue),0)>0 THEN ROUND(SUM(contribution_margin)/SUM(revenue)*100,2) ELSE 0 END margin_percent,
+      COUNT(*)::int closed_workorders,COALESCE(SUM(work_hours),0)::numeric productive_hours
     FROM x LEFT JOIN locations l ON l.id=x.location_id GROUP BY x.location_id,l.name ORDER BY contribution_margin DESC`,[scope.tenantId,from,to,scope.locationId]);
-  return res.json({ok:true,from,to,summary:rows[0]||{},by_location:byLocation.rows,cost_model:{includes_material_cost:true,includes_commission_cost:true,wage_allocation:"next_phase"}});
+  return res.json({ok:true,from,to,summary:rows[0]||{},by_location:byLocation.rows,cost_model:{includes_material_cost:true,includes_commission_cost:true,includes_direct_labor:true,monthly_hours_standard:174,excludes_employer_contributions_and_overhead:true}});
 }catch(error:any){return res.status(500).json({ok:false,error:error?.message||"vir_profitability_failed"})}});
 
 router.get("/capacity",async(req:AuthRequest,res:Response)=>{try{
