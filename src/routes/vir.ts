@@ -11,6 +11,7 @@ import migrationCenterRouter from "./migrationCenter";
 import virManagementRouter from "./virManagement";
 import virIntelligenceRouter from "./virIntelligence";
 import virP1Router from "./virP1";
+import virP2Router from "./virP2";
 
 const router = Router();
 // A helyi OTIC és locker bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
@@ -20,6 +21,7 @@ router.use(requireAuth);
 router.use("/management", virManagementRouter);
 router.use("/intelligence", virIntelligenceRouter);
 router.use("/p1", virP1Router);
+router.use("/p2", virP2Router);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
 router.use("/device-control", deviceBridgeResultRouter);
@@ -85,199 +87,29 @@ router.get("/dashboard", async (req: AuthRequest, res: Response) => {
     const today = new Date();
     const defaultTo = today.toISOString().slice(0, 10);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
     const from = parseDateInput(query.from, monthStart);
     const to = parseDateInput(query.to, defaultTo);
     const locationId = getScopedLocationId(req, res);
     if (locationId === undefined) return;
-
-    const { rows } = await pool.query(
-      `SELECT * FROM public.vir_dashboard_summary($1::date, $2::date, $3::uuid)`,
-      [from, to, locationId]
-    );
-
-    return res.json({
-      ok: true,
-      summary: rows[0] || {
-        revenue_total: 0,
-        paid_total: 0,
-        appointments_count: 0,
-        completed_count: 0,
-        cancelled_count: 0,
-        no_show_count: 0,
-        avg_basket: 0,
-        cancellation_rate_percent: 0,
-        no_show_rate_percent: 0,
-      },
-    });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
+    const { rows } = await pool.query(`SELECT * FROM public.vir_dashboard_summary($1::date, $2::date, $3::uuid)`,[from, to, locationId]);
+    return res.json({ok:true,summary:rows[0]||{revenue_total:0,paid_total:0,appointments_count:0,completed_count:0,cancelled_count:0,no_show_count:0,avg_basket:0,cancellation_rate_percent:0,no_show_rate_percent:0}});
+  } catch (error) { return res.status(500).json({ ok: false, error: toErrorMessage(error) }); }
 });
 
 router.get("/revenue-series", async (req: AuthRequest, res: Response) => {
-  try {
-    const query = (req.query || {}) as VirQueryParams;
-    const today = new Date();
-    const defaultTo = today.toISOString().slice(0, 10);
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
-    const from = parseDateInput(query.from, monthStart);
-    const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
-
-    const { rows } = await pool.query(
-      `SELECT * FROM public.vir_revenue_series($1::date, $2::date, $3::uuid) ORDER BY day`,
-      [from, to, locationId]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
+  try { const query=(req.query||{}) as VirQueryParams;const today=new Date();const defaultTo=today.toISOString().slice(0,10);const monthStart=new Date(today.getFullYear(),today.getMonth(),1).toISOString().slice(0,10);const from=parseDateInput(query.from,monthStart),to=parseDateInput(query.to,defaultTo),locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT * FROM public.vir_revenue_series($1::date, $2::date, $3::uuid) ORDER BY day`,[from,to,locationId]);return res.json({ok:true,rows}); } catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}
 });
 
-router.get("/top-services", async (req: AuthRequest, res: Response) => {
-  try {
-    const query = (req.query || {}) as VirQueryParams;
-    const limit = parseLimit(query.limit, 10, 50);
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
+router.get("/top-services", async (req: AuthRequest, res: Response) => {try{const query=(req.query||{}) as VirQueryParams;const limit=parseLimit(query.limit,10,50),locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT s.id AS service_id,s.name AS service_name,COUNT(DISTINCT a.id)::int AS bookings_count,COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total FROM appointment_services aps JOIN appointments a ON a.id=aps.appointment_id JOIN services s ON s.id=aps.service_id WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid) GROUP BY s.id,s.name ORDER BY revenue_total DESC,bookings_count DESC,s.name LIMIT $2::integer`,[locationId,limit]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
-    const { rows } = await pool.query(
-      `SELECT
-         s.id AS service_id,
-         s.name AS service_name,
-         COUNT(DISTINCT a.id)::int AS bookings_count,
-         COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total
-       FROM appointment_services aps
-       JOIN appointments a ON a.id=aps.appointment_id
-       JOIN services s ON s.id=aps.service_id
-       WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid)
-       GROUP BY s.id,s.name
-       ORDER BY revenue_total DESC,bookings_count DESC,s.name
-       LIMIT $2::integer`,
-      [locationId, limit]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
+router.get("/top-staff", async (req: AuthRequest, res: Response) => {try{const query=(req.query||{}) as VirQueryParams;const limit=parseLimit(query.limit,10,50),locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT e.id AS employee_id,e.full_name,e.short_name,COUNT(DISTINCT a.id)::int AS appointments_count,COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total FROM appointments a JOIN employees e ON e.id=a.employee_id LEFT JOIN appointment_services aps ON aps.appointment_id=a.id WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid) GROUP BY e.id,e.full_name,e.short_name ORDER BY revenue_total DESC,appointments_count DESC,e.full_name LIMIT $2::integer`,[locationId,limit]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
-router.get("/top-staff", async (req: AuthRequest, res: Response) => {
-  try {
-    const query = (req.query || {}) as VirQueryParams;
-    const limit = parseLimit(query.limit, 10, 50);
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
+router.get("/source-performance", async (req: AuthRequest, res: Response) => {try{const locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT source_channel, location_id, appointments_count, completed_count, cancelled_count, no_show_count, revenue_total, paid_total FROM public.vw_vir_source_performance WHERE ($1::uuid IS NULL OR location_id = $1::uuid) ORDER BY revenue_total DESC NULLS LAST, appointments_count DESC`,[locationId]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
-    const { rows } = await pool.query(
-      `SELECT
-         e.id AS employee_id,
-         e.full_name,
-         e.short_name,
-         COUNT(DISTINCT a.id)::int AS appointments_count,
-         COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric(14,2) AS revenue_total
-       FROM appointments a
-       JOIN employees e ON e.id=a.employee_id
-       LEFT JOIN appointment_services aps ON aps.appointment_id=a.id
-       WHERE ($1::uuid IS NULL OR a.location_id=$1::uuid)
-       GROUP BY e.id,e.full_name,e.short_name
-       ORDER BY revenue_total DESC,appointments_count DESC,e.full_name
-       LIMIT $2::integer`,
-      [locationId, limit]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
+router.get("/cancellation-stats", async (req: AuthRequest, res: Response) => {try{const query=(req.query||{}) as VirQueryParams;const today=new Date();const defaultTo=today.toISOString().slice(0,10),monthStart=new Date(today.getFullYear(),today.getMonth(),1).toISOString().slice(0,10),from=parseDateInput(query.from,monthStart),to=parseDateInput(query.to,defaultTo),locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT day, location_id, total_appointments, cancelled_count, no_show_count, cancellation_rate_percent, no_show_rate_percent FROM public.vw_vir_cancellation_stats WHERE day BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR location_id = $3::uuid) ORDER BY day`,[from,to,locationId]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
-router.get("/source-performance", async (req: AuthRequest, res: Response) => {
-  try {
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
-    const { rows } = await pool.query(
-      `SELECT source_channel, location_id, appointments_count, completed_count, cancelled_count, no_show_count, revenue_total, paid_total
-       FROM public.vw_vir_source_performance
-       WHERE ($1::uuid IS NULL OR location_id = $1::uuid)
-       ORDER BY revenue_total DESC NULLS LAST, appointments_count DESC`,
-      [locationId]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
+router.get("/kiosk-conversion", async (req: AuthRequest, res: Response) => {try{const query=(req.query||{}) as VirQueryParams;const today=new Date();const defaultTo=today.toISOString().slice(0,10),monthStart=new Date(today.getFullYear(),today.getMonth(),1).toISOString().slice(0,10),from=parseDateInput(query.from,monthStart),to=parseDateInput(query.to,defaultTo),locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT day, location_id, kiosk_appointments, kiosk_completed, kiosk_revenue FROM public.vw_vir_kiosk_conversion WHERE day BETWEEN $1::date AND $2::date AND ($3::uuid IS NULL OR location_id = $3::uuid) ORDER BY day`,[from,to,locationId]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
-router.get("/cancellation-stats", async (req: AuthRequest, res: Response) => {
-  try {
-    const query = (req.query || {}) as VirQueryParams;
-    const today = new Date();
-    const defaultTo = today.toISOString().slice(0, 10);
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
-    const from = parseDateInput(query.from, monthStart);
-    const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
-
-    const { rows } = await pool.query(
-      `SELECT day, location_id, total_appointments, cancelled_count, no_show_count, cancellation_rate_percent, no_show_rate_percent
-       FROM public.vw_vir_cancellation_stats
-       WHERE day BETWEEN $1::date AND $2::date
-         AND ($3::uuid IS NULL OR location_id = $3::uuid)
-       ORDER BY day`,
-      [from, to, locationId]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
-
-router.get("/kiosk-conversion", async (req: AuthRequest, res: Response) => {
-  try {
-    const query = (req.query || {}) as VirQueryParams;
-    const today = new Date();
-    const defaultTo = today.toISOString().slice(0, 10);
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-
-    const from = parseDateInput(query.from, monthStart);
-    const to = parseDateInput(query.to, defaultTo);
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
-
-    const { rows } = await pool.query(
-      `SELECT day, location_id, kiosk_appointments, kiosk_completed, kiosk_revenue
-       FROM public.vw_vir_kiosk_conversion
-       WHERE day BETWEEN $1::date AND $2::date
-         AND ($3::uuid IS NULL OR location_id = $3::uuid)
-       ORDER BY day`,
-      [from, to, locationId]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
-
-router.get("/signage-impact", async (req: AuthRequest, res: Response) => {
-  try {
-    const locationId = getScopedLocationId(req, res);
-    if (locationId === undefined) return;
-    const { rows } = await pool.query(
-      `SELECT deal_id, title, location_id, active_from, active_to, appointments_during_campaign, revenue_during_campaign
-       FROM public.vw_vir_signage_campaign_impact
-       WHERE ($1::uuid IS NULL OR location_id = $1::uuid OR location_id IS NULL)
-       ORDER BY active_from DESC, revenue_during_campaign DESC NULLS LAST`,
-      [locationId]
-    );
-    return res.json({ ok: true, rows });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: toErrorMessage(error) });
-  }
-});
+router.get("/signage-impact", async (req: AuthRequest, res: Response) => {try{const locationId=getScopedLocationId(req,res);if(locationId===undefined)return;const{rows}=await pool.query(`SELECT deal_id, title, location_id, active_from, active_to, appointments_during_campaign, revenue_during_campaign FROM public.vw_vir_signage_campaign_impact WHERE ($1::uuid IS NULL OR location_id = $1::uuid OR location_id IS NULL) ORDER BY active_from DESC, revenue_during_campaign DESC NULLS LAST`,[locationId]);return res.json({ok:true,rows});}catch(error){return res.status(500).json({ok:false,error:toErrorMessage(error)});}});
 
 export default router;
