@@ -1,0 +1,5 @@
+const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');
+const route=fs.readFileSync('src/routes/virRevenueLeakage.ts','utf8');const vir=fs.readFileSync('src/routes/vir.ts','utf8');
+test('revenue leakage is management protected and mounted',()=>{assert.match(route,/router\.use\(requireManagement\)/);assert.match(vir,/\/p3\/revenue-leakage/);assert.match(route,/tenant_id=\$1::uuid/);assert.match(route,/tenant_id=\$2::uuid/)});
+test('detector covers evidence based leakage classes',()=>{for(const key of ['COMPLETED_UNPAID','ZERO_VALUE_COMPLETED','HEADER_ITEM_MISMATCH','COMPLETED_WITHOUT_ITEMS','APPOINTMENT_WITHOUT_WORKORDER'])assert.match(route,new RegExp(key));assert.match(route,/evidence_based_revenue_leakage_v1/);assert.match(route,/write_mode:\"read_only\"/)});
+test('detector uses canonical work order and appointment data',()=>{assert.match(route,/work_orders/);assert.match(route,/work_order_items/);assert.match(route,/appointments/);assert.match(route,/appointment_services/);assert.match(route,/payment_status/);assert.match(route,/amount_due/)});
