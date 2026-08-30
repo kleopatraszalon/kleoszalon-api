@@ -5,9 +5,11 @@ import { ensureProductTaxonomyReady } from "../inventory/ensureProductTaxonomy";
 import { hasAnyRole } from "../security/roles";
 import inventoryOperationsRouter from "./inventoryOperations";
 import inventoryLotsRouter from "./inventoryLots";
+import inventoryConsistencyRouter from "./inventoryConsistency";
 
 const router = Router();
 router.use(requireFeature("inventory"));
+router.use("/ops", inventoryConsistencyRouter);
 router.use("/ops", inventoryLotsRouter);
 router.use("/ops", inventoryOperationsRouter);
 
