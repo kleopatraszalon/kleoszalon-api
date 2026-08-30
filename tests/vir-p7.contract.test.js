@@ -1,0 +1,11 @@
+const fs=require('fs');const assert=require('assert');
+const p7=fs.readFileSync('src/routes/virP7.ts','utf8');const vir=fs.readFileSync('src/routes/vir.ts','utf8');const bridge=fs.readFileSync('src/routes/virP6Binding.ts','utf8');
+assert(p7.includes('router.use(requireManagement)'),'P7 management guard missing');
+for(const e of ['/revenue-protection','/membership-revenue','/communications','/offline-snapshot','/open-api/capabilities','/open-api/webhooks','/execute/preview','/execute/:id/approve','/execute/:id/run','/execute/:id/rollback'])assert(p7.includes(e),`missing ${e}`);
+assert(p7.includes('dynamicDepositDecision')&&p7.includes('calculateClientNoShowRisk'),'P7 must reuse no-show/deposit engine');
+assert(p7.includes('automatic_charge:false')&&p7.includes('automatic_enrollment:false')&&p7.includes('automatic_send:false'),'autonomy boundaries missing');
+assert(p7.includes('vir_webhook_subscriptions')&&p7.includes('secret_hash'),'webhook registry/signing missing');
+assert(p7.includes("status='approved'")&&p7.includes("status='rolled_back'"),'approval/rollback lifecycle missing');
+assert(bridge.includes('/integration-status')&&bridge.includes('/booking-handoff')&&bridge.includes('vir_guest_action_queue'),'P6 audited handoff missing');
+assert(vir.includes('router.use("/p7", virP7Router)'),'P7 mount missing');
+console.log('VIR P7 commercial reliability contract: PASS');
