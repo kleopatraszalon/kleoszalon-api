@@ -1,0 +1,16 @@
+const fs=require('fs');
+const assert=require('assert');
+const route=fs.readFileSync('src/routes/virP4.ts','utf8');
+const vir=fs.readFileSync('src/routes/vir.ts','utf8');
+assert(route.includes('router.use(requireManagement)'),'P4 must be management-only');
+assert(route.includes('/workforce-optimizer'),'workforce optimizer route missing');
+assert(route.includes('tenant_id=$2::uuid')||route.includes('tenant_id=$3::uuid'),'tenant scope missing');
+assert(route.includes('work_shifts'),'published shifts must drive scheduled capacity');
+assert(route.includes("status='published'"),'only published shifts may count');
+assert(route.includes('employee_service_overrides'),'skill matrix must be reused');
+assert(route.includes('historical_daily_minutes'),'historical demand baseline missing');
+assert(route.includes('forecast_capacity_workforce_optimizer_v1'),'model label missing');
+assert(route.includes('automatic_scheduling:false'),'optimizer must not schedule autonomously');
+assert(route.includes('decision_support_only:true'),'decision-support boundary missing');
+assert(vir.includes('router.use("/p4", virP4Router)'),'P4 router mount missing');
+console.log('VIR P4 workforce optimizer contract: PASS');
