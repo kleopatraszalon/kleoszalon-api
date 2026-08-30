@@ -28,6 +28,9 @@ const DEFAULT_BROWSER_ORIGINS = [
   "http://127.0.0.1:3001",
   "http://127.0.0.1:5173",
 ];
+const SESSION_MAX_AGE_MINUTES = Math.max(15, Number(process.env.SESSION_MAX_AGE_MINUTES || 240));
+const PRIVILEGED_SESSION_MAX_AGE_MINUTES = Math.max(15, Number(process.env.PRIVILEGED_SESSION_MAX_AGE_MINUTES || 120));
+const PRIVILEGED_ROLES = new Set(["admin", "administrator", "superadmin", "super_admin", "manager", "vezető", "vezeto", "hr", "hr_manager", "accounting", "bookkeeper", "könyvelés", "konyveles"]);
 
 function normalizeOrigin(value: unknown): string {
   return String(value ?? "").trim().replace(/^["']|["']$/g, "").replace(/\/$/, "");
@@ -72,20 +75,14 @@ export function browserCookieMutationAllowed(req: Request): boolean {
   const fetchSite = String(req.headers["sec-fetch-site"] ?? "").trim().toLowerCase();
   const origin = normalizeOrigin(req.headers.origin);
 
-  // Chromium reports requests between the frontend and API Render hosts as
-  // cross-site. A concrete allowlisted Origin is therefore checked before the
-  // generic Sec-Fetch-Site fallback and remains fail-closed for unknown origins.
   if (origin) return trustedBrowserOrigins().has(origin);
-
   if (fetchSite === "cross-site") return false;
   return fetchSite === "same-origin";
 }
 
 /**
- * Authentication tokens are accepted only from transport locations that are
- * intended for credentials: the Authorization header or the HttpOnly cookie.
- * Query-string/body tokens are deliberately rejected because URLs and request
- * bodies can be copied into browser history, proxy/access logs and diagnostics.
+ * Authentication tokens are accepted only from the Authorization header or the HttpOnly cookie.
+ * Query-string/body tokens are deliberately rejected because URLs and request bodies can leak into logs/history.
  */
 function getTokenFromReq(req: Request): string | null {
   const authHeader =
@@ -95,17 +92,42 @@ function getTokenFromReq(req: Request): string | null {
   if (authHeader && /^Bearer\s*/i.test(authHeader)) {
     const bearerToken = authHeader.replace(/^Bearer\s*/i, "").trim();
     if (bearerToken) return bearerToken;
-    // Legacy browser pages can still emit an empty `Authorization: Bearer `
-    // header. Do not let that obsolete empty value shadow a valid HttpOnly
-    // session cookie; simply continue to the cookie transport below.
   }
 
   const cookieToken = (req as any).cookies?.token;
-  if (typeof cookieToken === "string" && cookieToken.trim()) {
-    return cookieToken.trim();
-  }
-
+  if (typeof cookieToken === "string" && cookieToken.trim()) return cookieToken.trim();
   return null;
+}
+
+function roleKeys(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String).map(x => x.trim().toLowerCase()).filter(Boolean);
+  const value = String(raw ?? "").trim();
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map(String).map(x => x.trim().toLowerCase()).filter(Boolean);
+  } catch {}
+  return value.split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+}
+
+function effectiveMaxSessionAgeMinutes(decoded: any): number {
+  if (decoded?.uat === true || decoded?.uat_scope) return 15;
+  const privileged = roleKeys(decoded?.role).some(role => PRIVILEGED_ROLES.has(role));
+  return privileged ? PRIVILEGED_SESSION_MAX_AGE_MINUTES : SESSION_MAX_AGE_MINUTES;
+}
+
+function enforceTokenAge(decoded: any, res: Response): boolean {
+  const issuedAtSeconds = Number(decoded?.iat || 0);
+  if (!Number.isFinite(issuedAtSeconds) || issuedAtSeconds <= 0) return true;
+  const maxAgeMinutes = effectiveMaxSessionAgeMinutes(decoded);
+  const ageMs = Date.now() - issuedAtSeconds * 1000;
+  if (ageMs <= maxAgeMinutes * 60_000) return true;
+  clearBrowserAuthCookie(res);
+  res.status(401).json({
+    error: "A biztonsági munkamenet lejárt. Kérjük, jelentkezz be újra.",
+    code: "SESSION_MAX_AGE_EXCEEDED",
+  });
+  return false;
 }
 
 function navTestUatPathAllowed(req:Request){
@@ -118,9 +140,7 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   const token = getTokenFromReq(req);
 
   if (!token) {
-    return res.status(401).json({
-      error: "Nincs belépés. Kérjük, jelentkezz be újra.",
-    });
+    return res.status(401).json({ error: "Nincs belépés. Kérjük, jelentkezz be újra." });
   }
 
   if (!browserCookieMutationAllowed(req)) {
@@ -131,15 +151,12 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }) as any;
+    if (!enforceTokenAge(decoded, res)) return;
     const decodedId = decoded.id ?? decoded.userId;
     const previousUser = req.user;
     const sameAuthenticatedUser = previousUser?.id != null && decodedId != null && String(previousUser.id) === String(decodedId);
 
-    // Scoped middleware can enrich req.user with a tenant resolved and validated
-    // against the database before an inner router applies requireAuth again. When
-    // the same verified user is authenticated twice in one request, that trusted
-    // in-request tenant/location context is more current than a legacy or stale JWT.
     const preservedTenantId = sameAuthenticatedUser ? previousUser?.tenant_id ?? null : null;
     const preservedLocationId = sameAuthenticatedUser ? previousUser?.location_id ?? null : null;
     const preservedEmployeeId = sameAuthenticatedUser ? previousUser?.employee_id ?? null : null;
@@ -169,16 +186,12 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
 
     if (err.name === "TokenExpiredError") {
       clearBrowserAuthCookie(res);
-      return res.status(401).json({
-        error: "A munkamenet lejárt. Kérjük, jelentkezz be újra.",
-      });
+      return res.status(401).json({ error: "A munkamenet lejárt. Kérjük, jelentkezz be újra." });
     }
 
     if (["JsonWebTokenError", "NotBeforeError"].includes(String(err?.name || ""))) {
       clearBrowserAuthCookie(res);
-      return res.status(401).json({
-        error: "Érvénytelen token. Kérjük, jelentkezz be újra.",
-      });
+      return res.status(401).json({ error: "Érvénytelen token. Kérjük, jelentkezz be újra." });
     }
 
     return next(err);
