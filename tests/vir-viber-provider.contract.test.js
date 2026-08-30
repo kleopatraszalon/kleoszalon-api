@@ -1,26 +1,29 @@
 const fs=require('fs');
+const test=require('node:test');
+const assert=require('node:assert/strict');
 const route=fs.readFileSync('src/routes/virP7.ts','utf8');
 const provider=fs.readFileSync('src/services/virMessagingProviders.ts','utf8');
 
-describe('VIR Viber provider contract',()=>{
-  test('exposes Viber and Messenger capability state',()=>{
-    expect(provider).toContain('VIBER_BOT_TOKEN');
-    expect(provider).toContain('MESSENGER_PAGE_ACCESS_TOKEN');
-    expect(route).toContain('virMessagingProviderCapabilities');
-  });
-  test('Viber send uses official Chat API endpoint and token header',()=>{
-    expect(provider).toContain('https://chatapi.viber.com/pa/send_message');
-    expect(provider).toContain('X-Viber-Auth-Token');
-    expect(provider).toContain('receiver');
-  });
-  test('Viber execution remains approval gated',()=>{
-    expect(route).toContain("status='approved'");
-    expect(route).toContain("channel==='viber'");
-    expect(route).toContain('sendViberText');
-    expect(route).toContain("status='sent'");
-  });
-  test('documents Viber subscriber-id addressing boundary',()=>{
-    expect(route).toContain("recipient_identifier:'subscriber_id'");
-    expect(route).toContain('phone_number_send_supported:false');
-  });
+test('VIR exposes Viber and Messenger capability state',()=>{
+  assert.match(provider,/VIBER_BOT_TOKEN/);
+  assert.match(provider,/MESSENGER_PAGE_ACCESS_TOKEN/);
+  assert.match(route,/virMessagingProviderCapabilities/);
+});
+
+test('Viber send uses official Chat API endpoint and token header',()=>{
+  assert.match(provider,/https:\/\/chatapi\.viber\.com\/pa\/send_message/);
+  assert.match(provider,/X-Viber-Auth-Token/);
+  assert.match(provider,/receiver/);
+});
+
+test('Viber execution remains approval gated',()=>{
+  assert.match(route,/status='approved'/);
+  assert.match(route,/channel==='viber'/);
+  assert.match(route,/sendViberText/);
+  assert.match(route,/status='sent'/);
+});
+
+test('Viber addressing boundary uses subscriber id, not phone number',()=>{
+  assert.match(route,/recipient_identifier:'subscriber_id'/);
+  assert.match(route,/phone_number_send_supported:false/);
 });
