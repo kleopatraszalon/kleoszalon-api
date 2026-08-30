@@ -30,7 +30,11 @@ test('security hardening includes progressive brute-force blocking', () => {
   assert.match(source, /BRUTE_THRESHOLD = 5/);
   assert.match(source, /BRUTE_BLOCK_STEPS_MS/);
   assert.match(source, /AUTH_TEMPORARILY_BLOCKED/);
-  assert.match(source, /res\.statusCode !== 401 && res\.statusCode !== 403/);
+  assert.ok(
+    /res\.statusCode !== 401 && res\.statusCode !== 403/.test(source) ||
+    /res\.statusCode === 401 \|\| res\.statusCode === 403/.test(source),
+    '401/403 authentication failures must feed progressive brute-force blocking',
+  );
 });
 
 test('cloudflare token remains status-only', () => {

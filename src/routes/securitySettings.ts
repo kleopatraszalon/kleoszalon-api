@@ -1,7 +1,11 @@
+import crypto from "crypto";
+import jwt from "jsonwebtoken";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import db from "../db";
+import JWT_SECRET from "../security/jwtSecret";
 import { requireAdmin } from "../middleware/requireRoles";
 import type { AuthRequest } from "../middleware/auth";
+import { writeSystemAudit } from "../audit/systemAudit";
 
 type PolicyName = "login" | "booking" | "api";
 type Policy = { enabled: boolean; max: number; windowMs: number };
@@ -20,6 +24,8 @@ const DEFAULTS: SecurityConfig = {
 const BRUTE_FAILURE_WINDOW_MS = 30 * 60_000;
 const BRUTE_BLOCK_STEPS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
 const BRUTE_THRESHOLD = 5;
+const SESSION_TOUCH_MS = 5 * 60_000;
+const REVOCATION_REFRESH_MS = 30_000;
 
 let config: SecurityConfig = structuredClone(DEFAULTS);
 let updatedAt: string | null = null;
@@ -27,6 +33,9 @@ let updatedBy: string | null = null;
 let loadPromise: Promise<void> | null = null;
 const buckets = new Map<string, Bucket>();
 const bruteStates = new Map<string, BruteState>();
+const sessionTouchedAt = new Map<string, number>();
+let revokedTokenHashes = new Set<string>();
+let revokedLoadedAt = 0;
 let lastPruneAt = 0;
 
 function cloneConfig(value: SecurityConfig): SecurityConfig {
@@ -61,7 +70,22 @@ async function ensureStorage() {
       config jsonb NOT NULL DEFAULT '{}'::jsonb,
       updated_at timestamptz NOT NULL DEFAULT now(),
       updated_by text
-    )
+    );
+    CREATE TABLE IF NOT EXISTS security_sessions (
+      token_hash text PRIMARY KEY,
+      user_id text,
+      email text,
+      role_text text,
+      first_seen_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now(),
+      ip_address text,
+      user_agent text,
+      revoked_at timestamptz,
+      revoked_by text
+    );
+    CREATE INDEX IF NOT EXISTS security_sessions_last_seen_idx ON security_sessions(last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS security_sessions_user_idx ON security_sessions(user_id,last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS security_sessions_revoked_idx ON security_sessions(revoked_at) WHERE revoked_at IS NOT NULL;
   `);
 }
 
@@ -91,8 +115,6 @@ function header(req: Request, name: string): string | null {
 }
 
 function requestIp(req: Request): string {
-  // With app.set('trust proxy', 1), req.ip is Render's trusted client-hop result.
-  // CF-Connecting-IP is diagnostic only here; it is not blindly trusted as the primary key.
   return String(req.ip || req.socket?.remoteAddress || "unknown");
 }
 
@@ -123,6 +145,7 @@ function prune(now: number) {
   for (const [key, state] of bruteStates) {
     if (state.blockedUntil <= now && now - state.lastFailureAt > BRUTE_FAILURE_WINDOW_MS) bruteStates.delete(key);
   }
+  for (const [key, touchedAt] of sessionTouchedAt) if (now - touchedAt > 24 * 60 * 60_000) sessionTouchedAt.delete(key);
 }
 
 function securityHeaders(_req: Request, res: Response, next: NextFunction) {
@@ -138,6 +161,36 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction) {
   }
   res.removeHeader("X-Powered-By");
   next();
+}
+
+function payloadGuard(req: Request, res: Response, next: NextFunction) {
+  if (req.body == null || typeof req.body !== "object") return next();
+  let nodes = 0;
+  let invalid = "";
+  const dangerousKeys = new Set(["__proto__", "prototype", "constructor"]);
+  const visit = (value: unknown, depth: number) => {
+    if (invalid) return;
+    nodes += 1;
+    if (nodes > 20_000) { invalid = "A kérés túl összetett."; return; }
+    if (depth > 12) { invalid = "A kérés beágyazási mélysége túl nagy."; return; }
+    if (typeof value === "string") {
+      if (value.includes("\u0000")) invalid = "A kérés tiltott vezérlőkaraktert tartalmaz.";
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        if (dangerousKeys.has(key)) { invalid = "A kérés tiltott objektumkulcsot tartalmaz."; return; }
+        visit(item, depth + 1);
+      }
+    }
+  };
+  visit(req.body, 0);
+  if (!invalid) return next();
+  return res.status(400).json({ error: invalid, code: "INVALID_INPUT_STRUCTURE" });
 }
 
 function loginIdentifier(req: Request): string {
@@ -173,17 +226,24 @@ function bruteForceProtection(req: Request, res: Response, next: NextFunction) {
   }
 
   res.once("finish", () => {
-    // Successful auth clears the progressive failure state. 401/403 count as credential/access failures.
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      bruteStates.delete(key);
-      return;
+    const success = res.statusCode >= 200 && res.statusCode < 300;
+    if (success) bruteStates.delete(key);
+    else if (res.statusCode === 401 || res.statusCode === 403) {
+      const current = bruteStates.get(key);
+      const stale = !current || now - current.lastFailureAt > BRUTE_FAILURE_WINDOW_MS;
+      const failures = (stale ? 0 : current.failures) + 1;
+      const blockedUntil = failures >= BRUTE_THRESHOLD ? Date.now() + blockDurationForFailures(failures) : 0;
+      bruteStates.set(key, { failures, blockedUntil, lastFailureAt: Date.now() });
     }
-    if (res.statusCode !== 401 && res.statusCode !== 403) return;
-    const current = bruteStates.get(key);
-    const stale = !current || now - current.lastFailureAt > BRUTE_FAILURE_WINDOW_MS;
-    const failures = (stale ? 0 : current.failures) + 1;
-    const blockedUntil = failures >= BRUTE_THRESHOLD ? Date.now() + blockDurationForFailures(failures) : 0;
-    bruteStates.set(key, { failures, blockedUntil, lastFailureAt: Date.now() });
+    void writeSystemAudit(req as AuthRequest, {
+      moduleKey: "security.auth",
+      entityType: "login",
+      entityId: loginIdentifier(req) || null,
+      action: success ? "login_success" : "login_failed",
+      severity: success ? "info" : "warning",
+      summary: success ? "Sikeres bejelentkezés." : "Sikertelen bejelentkezési kísérlet.",
+      metadata: { status_code: res.statusCode },
+    });
   });
   next();
 }
@@ -218,11 +278,73 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   });
 }
 
-// This router is mounted first inside authRoutes, and authRoutes itself is mounted at /api.
-// Therefore these middleware functions protect every API request that subsequently falls through to other routers.
+function requestToken(req: Request): string {
+  const authorization = String(req.headers.authorization || "").trim();
+  if (/^Bearer\s+/i.test(authorization)) return authorization.replace(/^Bearer\s+/i, "").trim();
+  return String((req as any).cookies?.token || "").trim();
+}
+
+function tokenHash(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+async function refreshRevocations(force = false) {
+  const now = Date.now();
+  if (!force && now - revokedLoadedAt < REVOCATION_REFRESH_MS) return;
+  revokedLoadedAt = now;
+  try {
+    await ensureStorage();
+    const { rows } = await db.query("SELECT token_hash FROM security_sessions WHERE revoked_at IS NOT NULL");
+    revokedTokenHashes = new Set(rows.map((row: any) => String(row.token_hash)));
+  } catch (error: any) {
+    console.warn("[security-sessions] revocation refresh skipped:", error?.message || error);
+  }
+}
+
+function sessionGuard(req: Request, res: Response, next: NextFunction) {
+  const token = requestToken(req);
+  if (!token) return next();
+  let claims: any;
+  try {
+    claims = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return next();
+  }
+  const hash = tokenHash(token);
+  void refreshRevocations();
+  if (revokedTokenHashes.has(hash)) {
+    res.clearCookie("token", { path: "/" });
+    return res.status(401).json({ error: "A munkamenet visszavonásra került.", code: "SESSION_REVOKED" });
+  }
+  const now = Date.now();
+  const lastTouch = sessionTouchedAt.get(hash) || 0;
+  if (now - lastTouch >= SESSION_TOUCH_MS) {
+    sessionTouchedAt.set(hash, now);
+    void ensureStorage().then(() => db.query(
+      `INSERT INTO security_sessions(token_hash,user_id,email,role_text,first_seen_at,last_seen_at,ip_address,user_agent)
+       VALUES($1,$2,$3,$4,now(),now(),$5,$6)
+       ON CONFLICT(token_hash) DO UPDATE SET
+         user_id=EXCLUDED.user_id,email=EXCLUDED.email,role_text=EXCLUDED.role_text,
+         last_seen_at=now(),ip_address=EXCLUDED.ip_address,user_agent=EXCLUDED.user_agent`,
+      [
+        hash,
+        claims?.id == null ? null : String(claims.id),
+        claims?.email == null ? null : String(claims.email),
+        claims?.role == null ? null : JSON.stringify(claims.role),
+        requestIp(req),
+        String(req.headers["user-agent"] || "").slice(0, 500) || null,
+      ],
+    )).catch((error: any) => console.warn("[security-sessions] touch failed:", error?.message || error));
+  }
+  next();
+}
+
+// authRoutes is mounted first at /api, so these middleware functions protect API traffic that later falls through to other routers.
 router.use(securityHeaders);
+router.use(payloadGuard);
 router.use(bruteForceProtection);
 router.use(rateLimit);
+router.use(sessionGuard);
 
 function actor(req: AuthRequest): string {
   return String((req.user as any)?.id || (req.user as any)?.email || "admin");
@@ -230,6 +352,7 @@ function actor(req: AuthRequest): string {
 
 router.get("/admin/security-settings", requireAdmin, async (req: AuthRequest, res: Response) => {
   await loadStoredConfig();
+  await refreshRevocations();
   const xff = header(req, "x-forwarded-for");
   const cfConnectingIp = header(req, "cf-connecting-ip");
   const cfRay = header(req, "cf-ray");
@@ -241,10 +364,14 @@ router.get("/admin/security-settings", requireAdmin, async (req: AuthRequest, re
     hardening: {
       security_headers: true,
       hsts_in_production: true,
+      payload_structure_guard: true,
       brute_force_protection: true,
       brute_force_threshold: BRUTE_THRESHOLD,
       progressive_blocks_seconds: BRUTE_BLOCK_STEPS_MS.map(ms => ms / 1000),
       currently_blocked_login_keys: blockedLogins,
+      session_inventory: true,
+      remote_session_revocation: true,
+      revoked_session_count: revokedTokenHashes.size,
     },
     persistence: {
       type: "postgres",
@@ -271,6 +398,49 @@ router.get("/admin/security-settings", requireAdmin, async (req: AuthRequest, re
   });
 });
 
+router.get("/admin/security-sessions", requireAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    await ensureStorage();
+    const { rows } = await db.query(`
+      SELECT token_hash,user_id,email,role_text,first_seen_at,last_seen_at,ip_address,user_agent,revoked_at,revoked_by
+      FROM security_sessions
+      WHERE last_seen_at > now() - interval '30 days'
+      ORDER BY last_seen_at DESC
+      LIMIT 500
+    `);
+    return res.json({ sessions: rows });
+  } catch (error: any) {
+    return res.status(500).json({ error: "A munkamenetek nem tölthetők be.", detail: error?.message || String(error) });
+  }
+});
+
+router.post("/admin/security-sessions/:tokenHash/revoke", requireAdmin, async (req: AuthRequest, res: Response) => {
+  const hash = String(req.params.tokenHash || "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return res.status(400).json({ error: "Érvénytelen munkamenet-azonosító." });
+  try {
+    await ensureStorage();
+    const by = actor(req);
+    const result = await db.query(
+      "UPDATE security_sessions SET revoked_at=COALESCE(revoked_at,now()),revoked_by=$2 WHERE token_hash=$1 RETURNING token_hash,user_id,email,revoked_at",
+      [hash, by],
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: "A munkamenet nem található." });
+    revokedTokenHashes.add(hash);
+    await writeSystemAudit(req, {
+      moduleKey: "security.sessions",
+      entityType: "session",
+      entityId: hash.slice(0, 16),
+      action: "session_revoked",
+      severity: "warning",
+      summary: "Adminisztrátor távolról visszavont egy munkamenetet.",
+      metadata: { user_id: result.rows[0].user_id, email: result.rows[0].email },
+    });
+    return res.json({ ok: true, session: result.rows[0] });
+  } catch (error: any) {
+    return res.status(500).json({ error: "A munkamenet visszavonása sikertelen.", detail: error?.message || String(error) });
+  }
+});
+
 router.put("/admin/security-settings", requireAdmin, async (req: AuthRequest, res: Response) => {
   const nextConfig = normalizeConfig(req.body?.policies || req.body || {});
   const by = actor(req);
@@ -287,6 +457,15 @@ router.put("/admin/security-settings", requireAdmin, async (req: AuthRequest, re
     buckets.clear();
     updatedAt = rows[0]?.updated_at ? new Date(rows[0].updated_at).toISOString() : new Date().toISOString();
     updatedBy = rows[0]?.updated_by ?? by;
+    await writeSystemAudit(req, {
+      moduleKey: "security.settings",
+      entityType: "runtime_policy",
+      entityId: "1",
+      action: "security_policy_updated",
+      severity: "warning",
+      summary: "Biztonsági rate-limit szabályok módosítva.",
+      after: nextConfig,
+    });
     return res.json({ ok: true, policies: cloneConfig(config), updated_at: updatedAt, updated_by: updatedBy });
   } catch (error: any) {
     console.error("[security-settings] save failed:", error?.message || error);
