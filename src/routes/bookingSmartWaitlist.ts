@@ -1,20 +1,24 @@
 import { Router } from "express";
 import crypto from "crypto";
 import db from "../db";
-import { AuthRequest } from "../middleware/auth";
+import { requireAuth, AuthRequest } from "../middleware/auth";
 import { ensureBookingWorkOrder, ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 import { queueAppointmentCommunications } from "../booking/communications";
 import { sendEmail } from "../mailer";
 import { sendSms } from "../sms";
 
 const router = Router();
+router.use(requireAuth);
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const WAITLIST_STATUSES = new Set(["waiting", "contacted", "booked", "cancelled"]);
-const OFFER_STATUSES = new Set(["pending", "accepted", "declined", "expired", "cancelled"]);
+const ACTIVE_APPOINTMENT_STATUSES = ["waiting", "pending", "booked", "confirmed", "arrived", "in_progress", "paid"];
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 const actor = (req: AuthRequest) => req.user?.email || String(req.user?.id || "unknown");
 
-async function ensureSmartWaitlistSchema(cx: any = db) {
+let smartWaitlistSchemaReady: Promise<void> | null = null;
+
+async function applySmartWaitlistSchema(cx: any = db) {
   await cx.query(`
     CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -26,6 +30,10 @@ async function ensureSmartWaitlistSchema(cx: any = db) {
       ADD COLUMN IF NOT EXISTS offer_count integer NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS booked_appointment_id uuid,
       ADD COLUMN IF NOT EXISTS smart_note text;
+
+    ALTER TABLE employee_service_overrides
+      ADD COLUMN IF NOT EXISTS can_perform boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS qualification_valid_until date;
 
     CREATE INDEX IF NOT EXISTS booking_waitlist_smart_match_idx
       ON booking_waitlist(location_id,status,preferred_employee_id,preferred_from,preferred_to,created_at);
@@ -72,6 +80,7 @@ async function ensureSmartWaitlistSchema(cx: any = db) {
     CREATE UNIQUE INDEX IF NOT EXISTS smart_waitlist_offer_token_uq ON smart_waitlist_offers(token);
     CREATE UNIQUE INDEX IF NOT EXISTS smart_waitlist_offer_pair_uq ON smart_waitlist_offers(vacancy_id,waitlist_id);
     CREATE INDEX IF NOT EXISTS smart_waitlist_offer_pending_idx ON smart_waitlist_offers(vacancy_id,status,expires_at);
+    CREATE INDEX IF NOT EXISTS smart_waitlist_offer_waitlist_pending_idx ON smart_waitlist_offers(waitlist_id,status,expires_at);
 
     CREATE OR REPLACE FUNCTION kleo_capture_smart_waitlist_vacancy()
     RETURNS trigger LANGUAGE plpgsql AS $$
@@ -85,7 +94,7 @@ async function ensureSmartWaitlistSchema(cx: any = db) {
           source_appointment_id,location_id,employee_id,start_time,end_time,service_ids,status
         ) VALUES(
           NEW.id,NEW.location_id,NEW.employee_id,NEW.start_time,NEW.end_time,COALESCE(ids,'{}'::uuid[]),
-          CASE WHEN NEW.end_time <= now() THEN 'expired' ELSE 'open' END
+          CASE WHEN NEW.start_time <= now() THEN 'expired' ELSE 'open' END
         )
         ON CONFLICT(source_appointment_id) WHERE source_appointment_id IS NOT NULL
         DO UPDATE SET
@@ -94,7 +103,7 @@ async function ensureSmartWaitlistSchema(cx: any = db) {
           start_time=EXCLUDED.start_time,
           end_time=EXCLUDED.end_time,
           service_ids=EXCLUDED.service_ids,
-          status=CASE WHEN EXCLUDED.end_time <= now() THEN 'expired' ELSE 'open' END,
+          status=CASE WHEN EXCLUDED.start_time <= now() THEN 'expired' ELSE 'open' END,
           updated_at=now();
       END IF;
       RETURN NEW;
@@ -107,26 +116,46 @@ async function ensureSmartWaitlistSchema(cx: any = db) {
   `);
 }
 
+export function ensureSmartWaitlistSchema(cx: any = db) {
+  if (cx !== db) return applySmartWaitlistSchema(cx);
+  if (!smartWaitlistSchemaReady) {
+    smartWaitlistSchemaReady = applySmartWaitlistSchema(db).catch((error) => {
+      smartWaitlistSchemaReady = null;
+      throw error;
+    });
+  }
+  return smartWaitlistSchemaReady;
+}
+
 async function expireStale(cx: any = db) {
   await cx.query(`UPDATE smart_waitlist_offers
-    SET status='expired',responded_at=now()
-    WHERE status='pending' AND expires_at<=now()`);
-  await cx.query(`UPDATE smart_waitlist_vacancies
-    SET status='expired',updated_at=now()
-    WHERE status IN ('open','offered') AND end_time<=now()`);
+    SET status='expired',responded_at=COALESCE(responded_at,now())
+    WHERE status='pending' AND (expires_at<=now() OR EXISTS (
+      SELECT 1 FROM smart_waitlist_vacancies v WHERE v.id=smart_waitlist_offers.vacancy_id AND v.start_time<=now()
+    ))`);
   await cx.query(`UPDATE booking_waitlist w
     SET status='waiting',updated_at=now()
     WHERE w.status='contacted'
+      AND w.booked_appointment_id IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM smart_waitlist_offers o
         WHERE o.waitlist_id=w.id AND o.status='pending' AND o.expires_at>now()
-      )
-      AND w.booked_appointment_id IS NULL`);
+      )`);
+  await cx.query(`UPDATE smart_waitlist_vacancies v
+    SET status='open',updated_at=now()
+    WHERE v.status='offered' AND v.start_time>now()
+      AND NOT EXISTS (
+        SELECT 1 FROM smart_waitlist_offers o
+        WHERE o.vacancy_id=v.id AND o.status='pending' AND o.expires_at>now()
+      )`);
+  await cx.query(`UPDATE smart_waitlist_vacancies
+    SET status='expired',updated_at=now()
+    WHERE status IN ('open','offered') AND start_time<=now()`);
 }
 
 async function getVacancy(vacancyId: string, cx: any = db, lock = false) {
   if (!UUID_RE.test(vacancyId)) return null;
-  const suffix = lock ? " FOR UPDATE" : "";
+  const suffix = lock ? " FOR UPDATE OF v" : "";
   const { rows } = await cx.query(`SELECT v.*,
       COALESCE(e.full_name,e.name,'') employee_name,
       COALESCE(l.name,'') location_name,
@@ -138,9 +167,11 @@ async function getVacancy(vacancyId: string, cx: any = db, lock = false) {
   return rows[0] || null;
 }
 
-async function candidateRows(vacancyId: string, cx: any = db) {
+export async function candidateRows(vacancyId: string, cx: any = db) {
   const vacancy = await getVacancy(vacancyId, cx, false);
-  if (!vacancy || !["open", "offered"].includes(String(vacancy.status))) return { vacancy, candidates: [] as any[] };
+  if (!vacancy || !["open", "offered"].includes(String(vacancy.status)) || new Date(vacancy.start_time) <= new Date()) {
+    return { vacancy, candidates: [] as any[] };
+  }
 
   const { rows } = await cx.query(`
     SELECT w.*,
@@ -161,6 +192,14 @@ async function candidateRows(vacancyId: string, cx: any = db) {
       AND (w.preferred_to IS NULL OR w.preferred_to>=$5::timestamptz)
       AND COALESCE(sr.duration_minutes,0) <= $6::numeric
       AND (w.accept_short_notice=true OR $4::timestamptz >= now()+interval '24 hours')
+      AND NOT EXISTS (
+        SELECT 1 FROM smart_waitlist_offers prior
+        WHERE prior.vacancy_id=$7::uuid AND prior.waitlist_id=w.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM smart_waitlist_offers active_offer
+        WHERE active_offer.waitlist_id=w.id AND active_offer.status='pending' AND active_offer.expires_at>now()
+      )
     ORDER BY w.created_at ASC`, [
       vacancy.location_id,
       vacancy.service_ids || [],
@@ -168,6 +207,7 @@ async function candidateRows(vacancyId: string, cx: any = db) {
       vacancy.start_time,
       vacancy.end_time,
       Number(vacancy.duration_minutes || 0),
+      vacancy.id,
     ]);
 
   const startMs = new Date(vacancy.start_time).getTime();
@@ -214,9 +254,36 @@ async function detectComplexSource(cx: any, sourceAppointmentId: string | null) 
   return false;
 }
 
+async function hasSecondaryStaffConflict(cx: any, employeeId: string, start: string, end: string) {
+  const exists = (await cx.query(`SELECT to_regclass('public.appointment_staff_assignments') IS NOT NULL ok`)).rows[0]?.ok;
+  if (!exists) return false;
+  const conflict = await cx.query(`SELECT asa.id
+    FROM appointment_staff_assignments asa
+    JOIN appointments a ON a.id=asa.appointment_id
+    WHERE asa.employee_id=$1::uuid
+      AND a.status=ANY($4::text[])
+      AND asa.start_time<$3::timestamptz
+      AND asa.end_time>$2::timestamptz
+    LIMIT 1`, [employeeId, start, end, ACTIVE_APPOINTMENT_STATUSES]);
+  return Boolean(conflict.rowCount);
+}
+
+async function lockAvailableWaitlistCandidate(cx: any, candidateId: string) {
+  const locked = await cx.query(`SELECT id,status,booked_appointment_id
+    FROM booking_waitlist WHERE id=$1::uuid FOR UPDATE`, [candidateId]);
+  const item = locked.rows[0];
+  if (!item || item.status !== "waiting" || item.booked_appointment_id) return false;
+  const active = await cx.query(`SELECT id FROM smart_waitlist_offers
+    WHERE waitlist_id=$1::uuid AND status='pending' AND expires_at>now() LIMIT 1`, [candidateId]);
+  return !active.rowCount;
+}
+
 router.use(async (_req, _res, next) => {
-  try { await ensureSmartWaitlistSchema(); await expireStale(); next(); }
-  catch (error) { next(error); }
+  try {
+    await ensureSmartWaitlistSchema();
+    await expireStale();
+    next();
+  } catch (error) { next(error); }
 });
 
 router.get("/overview", async (req, res) => {
@@ -237,7 +304,7 @@ router.get("/overview", async (req, res) => {
       LEFT JOIN employees e ON e.id=v.employee_id
       LEFT JOIN locations l ON l.id=v.location_id
       WHERE ($1::uuid IS NULL OR v.location_id=$1::uuid)
-        AND v.status IN ('open','offered') AND v.end_time>now()
+        AND v.status IN ('open','offered') AND v.start_time>now()
       ORDER BY v.start_time`, [locationParam]);
 
     const enriched: any[] = [];
@@ -342,7 +409,7 @@ router.post("/vacancies/from-appointment/:appointmentId", async (req, res) => {
     if (!a) return res.status(404).json({ error: "Az időpont nem található." });
     if (!["cancelled", "canceled"].includes(String(a.status || "").toLowerCase())) return res.status(409).json({ error: "Csak lemondott időpontból képezhető várólistás kapacitás." });
     const result = await db.query(`INSERT INTO smart_waitlist_vacancies(source_appointment_id,location_id,employee_id,start_time,end_time,service_ids,status)
-      VALUES($1::uuid,$2::uuid,$3::uuid,$4::timestamptz,$5::timestamptz,$6::uuid[],CASE WHEN $5::timestamptz<=now() THEN 'expired' ELSE 'open' END)
+      VALUES($1::uuid,$2::uuid,$3::uuid,$4::timestamptz,$5::timestamptz,$6::uuid[],CASE WHEN $4::timestamptz<=now() THEN 'expired' ELSE 'open' END)
       ON CONFLICT(source_appointment_id) WHERE source_appointment_id IS NOT NULL
       DO UPDATE SET location_id=EXCLUDED.location_id,employee_id=EXCLUDED.employee_id,start_time=EXCLUDED.start_time,end_time=EXCLUDED.end_time,service_ids=EXCLUDED.service_ids,status=EXCLUDED.status,updated_at=now()
       RETURNING *`, [a.id,a.location_id,a.employee_id,a.start_time,a.end_time,a.service_ids]);
@@ -368,15 +435,24 @@ router.post("/vacancies/:id/offer", async (req: AuthRequest, res) => {
     await cx.query("BEGIN");
     const vacancy = await getVacancy(String(req.params.id), cx, true);
     if (!vacancy) { await cx.query("ROLLBACK"); return res.status(404).json({ error: "A felszabadult időpont nem található." }); }
-    if (!["open", "offered"].includes(String(vacancy.status)) || new Date(vacancy.end_time) <= new Date()) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "Ez a kapacitás már nem ajánlható fel." }); }
+    const vacancyStart = new Date(vacancy.start_time);
+    if (!["open", "offered"].includes(String(vacancy.status)) || vacancyStart <= new Date()) {
+      await cx.query("ROLLBACK");
+      return res.status(409).json({ error: "Ez a kapacitás már nem ajánlható fel." });
+    }
     const active = await cx.query(`SELECT id FROM smart_waitlist_offers WHERE vacancy_id=$1::uuid AND status='pending' AND expires_at>now() LIMIT 1`, [vacancy.id]);
     if (active.rowCount) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "Ehhez az időponthoz már fut aktív ajánlat." }); }
     const ranked = await candidateRows(String(vacancy.id), cx);
     const requestedId = String(req.body?.waitlist_id || "").trim();
     const candidate = requestedId ? ranked.candidates.find((x: any) => String(x.id) === requestedId) : ranked.candidates[0];
     if (!candidate) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "Nincs kompatibilis várólistás vendég ehhez az időponthoz." }); }
+    if (!(await lockAvailableWaitlistCandidate(cx, String(candidate.id)))) {
+      await cx.query("ROLLBACK");
+      return res.status(409).json({ error: "A kiválasztott vendéghez már fut másik ajánlat vagy a várólista-állapota megváltozott." });
+    }
     const expiresMinutes = clamp(Math.floor(Number(req.body?.expires_minutes || 15)), 5, 120);
-    const expiresAt = new Date(Date.now() + expiresMinutes * 60_000);
+    const expiresAt = new Date(Math.min(Date.now() + expiresMinutes * 60_000, vacancyStart.getTime()));
+    if (expiresAt <= new Date()) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A felszabadult időpont már elkezdődött." }); }
     const channel = String(req.body?.channel || (candidate.phone ? "sms" : "email")).toLowerCase();
     const offer = await cx.query(`INSERT INTO smart_waitlist_offers(vacancy_id,waitlist_id,score,score_breakdown,expires_at,notification_channel,notification_status,created_by)
       VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5::timestamptz,$6,'queued',$7) RETURNING *`, [
@@ -389,8 +465,9 @@ router.post("/vacancies/:id/offer", async (req: AuthRequest, res) => {
     let notificationStatus = "skipped";
     let notificationError: string | null = null;
     if (req.body?.send_notification !== false) {
-      const when = new Intl.DateTimeFormat("hu-HU", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Budapest" }).format(new Date(vacancy.start_time));
-      const text = `Kedves ${candidate.client_name}! Felszabadult egy időpont a Kleopátra Szalonban: ${when}, ${vacancy.location_name || "szalon"}, ${candidate.service_names || "kért szolgáltatás"}. Az ajánlat ${expiresMinutes} percig él. Kérjük, jelezzen vissza a szalonnak.`;
+      const when = new Intl.DateTimeFormat("hu-HU", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Budapest" }).format(vacancyStart);
+      const actualMinutes = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60_000));
+      const text = `Kedves ${candidate.client_name}! Felszabadult egy időpont a Kleopátra Szalonban: ${when}, ${vacancy.location_name || "szalon"}, ${candidate.service_names || "kért szolgáltatás"}. Az ajánlat ${actualMinutes} percig él. Kérjük, jelezzen vissza a szalonnak.`;
       try {
         if (channel === "sms" && candidate.phone) await sendSms({ to: candidate.phone, text });
         else if (candidate.email) await sendEmail({ to: candidate.email, subject: "Kleopátra Szalon – felszabadult időpont", text });
@@ -409,16 +486,16 @@ router.post("/vacancies/:id/offer", async (req: AuthRequest, res) => {
   } finally { cx.release(); }
 });
 
-router.post("/offers/:id/decline", async (_req, res) => {
+router.post("/offers/:id/decline", async (req, res) => {
   const cx = await db.connect();
   try {
-    if (!UUID_RE.test(_req.params.id)) return res.status(400).json({ error: "Érvénytelen ajánlatazonosító." });
+    if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: "Érvénytelen ajánlatazonosító." });
     await cx.query("BEGIN");
-    const { rows } = await cx.query(`UPDATE smart_waitlist_offers SET status='declined',responded_at=now() WHERE id=$1::uuid AND status='pending' RETURNING *`, [_req.params.id]);
+    const { rows } = await cx.query(`UPDATE smart_waitlist_offers SET status='declined',responded_at=now() WHERE id=$1::uuid AND status='pending' RETURNING *`, [req.params.id]);
     const offer = rows[0];
     if (!offer) { await cx.query("ROLLBACK"); return res.status(404).json({ error: "Aktív ajánlat nem található." }); }
     await cx.query(`UPDATE booking_waitlist SET status='waiting',updated_at=now() WHERE id=$1::uuid AND booked_appointment_id IS NULL`, [offer.waitlist_id]);
-    await cx.query(`UPDATE smart_waitlist_vacancies SET status='open',updated_at=now() WHERE id=$1::uuid AND status='offered'`, [offer.vacancy_id]);
+    await cx.query(`UPDATE smart_waitlist_vacancies SET status=CASE WHEN start_time>now() THEN 'open' ELSE 'expired' END,updated_at=now() WHERE id=$1::uuid AND status='offered'`, [offer.vacancy_id]);
     await cx.query("COMMIT");
     res.json({ ok: true, offer });
   } catch (error: any) {
@@ -442,9 +519,19 @@ router.post("/offers/:id/book", async (req: AuthRequest, res) => {
       WHERE o.id=$1::uuid FOR UPDATE OF o,w,v`, [req.params.id]);
     const item = offerQ.rows[0];
     if (!item) { await cx.query("ROLLBACK"); return res.status(404).json({ error: "Az ajánlat nem található." }); }
-    if (!OFFER_STATUSES.has(String(item.status)) || !["pending", "accepted"].includes(String(item.status))) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "Ez az ajánlat már nem foglalható." }); }
-    if (new Date(item.expires_at) <= new Date()) { await cx.query(`UPDATE smart_waitlist_offers SET status='expired',responded_at=now() WHERE id=$1::uuid`, [item.id]); await cx.query("COMMIT"); return res.status(409).json({ error: "Az ajánlat lejárt." }); }
-    if (new Date(item.end_time) <= new Date()) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A felszabadult időpont már elmúlt." }); }
+    if (String(item.status) !== "pending" || item.booked_appointment_id || String(item.vacancy_status) !== "offered") {
+      await cx.query("ROLLBACK");
+      return res.status(409).json({ error: "Ez az ajánlat már nem foglalható vagy már foglalásba lett emelve." });
+    }
+    const now = new Date();
+    if (new Date(item.expires_at) <= now) {
+      await cx.query(`UPDATE smart_waitlist_offers SET status='expired',responded_at=COALESCE(responded_at,now()) WHERE id=$1::uuid AND status='pending'`, [item.id]);
+      await cx.query(`UPDATE booking_waitlist SET status='waiting',updated_at=now() WHERE id=$1::uuid AND booked_appointment_id IS NULL`, [item.waitlist_id]);
+      await cx.query(`UPDATE smart_waitlist_vacancies SET status=CASE WHEN start_time>now() THEN 'open' ELSE 'expired' END,updated_at=now() WHERE id=$1::uuid AND status='offered'`, [item.vacancy_id]);
+      await cx.query("COMMIT");
+      return res.status(409).json({ error: "Az ajánlat lejárt." });
+    }
+    if (new Date(item.start_time) <= now) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A felszabadult időpont már elkezdődött." }); }
     if (await detectComplexSource(cx, item.source_appointment_id)) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "Ez komplex/több erőforrásos foglalás volt; biztonsági okból kézi újrafoglalás szükséges." }); }
 
     const employeeId = String(item.preferred_employee_id || item.employee_id || "");
@@ -464,16 +551,24 @@ router.post("/offers/:id/book", async (req: AuthRequest, res) => {
         NOT EXISTS (SELECT 1 FROM employee_service_overrides eo0 WHERE eo0.employee_id=e.id)
         OR NOT EXISTS (
           SELECT 1 FROM unnest($3::uuid[]) sid(service_id)
-          WHERE NOT EXISTS (SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id=e.id AND eo.service_id=sid.service_id)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM employee_service_overrides eo
+            WHERE eo.employee_id=e.id
+              AND eo.service_id=sid.service_id
+              AND COALESCE(eo.can_perform,true)=true
+              AND (eo.qualification_valid_until IS NULL OR eo.qualification_valid_until>=CURRENT_DATE)
+          )
         )
       ) LIMIT 1`, [employeeId,item.location_id,item.service_ids]);
-    if (!employeeCheck.rows[0]) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A munkatárs nem végez minden kért szolgáltatást." }); }
+    if (!employeeCheck.rows[0]) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A munkatárs nem végez minden kért szolgáltatást vagy a képesítése lejárt." }); }
 
-    const conflict = await cx.query(`SELECT id FROM appointments WHERE employee_id=$1::uuid AND status NOT IN ('cancelled','canceled','no_show')
-      AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`, [employeeId,start.toISOString(),end.toISOString()]);
+    const conflict = await cx.query(`SELECT id FROM appointments WHERE employee_id=$1::uuid
+      AND status=ANY($4::text[])
+      AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`, [employeeId,start.toISOString(),end.toISOString(),ACTIVE_APPOINTMENT_STATUSES]);
+    const secondaryConflict = await hasSecondaryStaffConflict(cx, employeeId, start.toISOString(), end.toISOString());
     const breakConflict = await cx.query(`SELECT id FROM appointment_technical_breaks WHERE employee_id=$1::uuid
       AND start_time<$3::timestamptz AND end_time>$2::timestamptz LIMIT 1`, [employeeId,start.toISOString(),end.toISOString()]);
-    if (conflict.rowCount || breakConflict.rowCount) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A felszabadult időpont időközben foglalttá vált." }); }
+    if (conflict.rowCount || secondaryConflict || breakConflict.rowCount) { await cx.query("ROLLBACK"); return res.status(409).json({ error: "A felszabadult időpont időközben foglalttá vált." }); }
 
     let clientId = item.client_id;
     if (!clientId) {
@@ -502,9 +597,9 @@ router.post("/offers/:id/book", async (req: AuthRequest, res) => {
     }
     await cx.query(`INSERT INTO appointment_change_log(appointment_id,action,actor_key,after_data,note)
       VALUES($1::uuid,'smart_waitlist_filled',$2,$3::jsonb,$4)`, [appointmentId,actor(req),JSON.stringify({ waitlist_id:item.waitlist_id,offer_id:item.id,vacancy_id:item.vacancy_id,source_appointment_id:item.source_appointment_id }),"Felszabadult időpont intelligens várólistáról feltöltve"]);
-    await cx.query(`UPDATE smart_waitlist_offers SET status='accepted',responded_at=now(),booked_appointment_id=$2::uuid WHERE id=$1::uuid`, [item.id,appointmentId]);
+    await cx.query(`UPDATE smart_waitlist_offers SET status='accepted',responded_at=now(),booked_appointment_id=$2::uuid WHERE id=$1::uuid AND status='pending'`, [item.id,appointmentId]);
     await cx.query(`UPDATE smart_waitlist_offers SET status='cancelled',responded_at=now() WHERE vacancy_id=$1::uuid AND id<>$2::uuid AND status='pending'`, [item.vacancy_id,item.id]);
-    await cx.query(`UPDATE smart_waitlist_vacancies SET status='filled',filled_at=now(),updated_at=now() WHERE id=$1::uuid`, [item.vacancy_id]);
+    await cx.query(`UPDATE smart_waitlist_vacancies SET status='filled',filled_at=now(),updated_at=now() WHERE id=$1::uuid AND status='offered'`, [item.vacancy_id]);
     await cx.query(`UPDATE booking_waitlist SET status='booked',booked_appointment_id=$2::uuid,updated_at=now() WHERE id=$1::uuid`, [item.waitlist_id,appointmentId]);
     await cx.query("COMMIT");
 
@@ -527,5 +622,4 @@ router.post("/offers/:id/book", async (req: AuthRequest, res) => {
   } finally { cx.release(); }
 });
 
-export { ensureSmartWaitlistSchema, candidateRows };
 export default router;
