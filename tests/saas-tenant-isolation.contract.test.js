@@ -63,11 +63,16 @@ test('tenant row filtering rejects mismatched tenant_id and foreign location_id'
   assert.match(source, /filterTenantPayload/);
 });
 
-test('tenant access helper only permits an allowlisted business table set', () => {
+test('tenant access helper only permits an allowlisted business table set and remains legacy-schema compatible', () => {
   const source = read('src/saas/tenantAccess.ts');
   assert.match(source, /const allowed = new Set/);
   assert.match(source, /if \(!allowed\.has\(table\)\) return false/);
-  assert.match(source, /e\.tenant_id=\$2::bigint OR l\.tenant_id=\$2::bigint/);
+  assert.match(source, /t\.id::text=l\.tenant_id::text/);
+  assert.match(source, /tenant_id::text=\$1::text/);
+  assert.match(source, /tenant_id::text=\$2::text/);
+  assert.match(source, /e\.tenant_id::text=\$2::text OR l\.tenant_id::text=\$2::text/);
+  assert.doesNotMatch(source, /FROM locations WHERE tenant_id=\$1::bigint/);
+  assert.doesNotMatch(source, /FROM locations WHERE id::text=\$1 AND tenant_id=\$2::bigint/);
 });
 
 test('subscription feature resolver supports plan features, all_modules and tenant overrides', () => {
