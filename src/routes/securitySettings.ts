@@ -7,6 +7,7 @@ type PolicyName = "login" | "booking" | "api";
 type Policy = { enabled: boolean; max: number; windowMs: number };
 type SecurityConfig = Record<PolicyName, Policy>;
 type Bucket = { count: number; resetAt: number };
+type BruteState = { failures: number; blockedUntil: number; lastFailureAt: number };
 
 const router = Router();
 
@@ -16,19 +17,20 @@ const DEFAULTS: SecurityConfig = {
   api: { enabled: true, max: 6000, windowMs: 60_000 },
 };
 
+const BRUTE_FAILURE_WINDOW_MS = 30 * 60_000;
+const BRUTE_BLOCK_STEPS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+const BRUTE_THRESHOLD = 5;
+
 let config: SecurityConfig = structuredClone(DEFAULTS);
 let updatedAt: string | null = null;
 let updatedBy: string | null = null;
 let loadPromise: Promise<void> | null = null;
 const buckets = new Map<string, Bucket>();
+const bruteStates = new Map<string, BruteState>();
 let lastPruneAt = 0;
 
 function cloneConfig(value: SecurityConfig): SecurityConfig {
-  return {
-    login: { ...value.login },
-    booking: { ...value.booking },
-    api: { ...value.api },
-  };
+  return { login: { ...value.login }, booking: { ...value.booking }, api: { ...value.api } };
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -80,19 +82,36 @@ async function loadStoredConfig() {
   })().finally(() => { loadPromise = null; });
   return loadPromise;
 }
-
 void loadStoredConfig();
 
+function header(req: Request, name: string): string | null {
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value.join(", ");
+  return value ? String(value) : null;
+}
+
 function requestIp(req: Request): string {
+  // With app.set('trust proxy', 1), req.ip is Render's trusted client-hop result.
+  // CF-Connecting-IP is diagnostic only here; it is not blindly trusted as the primary key.
   return String(req.ip || req.socket?.remoteAddress || "unknown");
+}
+
+function requestPath(req: Request): string {
+  const raw = String(req.originalUrl || req.url || req.path || "").split("?")[0];
+  return raw.startsWith("/api/") ? raw.slice(4) : raw;
+}
+
+function isLoginPath(req: Request): boolean {
+  const path = requestPath(req);
+  return path === "/login" || path === "/employee-login" || path.startsWith("/auth/");
 }
 
 function classify(req: Request): PolicyName | null {
   if (req.method === "OPTIONS") return null;
-  const path = String(req.path || req.url || "").split("?")[0];
+  const path = requestPath(req);
   if (path === "/health" || path === "/health/ready" || path === "/health/db") return null;
   if (path.startsWith("/signage/") || path.startsWith("/kiosk/health")) return null;
-  if (path === "/login" || path === "/employee-login") return "login";
+  if (isLoginPath(req)) return "login";
   if (path.startsWith("/public/booking")) return "booking";
   return "api";
 }
@@ -101,6 +120,72 @@ function prune(now: number) {
   if (now - lastPruneAt < 60_000) return;
   lastPruneAt = now;
   for (const [key, bucket] of buckets) if (bucket.resetAt <= now) buckets.delete(key);
+  for (const [key, state] of bruteStates) {
+    if (state.blockedUntil <= now && now - state.lastFailureAt > BRUTE_FAILURE_WINDOW_MS) bruteStates.delete(key);
+  }
+}
+
+function securityHeaders(_req: Request, res: Response, next: NextFunction) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  if (process.env.NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  res.removeHeader("X-Powered-By");
+  next();
+}
+
+function loginIdentifier(req: Request): string {
+  const value = req.body?.email ?? req.body?.login_name ?? req.body?.username ?? req.body?.identifier ?? "";
+  return String(value).trim().toLocaleLowerCase("hu-HU").slice(0, 160);
+}
+
+function bruteKey(req: Request): string {
+  const identifier = loginIdentifier(req);
+  return `${requestIp(req)}:${identifier || "<unknown>"}`;
+}
+
+function blockDurationForFailures(failures: number): number {
+  const level = Math.max(0, Math.floor((failures - BRUTE_THRESHOLD) / 2));
+  return BRUTE_BLOCK_STEPS_MS[Math.min(level, BRUTE_BLOCK_STEPS_MS.length - 1)];
+}
+
+function bruteForceProtection(req: Request, res: Response, next: NextFunction) {
+  if (!isLoginPath(req) || req.method !== "POST") return next();
+  const now = Date.now();
+  prune(now);
+  const key = bruteKey(req);
+  const existing = bruteStates.get(key);
+  if (existing?.blockedUntil && existing.blockedUntil > now) {
+    const retryAfter = Math.max(1, Math.ceil((existing.blockedUntil - now) / 1000));
+    res.setHeader("Retry-After", String(retryAfter));
+    res.setHeader("X-Kleo-Brute-Force", "blocked");
+    return res.status(429).json({
+      error: "Túl sok sikertelen bejelentkezési kísérlet. Próbáld újra később.",
+      code: "AUTH_TEMPORARILY_BLOCKED",
+      retry_after_seconds: retryAfter,
+    });
+  }
+
+  res.once("finish", () => {
+    // Successful auth clears the progressive failure state. 401/403 count as credential/access failures.
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      bruteStates.delete(key);
+      return;
+    }
+    if (res.statusCode !== 401 && res.statusCode !== 403) return;
+    const current = bruteStates.get(key);
+    const stale = !current || now - current.lastFailureAt > BRUTE_FAILURE_WINDOW_MS;
+    const failures = (stale ? 0 : current.failures) + 1;
+    const blockedUntil = failures >= BRUTE_THRESHOLD ? Date.now() + blockDurationForFailures(failures) : 0;
+    bruteStates.set(key, { failures, blockedUntil, lastFailureAt: Date.now() });
+  });
+  next();
 }
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
@@ -108,24 +193,20 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   if (!policyName) return next();
   const policy = config[policyName];
   if (!policy.enabled) return next();
-
   const now = Date.now();
   prune(now);
-  const ip = requestIp(req);
-  const key = `${policyName}:${ip}`;
+  const key = `${policyName}:${requestIp(req)}`;
   let bucket = buckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
     bucket = { count: 0, resetAt: now + policy.windowMs };
     buckets.set(key, bucket);
   }
   bucket.count += 1;
-
   const remaining = Math.max(0, policy.max - bucket.count);
   res.setHeader("RateLimit-Limit", String(policy.max));
   res.setHeader("RateLimit-Remaining", String(remaining));
   res.setHeader("RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
   res.setHeader("X-Kleo-RateLimit-Policy", policyName);
-
   if (bucket.count <= policy.max) return next();
   const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
   res.setHeader("Retry-After", String(retryAfter));
@@ -137,13 +218,11 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   });
 }
 
+// This router is mounted first inside authRoutes, and authRoutes itself is mounted at /api.
+// Therefore these middleware functions protect every API request that subsequently falls through to other routers.
+router.use(securityHeaders);
+router.use(bruteForceProtection);
 router.use(rateLimit);
-
-function header(req: Request, name: string): string | null {
-  const value = req.headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value.join(", ");
-  return value ? String(value) : null;
-}
 
 function actor(req: AuthRequest): string {
   return String((req.user as any)?.id || (req.user as any)?.email || "admin");
@@ -154,9 +233,19 @@ router.get("/admin/security-settings", requireAdmin, async (req: AuthRequest, re
   const xff = header(req, "x-forwarded-for");
   const cfConnectingIp = header(req, "cf-connecting-ip");
   const cfRay = header(req, "cf-ray");
+  const now = Date.now();
+  const blockedLogins = Array.from(bruteStates.values()).filter(x => x.blockedUntil > now).length;
   return res.json({
     policies: cloneConfig(config),
     defaults: cloneConfig(DEFAULTS),
+    hardening: {
+      security_headers: true,
+      hsts_in_production: true,
+      brute_force_protection: true,
+      brute_force_threshold: BRUTE_THRESHOLD,
+      progressive_blocks_seconds: BRUTE_BLOCK_STEPS_MS.map(ms => ms / 1000),
+      currently_blocked_login_keys: blockedLogins,
+    },
     persistence: {
       type: "postgres",
       limiter_store: "process-memory",
@@ -206,7 +295,6 @@ router.put("/admin/security-settings", requireAdmin, async (req: AuthRequest, re
 });
 
 router.post("/admin/security-settings/reset", requireAdmin, async (req: AuthRequest, res: Response) => {
-  req.body = { policies: cloneConfig(DEFAULTS) };
   const nextConfig = cloneConfig(DEFAULTS);
   const by = actor(req);
   try {
@@ -220,10 +308,11 @@ router.post("/admin/security-settings/reset", requireAdmin, async (req: AuthRequ
     );
     config = nextConfig;
     buckets.clear();
+    bruteStates.clear();
     updatedAt = rows[0]?.updated_at ? new Date(rows[0].updated_at).toISOString() : new Date().toISOString();
     updatedBy = rows[0]?.updated_by ?? by;
     return res.json({ ok: true, policies: cloneConfig(config), updated_at: updatedAt, updated_by: updatedBy });
-  } catch (error: any) {
+  } catch {
     return res.status(500).json({ error: "Az alapértelmezett biztonsági beállításokat nem sikerült visszaállítani." });
   }
 });
