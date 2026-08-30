@@ -1,3 +1,4 @@
+import "./seedKioskCafeRetail20260830";
 import pool from "../db";
 
 const SEED_KEY = "reception-demo-appointments-2026-08-24_30-v1";
@@ -62,4 +63,3 @@ async function runWithRetry() {
 }
 
 setTimeout(() => void runWithRetry(), 12_000);
-
