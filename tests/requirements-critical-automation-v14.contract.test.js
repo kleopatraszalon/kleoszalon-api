@@ -48,7 +48,8 @@ test('KLEO-NFR-SEC-002-AC-02: authentication verifies BCrypt and never serialize
 test('KLEO-NFR-SEC-003-AC-01: protected tokens are verified with the server-side signing key before authorization', () => {
   const middleware = read('src/middleware/auth.ts');
   const secret = read('src/security/jwtSecret.ts');
-  assert.match(middleware, /jwt\.verify\(token, JWT_SECRET\)/);
+  assert.match(middleware, /jwt\.verify\(token, JWT_SECRET(?:,\s*\{[\s\S]*?algorithms:\s*\[\"HS256\"\][\s\S]*?\})?\)/);
+  assert.match(middleware, /algorithms:\s*\[\"HS256\"\]/);
   assert.match(middleware, /enforceKnownModuleAccess\(req, res\)/);
   assert.match(secret, /JWT_SECRET is required in production/);
   assert.match(secret, /configuredSecret \|\| \"kleo_local_dev_only_change_me\"/);
@@ -61,9 +62,10 @@ test('KLEO-NFR-SEC-003-AC-02: expired or modified tokens fail closed with HTTP 4
   assert.match(middleware, /NotBeforeError/);
   assert.match(middleware, /res\.status\(401\)/);
   assert.match(middleware, /res\.clearCookie\(\"token\"/);
-  const verifyPos = middleware.indexOf('jwt.verify(token, JWT_SECRET)');
-  const nextPos = middleware.indexOf('return next();', verifyPos);
-  assert.ok(verifyPos >= 0 && nextPos > verifyPos, 'authorization must happen after successful token verification');
+  const verifyPos = middleware.indexOf('jwt.verify(token, JWT_SECRET');
+  const accessPos = middleware.indexOf('enforceKnownModuleAccess(req, res)', verifyPos);
+  const nextPos = middleware.indexOf('return next();', accessPos);
+  assert.ok(verifyPos >= 0 && accessPos > verifyPos && nextPos > accessPos, 'authorization must happen after successful token verification');
 });
 
 test('KLEO-NFR-RES-001-AC-01: retry after a lost cancellation response is idempotent', () => {
