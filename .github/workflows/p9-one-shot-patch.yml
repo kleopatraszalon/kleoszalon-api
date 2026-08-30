@@ -1,0 +1,20 @@
+name: P9 one-shot route patch
+on:
+  push:
+    branches: [feature/vir-p9-marketing-automation]
+    paths: ['.github/workflows/p9-one-shot-patch.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: feature/vir-p9-marketing-automation}
+      - run: node scripts/apply-p9-route-patch.cjs
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat: mount P9 marketing and receptionist routes'
+          git push origin HEAD:feature/vir-p9-marketing-automation
