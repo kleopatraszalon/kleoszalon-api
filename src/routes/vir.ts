@@ -19,10 +19,12 @@ import virP6Router from "./virP6";
 import virP6BindingRouter from "./virP6Binding";
 import virP7Router from "./virP7";
 import virP8Router from "./virP8";
+import virCommunicationWebhooksRouter from "./virCommunicationWebhooks";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
 
 const router = Router();
-// A helyi OTIC és locker bridge saját, forgatható tokennel hitelesít; nem felhasználói JWT-vel.
+// Provider- és helyi bridge végpontok saját aláírással/tokennel hitelesítenek; nem felhasználói JWT-vel.
+router.use("/public/communications", virCommunicationWebhooksRouter);
 router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
 router.use("/fitness/locker-bridge", fitnessLockerBridgeRouter);
 router.use(requireAuth);
