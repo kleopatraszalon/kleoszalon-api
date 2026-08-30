@@ -9,8 +9,10 @@ import crypto from "crypto";
 import JWT_SECRET from "../security/jwtSecret";
 import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
 import releaseControlOidcRouter from "./releaseControlOidc";
+import securitySettingsRouter from "./securitySettings";
 
 const router = express.Router();
+router.use(securitySettingsRouter);
 const GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com";
 const GITHUB_UAT_REPOSITORY="kleopatraszalon/kleoszalon-api";
 async function verifyPassword(password:string,hash:string){
