@@ -1,0 +1,17 @@
+const fs=require('fs');
+const assert=require('assert');
+const route=fs.readFileSync('src/routes/virP6.ts','utf8');
+const vir=fs.readFileSync('src/routes/vir.ts','utf8');
+assert(route.includes('router.use(requireManagement)'),'P6 must be management-only');
+for(const endpoint of ['/ai-receptionist/preview','/intelligent-scheduling','/booking-recovery','/agent-gateway/capabilities','/agent-gateway/availability','/external-competitor-intelligence','/consultation/preview'])assert(route.includes(endpoint),`missing ${endpoint}`);
+assert(route.includes('findCalendarGaps'),'P6 scheduling must reuse canonical gap engine');
+assert(route.includes('matchWaitlist'),'P6 recovery must reuse waitlist engine');
+assert(route.includes('upcomingRiskCandidates'),'P6 recovery must reuse no-show risk engine');
+assert(route.includes('booking_write_enabled:false'),'AI receptionist must not silently book');
+assert(route.includes('automatic_schedule_write:false'),'scheduler must not write automatically');
+assert(route.includes('automatic_outreach:false'),'recovery must not contact guests automatically');
+assert(route.includes('public_endpoint_enabled:false'),'agent gateway must not be public without external auth');
+assert(route.includes('synthetic_data_used:false'),'competitor intelligence may not invent data');
+assert(route.includes('image_generation_enabled:false'),'visualizer must disclose missing image provider');
+assert(vir.includes('router.use("/p6", virP6Router)'),'P6 router mount missing');
+console.log('VIR P6 contract: PASS');
