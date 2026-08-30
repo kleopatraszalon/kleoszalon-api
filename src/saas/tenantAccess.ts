@@ -61,6 +61,9 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const tokenRow=tokenTenantId?await tenantFromToken(userId,tokenTenantId):null;
   const locationRow=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
 
+  // Dashboard requests may repair a stale signed tenant_id from the authenticated
+  // salon, but normal tenant/location boundary middleware still applies before data
+  // leaves the API. The repair changes identity resolution only; it does not widen scope.
   let row=tokenRow;
   if(isDashboardRequest(req)&&locationRow&&(!tokenRow||String(locationRow.id)!==String(tokenRow.id)))row=locationRow;
   if(!row&&!tokenTenantId)row=locationRow;
