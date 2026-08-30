@@ -26,6 +26,7 @@ import virP12Router from "./virP12";
 import virP13Router from "./virP13";
 import virP14Router from "./virP14";
 import virP15Router from "./virP15";
+import virP16Router from "./virP16";
 import virCommunicationWebhooksRouter from "./virCommunicationWebhooks";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
 
@@ -54,6 +55,7 @@ router.use("/p12", virP12Router);
 router.use("/p13", virP13Router);
 router.use("/p14", virP14Router);
 router.use("/p15", virP15Router);
+router.use("/p16", virP16Router);
 router.use("/reception", virReceptionGuestActionsRouter);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);

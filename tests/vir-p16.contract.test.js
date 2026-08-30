@@ -1,0 +1,10 @@
+const fs=require('fs');
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const vir=fs.readFileSync('src/routes/vir.ts','utf8');
+const p16=fs.readFileSync('src/routes/virP16.ts','utf8');
+test('P16 is mounted behind canonical VIR auth',()=>{assert.ok(vir.includes('router.use("/p16", virP16Router)'))});
+test('P16 exposes exception brief decision inbox and morning brief',()=>{for(const x of ['/exception-brief','/decision-inbox/sync','/decision-inbox','/morning-brief'])assert.ok(p16.includes(x),`missing ${x}`)});
+test('P16 is exception-driven and non autonomous',()=>{assert.ok(p16.includes("exception_driven:true"));assert.ok(p16.includes("automatic_execution:false"));assert.ok(p16.includes("execution_enabled:false"));});
+test('P16 decision recording does not execute business actions',()=>{assert.ok(p16.includes('A vezetői döntés rögzítése nem hajt végre automatikus üzleti műveletet.'))});
+test('P16 reuses live operational signals',()=>{for(const x of ['vir_ai_handoffs','vir_complaint_cases','appointments','vir_management_actions'])assert.ok(p16.includes(x),`missing ${x}`)});
