@@ -78,7 +78,7 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   return{id:tenantId,slug:String(row.slug),role:String(row.tenant_role||"member")};
 }
 export async function tenantLocationIds(tenantId:string):Promise<string[]>{const{rows}=await db.query(`SELECT id::text id FROM locations WHERE tenant_id=$1::bigint`,[tenantId]);return rows.map((r:any)=>String(r.id));}
-export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id=$2::bigint LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
+export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id=$2 LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
 export async function entityBelongsToTenant(table:string,id:string,tenantId:string):Promise<boolean>{
   const allowed = new Set(["employees","clients","appointments","work_orders","product_stock_balances","purchase_orders","payroll_runs","financial_transactions","finance_transactions","invoices"]);
   if (!allowed.has(table)) return false;
