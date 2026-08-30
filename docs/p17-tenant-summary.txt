@@ -1,0 +1,1 @@
+Canonical tenant resolution and P17 governed operations.
