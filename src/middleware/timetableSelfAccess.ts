@@ -8,7 +8,7 @@ function roles(raw:unknown):string[]{
   try{const parsed=JSON.parse(value);if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase());if(parsed!=null)return[String(parsed).toLowerCase()]}catch{}
   return value.split(",").map(x=>x.replace(/[\[\]"]/g,"").trim().toLowerCase()).filter(Boolean);
 }
-function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto","location_manager","üzletvezető","uzletvezeto","store_manager","branch_manager"].includes(r));}
+function elevated(req:AuthRequest){return roles(req.user?.role).some(r=>["admin","administrator","rendszergazda","superadmin","super_admin","manager","vezető","vezeto","location_manager","üzletvezető","uzletvezeto","store_manager","branch_manager","salon_manager","szalonvezető","szalonvezeto"].includes(r));}
 function receptionist(req:AuthRequest){return roles(req.user?.role).some(r=>["receptionist","reception","recepciós","recepcios"].includes(r));}
 
 async function resolveEmployee(req:AuthRequest){
