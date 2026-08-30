@@ -12,15 +12,15 @@ type Warning={section:string;code:string;message:string};
 
 function resolveScope(req:AuthRequest){
   const roles=parseRoleKeys(req.user?.role);
-  if(roles.includes("admin")||roles.includes("manager")){
+  if(roles.includes("admin")||roles.includes("manager")||roles.includes("hr_manager")){
     return {ok:true,admin:true,location:String(req.query.location_id||"").trim()||null};
   }
-  if(roles.includes("location_manager")){
+  if(roles.includes("location_manager")||roles.includes("salon_manager")){
     const own=req.user?.location_id?String(req.user.location_id):"";
     if(!own)return {ok:false,status:403,message:"A felhasználóhoz nincs szalon rendelve."};
     return {ok:true,admin:false,location:own};
   }
-  return {ok:false,status:403,message:"A bérszámfejtési állapothoz adminisztrátori vagy üzletvezetői jogosultság szükséges."};
+  return {ok:false,status:403,message:"A bérszámfejtési állapothoz adminisztrátori, HR vagy üzlet-/szalonvezetői jogosultság szükséges."};
 }
 
 function isRecoverablePgError(code:string){
