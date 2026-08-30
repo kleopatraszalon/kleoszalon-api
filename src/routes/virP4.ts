@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import pool from "../db";
 import type { AuthRequest } from "../middleware/auth";
 import { requireManagement } from "../middleware/requireRoles";
+import virP4AdvancedRouter from "./virP4Advanced";
 
 const router = Router();
 router.use(requireManagement);
@@ -83,5 +84,7 @@ router.get("/workforce-optimizer",async(req:AuthRequest,res:Response)=>{
     res.json({ok:true,model:"forecast_capacity_workforce_optimizer_v1",days,automatic_scheduling:false,decision_support_only:true,summary:{days_analyzed:items.length,shortage_days:shortages.length,critical_days:items.filter(x=>x.status==="CRITICAL_SHORTAGE").length,total_staff_gap:shortages.reduce((a,x)=>a+x.staff_gap,0),expiring_qualifications:Math.max(0,...items.map(x=>x.skill_coverage.expiring_30d))},items});
   }catch(e:any){res.status(500).json({ok:false,error:e?.message||"workforce_optimizer_failed"});}
 });
+
+router.use(virP4AdvancedRouter);
 
 export default router;
