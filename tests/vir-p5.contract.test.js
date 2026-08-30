@@ -1,0 +1,15 @@
+const fs=require('fs');
+const assert=require('assert');
+const route=fs.readFileSync('src/routes/virP5.ts','utf8');
+const vir=fs.readFileSync('src/routes/vir.ts','utf8');
+assert(route.includes('router.use(requireManagement)'),'P5 must be management-only');
+for(const endpoint of ['/digital-twin','/goal-action','/action-preview','/competitor-intelligence','/location-expansion'])assert(route.includes(endpoint),`P5 endpoint missing: ${endpoint}`);
+assert(route.includes('tenant_id=$2::uuid')||route.includes('tenant_id=$1::uuid'),'tenant scope missing');
+assert(route.includes('vir_digital_twin_deterministic_v1'),'digital twin model label missing');
+assert(route.includes('simulation_only:true')&&route.includes('automatic_writes:false'),'digital twin must be simulation-only');
+assert(route.includes('goal_to_action_deterministic_v1')&&route.includes('approval_required:true')&&route.includes('automatic_actions:false'),'goal-action approval boundary missing');
+assert(route.includes('autonomous_action_preview_v1')&&route.includes('execution_enabled:false'),'preview must not execute');
+assert(route.includes('internal_peer_competitor_proxy_v1')&&route.includes('external_competitor_data:false'),'competitor proxy disclosure missing');
+assert(route.includes('location_expansion_unit_economics_v1')&&route.includes('automatic_commitment:false')&&route.includes('external_market_data:false'),'expansion due-diligence boundary missing');
+assert(vir.includes('router.use("/p5", virP5Router)'),'P5 router mount missing');
+console.log('VIR P5 advanced management contract: PASS');
