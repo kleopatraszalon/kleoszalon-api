@@ -21,7 +21,7 @@ async function tenantFromAuthenticatedLocation(userId:string,locationId:unknown,
   const fallbackRole=roleText(role).includes("admin")?"owner":"member";
   const {rows}=await db.query(`SELECT t.id::text id,t.slug,COALESCE(tu.tenant_role,$3::text) tenant_role
     FROM locations l
-    JOIN tenants t ON t.id=l.tenant_id
+    JOIN tenants t ON t.id::text=l.tenant_id::text
     LEFT JOIN tenant_users tu ON tu.tenant_id=t.id AND tu.user_id=$1 AND tu.active=true
     WHERE l.id::text=$2 AND l.tenant_id IS NOT NULL AND t.status IN ('active','trial')
     LIMIT 1`,[userId,value,fallbackRole]);
