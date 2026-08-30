@@ -2,6 +2,7 @@ import { Router, Response } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
+import { resolveTenantIdentity } from "../saas/tenantAccess";
 import receiptComplianceRouter from "./receiptCompliance";
 import deviceControlRouter from "./deviceControl";
 import deviceBridgeResultRouter from "./deviceBridgeResult";
@@ -29,6 +30,7 @@ import virP15Router from "./virP15";
 import virP16Router from "./virP16";
 import virCommunicationWebhooksRouter from "./virCommunicationWebhooks";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
+import virLookupsRouter from "./virLookups";
 
 const router = Router();
 // Provider- és helyi bridge végpontok saját aláírással/tokennel hitelesítenek; nem felhasználói JWT-vel.
@@ -36,6 +38,18 @@ router.use("/public/communications", virCommunicationWebhooksRouter);
 router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
 router.use("/fitness/locker-bridge", fitnessLockerBridgeRouter);
 router.use(requireAuth);
+// Régebbi munkamenetekben nem minden esetben szerepel tenant_id. A VIR előtt
+// feloldjuk a tenantot a hitelesített telephelyből/SaaS-tagságból. Ez csak a
+// request contextet javítja, a tenant- és telephelyhatárokat nem szélesíti.
+router.use(async (req: AuthRequest, res: Response, next) => {
+  try {
+    if (!req.user?.tenant_id) await resolveTenantIdentity(req);
+    next();
+  } catch (_error) {
+    res.status(500).json({ ok: false, error: "tenant_context_resolution_failed" });
+  }
+});
+router.use("/lookups", virLookupsRouter);
 router.use("/management", virManagementRouter);
 router.use("/intelligence", virIntelligenceRouter);
 router.use("/p1", virP1Router);
