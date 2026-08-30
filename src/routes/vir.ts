@@ -20,6 +20,7 @@ import virP6BindingRouter from "./virP6Binding";
 import virP7Router from "./virP7";
 import virP8Router from "./virP8";
 import virP9Router, { virReceptionGuestActionsRouter } from "./virP9";
+import virP10Router from "./virP10";
 import virCommunicationWebhooksRouter from "./virCommunicationWebhooks";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
 
@@ -42,6 +43,7 @@ router.use("/p6", virP6BindingRouter);
 router.use("/p7", virP7Router);
 router.use("/p8", virP8Router);
 router.use("/p9", virP9Router);
+router.use("/p10", virP10Router);
 router.use("/reception", virReceptionGuestActionsRouter);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
