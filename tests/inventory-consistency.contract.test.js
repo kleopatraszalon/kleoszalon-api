@@ -7,13 +7,17 @@ const consistency=fs.readFileSync(path.join(__dirname,'../src/routes/inventoryCo
 const inventory=fs.readFileSync(path.join(__dirname,'../src/routes/inventory.ts'),'utf8');
 const virP1=fs.readFileSync(path.join(__dirname,'../src/routes/virP1.ts'),'utf8');
 
-test('consistency router is mounted before LOT and generic inventory routers',()=>{
-  const consistencyAt=inventory.indexOf('router.use("/ops", inventoryConsistencyRouter)');
+test('consistency router is scoped to affected endpoints and runs before legacy routers',()=>{
+  const consistencyAt=inventory.indexOf('const needsConsistency=');
   const lotsAt=inventory.indexOf('router.use("/ops", inventoryLotsRouter)');
   const operationsAt=inventory.indexOf('router.use("/ops", inventoryOperationsRouter)');
   assert.ok(consistencyAt>=0);
   assert.ok(lotsAt>consistencyAt);
   assert.ok(operationsAt>lotsAt);
+  assert.match(inventory,/transfers\\\/\[\^\/\]\+\\\/\(dispatch\|receive\)/);
+  assert.match(inventory,/stocktakes\\\/\[\^\/\]\+\\\/approve/);
+  assert.match(inventory,/path==="\/reorder-suggestions"/);
+  assert.doesNotMatch(inventory,/router\.use\("\/ops", inventoryConsistencyRouter\)/);
 });
 
 test('warehouse transfers use the canonical ledger and preserve LOT operation group',()=>{

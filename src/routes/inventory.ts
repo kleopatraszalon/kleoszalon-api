@@ -9,7 +9,15 @@ import inventoryConsistencyRouter from "./inventoryConsistency";
 
 const router = Router();
 router.use(requireFeature("inventory"));
-router.use("/ops", inventoryConsistencyRouter);
+router.use("/ops", (req, res, next) => {
+  const path=String(req.path||"");
+  const needsConsistency=
+    /^\/transfers\/[^/]+\/(dispatch|receive)$/.test(path) ||
+    /^\/stocktakes\/[^/]+\/approve$/.test(path) ||
+    path==="/reorder-suggestions";
+  if(needsConsistency)return inventoryConsistencyRouter(req,res,next);
+  return next();
+});
 router.use("/ops", inventoryLotsRouter);
 router.use("/ops", inventoryOperationsRouter);
 

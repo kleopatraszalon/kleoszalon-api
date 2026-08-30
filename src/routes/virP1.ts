@@ -3,6 +3,8 @@ import pool from "../db";
 import type {AuthRequest} from "../middleware/auth";
 import {requireManagement} from "../middleware/requireRoles";
 import {profitEngine} from "../services/virWave2Engine";
+import {ensureInventoryOperationsSchema} from "../inventory/ensureInventoryOperationsSchema";
+import {ensureInventoryLotSchema} from "../inventory/ensureInventoryLotSchema";
 
 const router=Router();
 router.use(requireManagement);
@@ -33,6 +35,7 @@ router.get("/customer-360",async(req:AuthRequest,res:Response)=>{try{const s=awa
 router.get("/forecast",async(req:AuthRequest,res:Response)=>{try{const s=await scope(req,res);if(!s)return;const history=(await pool.query(`SELECT COALESCE(SUM(COALESCE(NULLIF(to_jsonb(w)->>'gross_total','')::numeric,NULLIF(to_jsonb(w)->>'total_amount','')::numeric,0)),0)::numeric revenue,COUNT(DISTINCT COALESCE(w.completed_at,w.updated_at)::date)::int active_days FROM work_orders w WHERE w.tenant_id=$1::uuid AND ($2::uuid IS NULL OR w.location_id=$2::uuid) AND lower(COALESCE(w.status,''))='completed' AND COALESCE(w.completed_at,w.updated_at)>=now()-interval '90 days'`,[s.tenantId,s.locationId])).rows[0]||{};const daily=n(history.revenue)/Math.max(1,n(history.active_days)||90);const horizons=[] as any[];for(const days of [7,30,90]){const pipe=(await pool.query(`SELECT COUNT(DISTINCT a.id)::int bookings,COALESCE(SUM(COALESCE(aps.price,0)),0)::numeric booked_value FROM appointments a LEFT JOIN appointment_services aps ON aps.appointment_id=a.id WHERE a.tenant_id=$1::uuid AND ($2::uuid IS NULL OR a.location_id=$2::uuid) AND a.start_time>=now() AND a.start_time<now()+($3::text||' days')::interval AND lower(COALESCE(a.status,'')) NOT IN('cancelled','canceled','no_show','no-show')`,[s.tenantId,s.locationId,days])).rows[0]||{};const runRate=daily*days,base=Math.max(runRate,n(pipe.booked_value));horizons.push({days,bookings:n(pipe.bookings),booked_value:Math.round(n(pipe.booked_value)),run_rate:Math.round(runRate),forecast_low:Math.round(base*.9),forecast_base:Math.round(base),forecast_high:Math.round(base*1.1),coverage_percent:runRate>0?Math.round(n(pipe.booked_value)/runRate*1000)/10:0})}res.json({ok:true,method:"trailing_90d_run_rate_plus_booked_floor",daily_run_rate:Math.round(daily),horizons});}catch(e:any){res.status(500).json({ok:false,error:e?.message||"forecast_failed"})}});
 
 router.get("/inventory-intelligence",async(req:AuthRequest,res:Response)=>{try{
+ await ensureInventoryOperationsSchema();await ensureInventoryLotSchema();
  const s=await scope(req,res);if(!s)return;const ids=await tenantLocations(s);if(!ids.length)return res.json({ok:true,summary:{products:0,critical:0,high:0,suggested_order_value:0,expired_quantity:0},items:[],canonical_procurement_route:"/warehouse?view=procurement&section=suggestions"});
  const movementExists=Boolean((await pool.query(`SELECT to_regclass('public.inventory_movements')::text rel`)).rows[0]?.rel);
  const consumption=new Map<string,number>();
