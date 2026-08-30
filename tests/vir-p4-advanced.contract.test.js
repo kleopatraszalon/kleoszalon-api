@@ -1,0 +1,13 @@
+const fs=require('fs');
+const assert=require('assert');
+const p4=fs.readFileSync('src/routes/virP4.ts','utf8');
+const adv=fs.readFileSync('src/routes/virP4Advanced.ts','utf8');
+assert(p4.includes('router.use(virP4AdvancedRouter)'), 'advanced P4 router not mounted');
+assert(adv.includes('router.use(requireManagement)'), 'management guard missing');
+for(const route of ['/smart-shift-generator','/employee-revenue-coach','/service-portfolio','/cannibalization']) assert(adv.includes(`router.get("${route}"`),`${route} missing`);
+assert(adv.includes('automatic_scheduling:false')&&adv.includes('approval_required:true')&&adv.includes('automatic_write:false'),'smart shift must stay approval-only');
+assert(adv.includes('non_punitive:true')&&adv.includes('no_automatic_hr_action:true'),'coach must be non-punitive');
+assert(adv.includes('automatic_catalog_changes:false'),'portfolio must not mutate catalog');
+assert(adv.includes('causality_claim:false'),'cannibalization must not claim causality');
+assert(adv.includes('tenant_id=$1::uuid')||adv.includes('tenant_id=$2::uuid'),'tenant scoping evidence missing');
+console.log('VIR P4 advanced contract OK');
