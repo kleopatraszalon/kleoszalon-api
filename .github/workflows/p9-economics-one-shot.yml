@@ -11,6 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {ref: feature/vir-p9-marketing-automation}
+      - name: Escape generated template interpolation
+        run: sed -i 's/${r.top_service}/\\${r.top_service}/g' scripts/apply-p9-economics-patch.cjs
       - run: node scripts/apply-p9-economics-patch.cjs
       - run: |
           git config user.name github-actions[bot]
