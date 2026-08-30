@@ -14,6 +14,7 @@ import virP1Router from "./virP1";
 import virP2Router from "./virP2";
 import virP3Router from "./virP3";
 import virP4Router from "./virP4";
+import virP5Router from "./virP5";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
 
 const router = Router();
@@ -28,6 +29,7 @@ router.use("/p2", virP2Router);
 router.use("/p3/revenue-leakage", virRevenueLeakageRouter);
 router.use("/p3", virP3Router);
 router.use("/p4", virP4Router);
+router.use("/p5", virP5Router);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
 router.use("/device-control", deviceBridgeResultRouter);
