@@ -1,0 +1,40 @@
+const fs = require('fs');
+const assert = require('assert');
+
+const backend = fs.readFileSync('src/routes/bookingSmartWaitlist.ts','utf8');
+const setup = fs.readFileSync('src/routes/bookingSmartWaitlistSetup.ts','utf8');
+const mount = fs.readFileSync('src/routes/bookingOperations.ts','utf8');
+const worker = fs.readFileSync('src/services/smartWaitlistAutoWorker.ts','utf8');
+
+assert.match(backend,/trg_capture_smart_waitlist_vacancy/);
+assert.match(backend,/smart_waitlist_vacancies/);
+assert.match(backend,/smart_waitlist_offers/);
+assert.match(backend,/candidateRows/);
+assert.match(backend,/score_breakdown/);
+assert.match(backend,/accept_short_notice/);
+assert.match(backend,/preferred_employee_id/);
+assert.match(backend,/service_ids <@/);
+assert.match(backend,/router\.post\("\/entries"/);
+assert.match(backend,/router\.patch\("\/entries\/:id"/);
+assert.match(backend,/router\.post\("\/vacancies\/:id\/offer"/);
+assert.match(backend,/router\.post\("\/offers\/:id\/book"/);
+assert.match(backend,/pg_advisory_xact_lock/);
+assert.match(backend,/queueAppointmentCommunications/);
+assert.match(backend,/detectComplexSource/);
+assert.match(setup,/router\.use\(requireAuth\)/);
+assert.match(setup,/\/setup-options/);
+assert.match(setup,/FROM locations/);
+assert.match(setup,/FROM services/);
+assert.match(setup,/FROM employees/);
+assert.match(mount,/bookingSmartWaitlistSetupRouter/);
+assert.match(mount,/bookingSmartWaitlistRouter/);
+assert.match(mount,/startSmartWaitlistAutoWorker/);
+assert.match(mount,/\/smart-waitlist/);
+assert.match(worker,/runSmartWaitlistAutoCycle/);
+assert.match(worker,/pg_try_advisory_xact_lock/);
+assert.match(worker,/auto_offer!==false/);
+assert.match(worker,/offeredSet/);
+assert.match(worker,/status='expired'/);
+assert.match(worker,/status='open'/);
+
+console.log('Smart Waitlist contract checks: OK');
