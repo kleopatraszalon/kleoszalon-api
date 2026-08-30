@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const security = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'securitySettings.ts'), 'utf8');
 const roles = fs.readFileSync(path.join(__dirname, '..', 'src', 'middleware', 'requireRoles.ts'), 'utf8');
+const auth = fs.readFileSync(path.join(__dirname, '..', 'src', 'middleware', 'auth.ts'), 'utf8');
 const db = fs.readFileSync(path.join(__dirname, '..', 'src', 'db.ts'), 'utf8');
 
 test('payload guard blocks prototype pollution shapes', () => {
@@ -27,6 +28,15 @@ test('login and RBAC denial are audited', () => {
   assert.match(security, /login_failed/);
   assert.match(roles, /access_denied/);
   assert.match(roles, /writeSystemAudit/);
+});
+
+test('JWT verification is algorithm-pinned and has a short effective max age', () => {
+  assert.match(auth, /algorithms:\s*\["HS256"\]/);
+  assert.match(auth, /SESSION_MAX_AGE_MINUTES/);
+  assert.match(auth, /PRIVILEGED_SESSION_MAX_AGE_MINUTES/);
+  assert.match(auth, /SESSION_MAX_AGE_EXCEEDED/);
+  assert.doesNotMatch(auth, /req\.query\?\.token/);
+  assert.doesNotMatch(auth, /req\.body\?\.token/);
 });
 
 test('postgres pool has a hard connection cap and statement timeout', () => {
