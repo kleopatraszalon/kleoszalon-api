@@ -61,13 +61,6 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const tokenRow=tokenTenantId?await tenantFromToken(userId,tokenTenantId):null;
   const locationRow=await tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role);
 
-  // Dashboard requests are read-only and location-scoped. Some production sessions
-  // still contain a previously issued tenant_id together with the current signed
-  // location_id. If those two disagree, the signed salon is the authoritative scope
-  // for the dashboard; otherwise locationManagerScope rejects the valid session with
-  // TENANT_LOCATION_MISMATCH. This does not widen access: the selected tenant comes
-  // directly from the authenticated token's location_id and is checked again by the
-  // tenant/location boundary middleware before dashboard data is returned.
   let row=tokenRow;
   if(isDashboardRequest(req)&&locationRow&&(!tokenRow||String(locationRow.id)!==String(tokenRow.id)))row=locationRow;
   if(!row&&!tokenTenantId)row=locationRow;
@@ -79,8 +72,8 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   if(feature && !(await tenantFeatureEnabled(tenantId, feature))){authUser.tenant_feature_denied = feature;return null;}
   return{id:tenantId,slug:String(row.slug),role:String(row.tenant_role||"member")};
 }
-export async function tenantLocationIds(tenantId:string):Promise<string[]>{const{rows}=await db.query(`SELECT id::text id FROM locations WHERE tenant_id::text=$1::text`,[tenantId]);return rows.map((r:any)=>String(r.id));}
-export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id::text=$2::text LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
+export async function tenantLocationIds(tenantId:string):Promise<string[]>{const{rows}=await db.query(`SELECT id::text id FROM locations WHERE tenant_id=$1`,[tenantId]);return rows.map((r:any)=>String(r.id));}
+export async function locationBelongsToTenant(locationId:unknown,tenantId:string):Promise<boolean>{const value=String(locationId??"").trim();if(!value)return false;const{rows}=await db.query(`SELECT 1 FROM locations WHERE id::text=$1 AND tenant_id=$2 LIMIT 1`,[value,tenantId]);return Boolean(rows[0]);}
 export async function entityBelongsToTenant(table:string,id:string,tenantId:string):Promise<boolean>{
   const allowed = new Set(["employees","clients","appointments","work_orders","product_stock_balances","purchase_orders","payroll_runs","financial_transactions","finance_transactions","invoices"]);
   if (!allowed.has(table)) return false;
