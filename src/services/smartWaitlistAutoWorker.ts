@@ -61,7 +61,9 @@ async function processVacancy(vacancyId:string){
 
     const ranked=await candidateRows(vacancyId,cx);
     if(!ranked.candidates.length){await cx.query("ROLLBACK");return false;}
-    candidate=ranked.candidates.find((x:any)=>x.auto_offer!==false&&(String(x.phone||"").trim()||String(x.email||"").trim()));
+    const offered=(await cx.query(`SELECT waitlist_id::text FROM smart_waitlist_offers WHERE vacancy_id=$1::uuid`,[vacancyId])).rows.map((x:any)=>String(x.waitlist_id));
+    const offeredSet=new Set(offered);
+    candidate=ranked.candidates.find((x:any)=>x.auto_offer!==false&&!offeredSet.has(String(x.id))&&(String(x.phone||"").trim()||String(x.email||"").trim()));
     if(!candidate){await cx.query("ROLLBACK");return false;}
 
     const lockedCandidate=(await cx.query(`SELECT id,status,booked_appointment_id FROM booking_waitlist WHERE id=$1::uuid FOR UPDATE`,[candidate.id])).rows[0];
