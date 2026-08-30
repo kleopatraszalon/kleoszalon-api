@@ -1,0 +1,1 @@
+- 2026-08-30: tenant/location ownership comparisons normalized for legacy schema compatibility; SaaS isolation regression guard extended.
