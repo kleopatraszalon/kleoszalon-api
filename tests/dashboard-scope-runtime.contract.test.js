@@ -17,18 +17,16 @@ test('read-only dashboard request is not blocked by full tenant schema mutation 
     'explicit dashboard location filters must remain tenant-bound');
 });
 
-test('dashboard tenant resolution repairs stale tenant id from the signed salon without widening scope', () => {
+test('dashboard tenant resolution rejects stale signed tenant instead of widening scope', () => {
   const src = read('src/saas/tenantAccess.ts');
-  assert.match(src, /function isDashboardRequest\(req:AuthRequest\):boolean/,
-    'dashboard-specific stale token recovery must be explicit');
-  assert.match(src, /const tokenRow=tokenTenantId\?await tenantFromToken\(userId,tokenTenantId\):null/,
-    'explicit token tenant is still resolved first');
   assert.match(src, /const locationRow=await tenantFromAuthenticatedLocation\(userId,authUser\.location_id,authUser\.role\)/,
-    'the signed location must also be resolved');
-  assert.match(src, /if\(isDashboardRequest\(req\)&&locationRow&&\(!tokenRow\|\|String\(locationRow\.id\)!==String\(tokenRow\.id\)\)\)row=locationRow/,
-    'dashboard must switch to the signed salon tenant when a stale token tenant disagrees');
-  assert.match(src, /tenant\/location boundary middleware/,
-    'the recovery path must document that normal tenant/location checks still apply');
+    'the signed location must be resolved independently');
+  assert.match(src, /const tokenRow=await tenantFromToken\(userId,tokenTenantId\)/,
+    'an explicit signed tenant claim must be validated');
+  assert.match(src, /if\(locationRow&&String\(locationRow\.id\)!==String\(tokenRow\.id\)\)return null/,
+    'a signed tenant/location mismatch must fail closed rather than silently changing tenant');
+  assert.doesNotMatch(src, /isDashboardRequest/,
+    'dashboard must not have a tenant-boundary exception');
 });
 
 test('dashboard authenticates exactly once before tenant scope resolution', () => {
@@ -49,15 +47,18 @@ test('dashboard authenticates exactly once before tenant scope resolution', () =
     'generic nested routes remain protected from tenant context loss');
 });
 
-test('legacy dashboard tenant resolution still supports signed salon then membership then fallback', () => {
+test('tenant resolution uses signed salon or a unique membership and never a default fallback', () => {
   const src = read('src/saas/tenantAccess.ts');
   const locationPos = src.indexOf('tenantFromAuthenticatedLocation(userId,authUser.location_id,authUser.role)');
-  const membershipPos = src.indexOf('tenantFromMembership(userId)');
-  const fallbackPos = src.indexOf("slug='kleopatra'");
-  assert.ok(locationPos >= 0 && membershipPos > locationPos && fallbackPos > membershipPos,
-    'legacy resolution must keep signed location -> membership -> legacy fallback available');
-  assert.match(src, /if\(!row&&!tokenTenantId\)row=locationRow/,
-    'legacy location fallback remains limited to sessions without a tenant id outside dashboard recovery');
+  const uniqueMembershipPos = src.indexOf('tenantFromUniqueMembership(userId)');
+  assert.ok(locationPos >= 0 && uniqueMembershipPos > locationPos,
+    'resolution should retain signed location then unique membership for sessions without a tenant claim');
+  assert.match(src, /LIMIT 2/,
+    'membership resolution must detect ambiguous multi-tenant accounts');
+  assert.match(src, /rows\.length===1\?rows\[0\]:null/,
+    'only exactly one active membership may be inferred');
+  assert.doesNotMatch(src, /slug='kleopatra'/,
+    'a central/default tenant must never be inferred');
 });
 
 test('location-manager dashboard client counter is fail-soft', () => {
