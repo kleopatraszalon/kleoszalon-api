@@ -1,7 +1,8 @@
-import { Router, Response } from "express";
+import { Router, Response, NextFunction } from "express";
 import pool from "../db";
 import { AuthRequest, requireAuth } from "../middleware/auth";
 import { parseRoleKeys } from "../security/roles";
+import { resolveTenantIdentity } from "../saas/tenantAccess";
 import receiptComplianceRouter from "./receiptCompliance";
 import deviceControlRouter from "./deviceControl";
 import deviceBridgeResultRouter from "./deviceBridgeResult";
@@ -27,6 +28,7 @@ import virP13Router from "./virP13";
 import virP14Router from "./virP14";
 import virP15Router from "./virP15";
 import virP16Router from "./virP16";
+import virP17Router from "./virP17";
 import virCommunicationWebhooksRouter from "./virCommunicationWebhooks";
 import virRevenueLeakageRouter from "./virRevenueLeakage";
 
@@ -36,6 +38,21 @@ router.use("/public/communications", virCommunicationWebhooksRouter);
 router.use("/fitness/otic-bridge", fitnessOticBridgeRouter);
 router.use("/fitness/locker-bridge", fitnessLockerBridgeRouter);
 router.use(requireAuth);
+
+// Every authenticated VIR request gets one canonical BIGINT tenant identity before
+// any business router runs. Resolution is fail-closed: no default tenant and no
+// first-membership fallback are allowed for ambiguous accounts.
+router.use(async(req:AuthRequest,res:Response,next:NextFunction)=>{
+  try{
+    const identity=await resolveTenantIdentity(req);
+    if(!identity)return res.status(403).json({ok:false,error:"tenant_context_required",code:"TENANT_CONTEXT_REQUIRED"});
+    if(req.user)req.user.tenant_id=identity.id;
+    return next();
+  }catch(error:any){
+    return res.status(403).json({ok:false,error:error?.message||"tenant_context_resolution_failed",code:"TENANT_CONTEXT_RESOLUTION_FAILED"});
+  }
+});
+
 router.use("/management", virManagementRouter);
 router.use("/intelligence", virIntelligenceRouter);
 router.use("/p1", virP1Router);
@@ -56,6 +73,7 @@ router.use("/p13", virP13Router);
 router.use("/p14", virP14Router);
 router.use("/p15", virP15Router);
 router.use("/p16", virP16Router);
+router.use("/p17", virP17Router);
 router.use("/reception", virReceptionGuestActionsRouter);
 router.use("/migration-center", migrationCenterRouter);
 router.use("/receipt-compliance", receiptComplianceRouter);
