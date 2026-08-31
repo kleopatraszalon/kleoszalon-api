@@ -2,6 +2,7 @@ import type { NextFunction, Response } from "express";
 import { requireAuth, type AuthRequest } from "./auth";
 import { hasAnyRole, parseRoleKeys } from "../security/roles";
 import { writeSystemAudit } from "../audit/systemAudit";
+import { resolveTenantIdentity } from "../saas/tenantAccess";
 
 const ACCOUNTING_ROLE_KEYS = new Set(["accounting", "bookkeeper", "könyvelés", "konyveles"]);
 
@@ -49,4 +50,32 @@ export function requireRoles(...allowed: string[]) {
 }
 
 export const requireAdmin = requireRoles("admin");
-export const requireManagement = requireRoles("admin", "manager");
+
+const requireManagementRoles = requireRoles("admin", "manager");
+
+// All management-gated VIR modules share this middleware. Resolve the canonical
+// SaaS tenant here before their legacy route-local scopes inspect req.user.tenant_id.
+// This repairs old UUID-bearing sessions from the already authenticated location
+// without trusting any tenant id supplied by query/body parameters.
+export const requireManagement = (req: AuthRequest, res: Response, next: NextFunction) => {
+  const run = async () => {
+    try {
+      const path = String(req.originalUrl || req.url || "").split("?", 1)[0].toLowerCase();
+      if (path === "/api/vir" || path.startsWith("/api/vir/")) {
+        const identity = await resolveTenantIdentity(req);
+        if (!identity) {
+          return res.status(403).json({ ok: false, error: "A felhasználóhoz nincs érvényes tenant rendelve." });
+        }
+      }
+      return requireManagementRoles(req, res, next);
+    } catch (error) {
+      console.error("VIR tenant context resolution failed:", error);
+      return res.status(500).json({ ok: false, error: "tenant_context_resolution_failed" });
+    }
+  };
+
+  if (!req.user) {
+    return requireAuth(req, res, () => { void run(); });
+  }
+  void run();
+};
