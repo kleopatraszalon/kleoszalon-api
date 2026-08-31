@@ -3,6 +3,7 @@ import bookingScheduleRouter from "./bookingSchedule";
 import onlineBookingHealthRouter from "./onlineBookingHealth";
 import onlineBookingClientBlockRouter from "./onlineBookingClientBlock";
 import onlineBookingWave1RiskRouter from "./onlineBookingWave1Risk";
+import onlineBookingSkillGuardRouter from "./onlineBookingSkillGuard";
 import onlineBookingResourcesRouter from "./onlineBookingResources";
 import onlineBookingNbaAttributionRouter from "./onlineBookingNbaAttribution";
 import bookingGlobalCatalogRouter from "./bookingGlobalCatalog";
@@ -32,6 +33,10 @@ router.use(onlineBookingClientBlockRouter);
 // VIR I. hullám: no-show kockázat + dinamikus előleg a tényleges foglalási
 // válaszhoz kapcsolva. Fail-soft: AI/policy hiba nem állíthatja le a foglalást.
 router.use(onlineBookingWave1RiskRouter);
+
+// Stabilizálás: a HR skill-mátrix operatív foglalási korlát. Tiltott vagy lejárt
+// képesítésű munkatárs nem jelenhet meg foglalható slotként és közvetlen POST sem kerülheti meg.
+router.use(onlineBookingSkillGuardRouter);
 router.use(onlineBookingResourcesRouter);
 router.use(onlineBookingCoreRouter);
 
