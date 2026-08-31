@@ -80,6 +80,50 @@ export const pool = new Pool({
   keepAlive: true,
 });
 
+/**
+ * VIR tenant identity compatibility.
+ *
+ * The SaaS core uses a numeric (BIGINT) canonical tenant key, while several
+ * legacy VIR modules were written when tenant_id was still assumed to be UUID.
+ * PostgreSQL cannot resolve expressions such as BIGINT = UUID and therefore
+ * those endpoints failed with HTTP 500 before the query could even inspect the
+ * parameter value.
+ *
+ * Keep the compatibility layer deliberately narrow: only tenant_id equality
+ * comparisons with an explicitly UUID-cast bind parameter are normalized.
+ * Equality is performed through text so the same query remains valid against
+ * legacy UUID/text VIR tables and canonical BIGINT business tables during the
+ * one-time schema convergence migration.
+ */
+export function normalizeLegacyTenantSql(sql: string): string {
+  let normalized = sql
+    .replace(
+      /((?:\b[a-zA-Z_][a-zA-Z0-9_]*\.)?tenant_id)\s*=\s*(\$\d+)::uuid\b/gi,
+      "$1::text=$2::text",
+    )
+    .replace(
+      /(\$\d+)::uuid\s*=\s*((?:\b[a-zA-Z_][a-zA-Z0-9_]*\.)?tenant_id)\b/gi,
+      "$1::text=$2::text",
+    );
+
+  // A handful of VIR modules lazily create their own support tables. New
+  // tables must no longer reintroduce the obsolete UUID tenant key after the
+  // migration has converged existing VIR tables to a type-neutral text key.
+  if (/\bCREATE\s+TABLE\b/i.test(normalized) && /\bvir_[a-z0-9_]+\b/i.test(normalized)) {
+    normalized = normalized.replace(/\btenant_id\s+uuid\b/gi, "tenant_id text");
+  }
+
+  return normalized;
+}
+
+function normalizeQueryArg(arg: any) {
+  if (typeof arg === "string") return normalizeLegacyTenantSql(arg);
+  if (arg && typeof arg === "object" && typeof arg.text === "string") {
+    return { ...arg, text: normalizeLegacyTenantSql(arg.text) };
+  }
+  return arg;
+}
+
 function queryText(arg: any) {
   if (typeof arg === "string") return arg;
   if (arg && typeof arg === "object" && typeof arg.text === "string") return arg.text;
@@ -91,6 +135,7 @@ function instrumentClient(client: any) {
   client.__kleoApmQueryWrapped = true;
   const rawQuery = client.query.bind(client);
   client.query = (...args: any[]) => {
+    args[0] = normalizeQueryArg(args[0]);
     const text = queryText(args[0]);
     const started = process.hrtime.bigint();
     const finish = (failed = false) => {
