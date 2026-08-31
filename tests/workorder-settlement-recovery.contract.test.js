@@ -7,7 +7,8 @@ const recovery=fs.readFileSync(path.join(root,'src/services/workOrderSettlementR
 
 test('settlement recovery tolerates partially migrated work order schemas',()=>{
   assert.match(recovery,/columnTypes\(c,'work_orders'\)/);
-  assert.match(recovery,/woCols\.has\('fully_paid'\)/);
+  assert.match(recovery,/const add=.*woCols\.has\(column\)/);
+  assert.match(recovery,/add\('fully_paid',true\)/);
   assert.match(recovery,/woCols\.has\('financial_closed_by'\).*textLike/);
   assert.match(recovery,/timestampLike\(woTypes\.get\('updated_at'\)\)/);
   assert.doesNotMatch(recovery,/UPDATE work_orders SET gross_total=\$2,discount_amount=\$3/);
