@@ -39,6 +39,12 @@ async function completeLinkedAppointment(c:any,wo:any){
   if(!wo?.appointment_id||!(await tableExists('appointments')))return false;
   const appointmentCols=await columns('appointments');
   if(!appointmentCols.has('status'))return false;
+  const current=(await c.query(`SELECT status FROM appointments WHERE id::text=$1 LIMIT 1`,[String(wo.appointment_id)])).rows[0];
+  if(!current)return false;
+  // A retry after a successful finalization must be a pure no-op here.  Once
+  // the work order is locked the appointment immutability trigger correctly
+  // rejects every UPDATE, even one that would write the same terminal status.
+  if(String(current.status||'')==='completed')return true;
   const params:any[]=[String(wo.appointment_id)];
   const sets:string[]=[`status='completed'`];
   if(appointmentCols.has('work_order_id')){
