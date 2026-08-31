@@ -9,13 +9,15 @@ import clientDetailRecoveryRouter from './clientDetailRecovery';
 import customerIntelligenceRouter from './customerIntelligence';
 import nbaMarketingAutomationRouter from './nbaMarketingAutomation';
 import nbaAttributionAdminRouter from './nbaAttributionAdmin';
+import clientListRecoveryRouter from './clientListRecovery';
 import clientRead500HotfixRouter from './clientRead500Hotfix';
 import clientsCoreRouter from './clientsCore';
 
 const router=Router();
-// Critical read recovery must run before any optional CRM/governance bootstrap middleware.
-// Otherwise a legacy schema/bootstrap error can turn harmless GET /segments or GET /:id
-// into HTTP 500 before the defensive read router gets a chance to answer.
+// Critical list/detail reads must run before any optional CRM/governance bootstrap middleware.
+// This keeps appointment guest selection available even when a legacy CRM row contains
+// schema-drifted values that older reads cannot cast safely.
+router.use(clientListRecoveryRouter);
 router.use(clientRead500HotfixRouter);
 router.use('/system-hardening',systemHardeningRouter);
 router.use(clientDuplicateReviewRouter);
