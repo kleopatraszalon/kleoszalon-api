@@ -106,12 +106,13 @@ export function normalizeLegacyTenantSql(sql: string): string {
       "$1::text=$2::text",
     );
 
-  // A handful of VIR modules lazily create their own support tables. New
-  // tables must no longer reintroduce the obsolete UUID tenant key after the
-  // migration has converged existing VIR tables to a type-neutral text key.
-  if (/\bCREATE\s+TABLE\b/i.test(normalized) && /\bvir_[a-z0-9_]+\b/i.test(normalized)) {
-    normalized = normalized.replace(/\btenant_id\s+uuid\b/gi, "tenant_id text");
-  }
+  // A handful of VIR modules lazily create their own support tables. Normalize
+  // only CREATE TABLE statements whose table itself is VIR-owned; a multi-
+  // statement migration may contain unrelated tables and must remain untouched.
+  normalized = normalized.replace(
+    /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?vir_[a-z0-9_]+\s*\([\s\S]*?;/gi,
+    (statement) => statement.replace(/\btenant_id\s+uuid\b/gi, "tenant_id text"),
+  );
 
   return normalized;
 }
