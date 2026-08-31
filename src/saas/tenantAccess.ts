@@ -20,9 +20,13 @@ function featureForRequest(req: AuthRequest): string | null {
   return null;
 }
 
-function isDashboardRequest(req: AuthRequest): boolean {
-  const path = String(req.originalUrl || req.baseUrl || req.url || "").split("?", 1)[0].toLowerCase();
-  return path === "/api/dashboard" || path.startsWith("/api/dashboard/");
+function requestPath(req: AuthRequest): string {
+  return String(req.originalUrl || req.baseUrl || req.url || "").split("?", 1)[0].toLowerCase();
+}
+
+function allowsAuthenticatedLocationRepair(req: AuthRequest): boolean {
+  const path = requestPath(req);
+  return path === "/api/dashboard" || path.startsWith("/api/dashboard/") || path === "/api/vir" || path.startsWith("/api/vir/");
 }
 
 async function tenantFromAuthenticatedLocation(userId: string, locationId: unknown, role: unknown) {
@@ -83,11 +87,12 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const tokenRow = tokenTenantId ? await tenantFromToken(userId, tokenTenantId) : null;
   const locationRow = await tenantFromAuthenticatedLocation(userId, authUser.location_id, authUser.role);
 
-  // A stale signed tenant_id may only be repaired from the user's authenticated
-  // location for dashboard compatibility. It never grants access to an arbitrary
-  // tenant; normal tenant/location boundary middleware still applies afterwards.
+  // Dashboard and VIR are authenticated first-party surfaces. If an older signed
+  // session still carries the former UUID tenant_id, repair it only from the
+  // already-authenticated location. This never trusts an arbitrary query/body
+  // tenant and therefore preserves the existing tenant/location boundary.
   let row = tokenRow;
-  if (isDashboardRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
+  if (allowsAuthenticatedLocationRepair(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
   if (!row && !tokenTenantId) row = locationRow;
   if (!row && !tokenTenantId) row = await tenantFromMembership(userId);
 
