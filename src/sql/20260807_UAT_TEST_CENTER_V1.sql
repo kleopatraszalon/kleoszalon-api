@@ -87,6 +87,9 @@ ALTER TABLE menus ADD COLUMN IF NOT EXISTS parent_id bigint;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
 CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL;
+-- ON CONFLICT(code) cannot infer a partial unique index; a full unique index
+-- still permits multiple NULL codes while providing a valid upsert arbiter.
+CREATE UNIQUE INDEX IF NOT EXISTS menus_code_conflict_uq ON menus(code);
 
 CREATE TABLE IF NOT EXISTS role_menu_permissions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
