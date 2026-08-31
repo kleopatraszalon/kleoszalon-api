@@ -26,6 +26,14 @@ test('UAT migration repairs legacy menus icon before inserting menu rows', () =>
   assert.ok(firstIconUseIndex > iconRepairIndex, 'menus.icon must be repaired before UAT menu inserts use it');
 });
 
+test('UAT menu upsert has a full unique code arbiter', () => {
+  const fullUniqueIndex = sql.indexOf('CREATE UNIQUE INDEX IF NOT EXISTS menus_code_conflict_uq ON menus(code);');
+  const firstMenuUpsert = sql.indexOf('ON CONFLICT(code) DO UPDATE SET is_active=true');
+
+  assert.ok(fullUniqueIndex >= 0, 'full menus(code) unique index must exist for ON CONFLICT inference');
+  assert.ok(firstMenuUpsert > fullUniqueIndex, 'full menus(code) unique arbiter must exist before menu upserts');
+});
+
 test('UAT migration bootstraps RBAC permissions before assigning the UAT menu', () => {
   const permissionsCreateIndex = sql.indexOf('CREATE TABLE IF NOT EXISTS role_menu_permissions');
   const permissionsUniqueIndex = sql.indexOf('CREATE UNIQUE INDEX IF NOT EXISTS role_menu_permissions_role_menu_uq');
