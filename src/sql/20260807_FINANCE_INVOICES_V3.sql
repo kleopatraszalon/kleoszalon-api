@@ -37,6 +37,24 @@ CREATE TABLE IF NOT EXISTS finance_invoices (
   CONSTRAINT finance_invoices_amount_ck CHECK(net_total >= 0 AND vat_total >= 0 AND gross_total >= 0)
 );
 
+-- `CREATE TABLE IF NOT EXISTS` does not repair an older table.  Production and
+-- integration databases can therefore have the V1/V2 shape while this V3
+-- migration is replayed.  Add every V3 column used below before creating
+-- indexes or running later finance/NAV migrations.
+ALTER TABLE finance_invoices
+  ADD COLUMN IF NOT EXISTS partner_tax_no text,
+  ADD COLUMN IF NOT EXISTS purchase_order_id text,
+  ADD COLUMN IF NOT EXISTS payment_account_id uuid REFERENCES financial_accounts(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS payment_movement_id uuid REFERENCES financial_movements(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS journal_entry_id uuid REFERENCES accounting_journal_entries(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS approved_at timestamptz,
+  ADD COLUMN IF NOT EXISTS approved_by text,
+  ADD COLUMN IF NOT EXISTS paid_at timestamptz,
+  ADD COLUMN IF NOT EXISTS posted_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+  ADD COLUMN IF NOT EXISTS cancel_reason text,
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
 CREATE UNIQUE INDEX IF NOT EXISTS finance_invoices_invoice_no_uq
 ON finance_invoices(direction, invoice_no)
 WHERE invoice_no IS NOT NULL;
