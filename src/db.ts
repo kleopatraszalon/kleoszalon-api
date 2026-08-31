@@ -81,7 +81,7 @@ export const pool = new Pool({
 });
 
 /**
- * VIR tenant identity compatibility.
+ * VIR tenant/schema compatibility.
  *
  * The SaaS core uses a numeric (BIGINT) canonical tenant key, while several
  * legacy VIR modules were written when tenant_id was still assumed to be UUID.
@@ -89,11 +89,10 @@ export const pool = new Pool({
  * those endpoints failed with HTTP 500 before the query could even inspect the
  * parameter value.
  *
- * Keep the compatibility layer deliberately narrow: only tenant_id equality
- * comparisons with an explicitly UUID-cast bind parameter are normalized.
- * Equality is performed through text so the same query remains valid against
- * legacy UUID/text VIR tables and canonical BIGINT business tables during the
- * one-time schema convergence migration.
+ * The current locations schema uses is_active. Older VIR modules still contain
+ * the legacy unqualified predicate `active IS DISTINCT FROM false` on locations.
+ * Normalize only that exact legacy predicate when the statement actually reads
+ * from locations; do not rewrite generic employee/product active predicates.
  */
 export function normalizeLegacyTenantSql(sql: string): string {
   let normalized = sql
@@ -105,6 +104,13 @@ export function normalizeLegacyTenantSql(sql: string): string {
       /(\$\d+)::uuid\s*=\s*((?:\b[a-zA-Z_][a-zA-Z0-9_]*\.)?tenant_id)\b/gi,
       "$1::text=$2::text",
     );
+
+  if (/\b(?:FROM|JOIN)\s+(?:public\.)?locations\b/i.test(normalized)) {
+    normalized = normalized.replace(
+      /\bactive\s+IS\s+DISTINCT\s+FROM\s+false\b/gi,
+      "is_active IS DISTINCT FROM false",
+    );
+  }
 
   // A handful of VIR modules lazily create their own support tables. Normalize
   // only CREATE TABLE statements whose table itself is VIR-owned; a multi-
@@ -169,6 +175,11 @@ function instrumentClient(client: any) {
     }
   };
 }
+
+// Normalize at the Pool.query boundary as well as on acquired clients. This is
+// important for legacy VIR routes that call pool.query() directly: they now get
+// the same tenant/schema compatibility regardless of connection reuse timing.
+instrumentClient(pool as any);
 
 // Server-side session settings. The VIR operates on Hungarian business days,
 // therefore CURRENT_DATE and timestamptz::date must follow Europe/Budapest
