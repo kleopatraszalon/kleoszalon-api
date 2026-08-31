@@ -7,8 +7,8 @@ const roles=fs.readFileSync('src/middleware/requireRoles.ts','utf8');
 const tenant=fs.readFileSync('src/saas/tenantAccess.ts','utf8');
 
 test('legacy VIR tenant casts are normalized at pool query boundary',()=>{
-  assert.match(db,/tenant_id\).*::text=\$2::text|tenant_id\).*\$2::text/);
-  assert.match(db,/instrumentClient\(pool as any\)/);
+  assert.ok(db.includes('"$1::text=$2::text"'),'tenant UUID equality must normalize to text-safe equality');
+  assert.ok(db.includes('instrumentClient(pool as any);'),'direct pool.query calls must pass through compatibility normalization');
 });
 
 test('legacy locations active predicate maps to canonical is_active',()=>{
@@ -19,5 +19,6 @@ test('legacy locations active predicate maps to canonical is_active',()=>{
 test('management-gated VIR requests resolve canonical tenant before route scopes',()=>{
   assert.match(roles,/resolveTenantIdentity/);
   assert.match(roles,/path\.startsWith\("\/api\/vir\/"\)/);
+  assert.match(tenant,/function\s+isVirRequest/);
   assert.match(tenant,/path\.startsWith\("\/api\/vir\/"\)/);
 });
