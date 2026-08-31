@@ -1,5 +1,6 @@
 import {Router,Response,NextFunction} from 'express';
 import db from '../db';
+import {ensureFinanceNav} from '../finance/ensureFinanceNav';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 
 const router=Router();
@@ -11,10 +12,18 @@ const isAdmin=(req:AuthRequest)=>roles(req.user?.role).some(r=>ADMIN.includes(r)
 const canEdit=(req:AuthRequest)=>isAdmin(req)||roles(req.user?.role).some(r=>EDITORS.includes(r));
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 let ready=false;
+let readyPromise:Promise<void>|null=null;
 
 async function ensureSchema(){
  if(ready)return;
- await db.query(`
+ if(!readyPromise){
+  readyPromise=(async()=>{
+   // A Finance/NAV bootstrap ugyanazokat a törzstáblákat és work-order
+   // struktúrákat is érinti. Hideg induláskor előbb ezt várjuk meg, így a
+   // két egymástól független DDL bootstrap nem tud eltérő lock-sorrenddel
+   // PostgreSQL deadlockot létrehozni.
+   await ensureFinanceNav();
+   await db.query(`
  CREATE EXTENSION IF NOT EXISTS pgcrypto;
  CREATE TABLE IF NOT EXISTS service_material_requirements(
    id bigserial PRIMARY KEY,
@@ -127,7 +136,10 @@ async function ensureSchema(){
    END IF;
  END $$;
  `);
- ready=true;
+   ready=true;
+  })().catch(error=>{readyPromise=null;throw error});
+ }
+ return readyPromise;
 }
 function scopedLocation(req:AuthRequest,requested:string){if(isAdmin(req))return requested;return req.user?.location_id?String(req.user.location_id):''}
 
