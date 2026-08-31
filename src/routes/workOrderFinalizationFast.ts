@@ -35,6 +35,26 @@ async function ensureArchiveRow(c:any,wo:any,terminalStatus='completed'){
   return (await c.query(`INSERT INTO work_order_archive(work_order_id,work_order_number,archived_at,terminal_status,snapshot,snapshot_hash) VALUES($1::uuid,$2,COALESCE($3::timestamptz,now()),$4,$5::jsonb,$6) RETURNING *`,[wo.id,number,wo.archived_at||wo.locked_at||wo.completed_at||new Date().toISOString(),terminalStatus,JSON.stringify(snapshot),hash])).rows[0];
 }
 
+async function completeLinkedAppointment(c:any,wo:any){
+  if(!wo?.appointment_id||!(await tableExists('appointments')))return false;
+  const appointmentCols=await columns('appointments');
+  if(!appointmentCols.has('status'))return false;
+  const params:any[]=[String(wo.appointment_id)];
+  const sets:string[]=[`status='completed'`];
+  if(appointmentCols.has('work_order_id')){
+    params.push(String(wo.id));
+    const cast=appointmentCols.get('work_order_id')==='uuid'?'::uuid':'';
+    sets.push(`work_order_id=COALESCE(work_order_id,$${params.length}${cast})`);
+  }
+  if(appointmentCols.has('work_order_number')){
+    params.push(wo.work_order_number||null);
+    sets.push(`work_order_number=COALESCE(work_order_number,$${params.length})`);
+  }
+  if(timestampLike(appointmentCols.get('updated_at')))sets.push('updated_at=now()');
+  const updated=await c.query(`UPDATE appointments SET ${sets.join(',')} WHERE id::text=$1 RETURNING id`,params);
+  return Boolean(updated.rows[0]);
+}
+
 async function deliverNow(workOrderId:string,forceMail=false){
   try{
     const delivery=await generateAndDeliverClosedWorkOrder(workOrderId,{sendMail:true,forceMail});
@@ -79,9 +99,10 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
         catch(e:any){await c.query('ROLLBACK TO SAVEPOINT wo_repair_close_markers');console.warn('[workorder-finalization-fast] close marker repair skipped',e?.code||'',e?.message||e)}
         await c.query('RELEASE SAVEPOINT wo_repair_close_markers');
       }
+      const appointmentCompleted=await completeLinkedAppointment(c,wo);
       await c.query('COMMIT');
       const docs=queueDelivery(String(wo.id),false);
-      return res.json({idempotent:true,repaired:true,finalized:true,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
+      return res.json({idempotent:true,repaired:true,finalized:true,appointment_completed:appointmentCompleted,work_order:{...wo,status:'completed'},archive,fast:true,...docs});
     }
     if(['cancelled','no_show'].includes(String(wo.status||''))){await c.query('ROLLBACK');return res.status(409).json({message:'Lemondott vagy meg nem jelent munkalap nem zárható teljesítettként.',code:'WORKORDER_TERMINAL_CANCELLED'})}
 
@@ -94,6 +115,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     if(!financiallyClosed||paid+.009<due){await c.query('ROLLBACK');return res.status(409).json({message:'A munkalap csak teljesen kifizetett és pénzügyileg lezárt állapotban véglegesíthető.',code:'WORKORDER_NOT_FINANCIALLY_CLOSED',amount_due:due,amount_paid:paid})}
 
     const inventory=await consumeWorkOrderInventory(c,wo,actor(req));
+    const appointmentCompleted=await completeLinkedAppointment(c,wo);
 
     const params:any[]=[wo.id];
     const buildSets=(includeStatus:boolean)=>{
@@ -145,7 +167,7 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     await c.query('COMMIT');
 
     const docs=queueDelivery(String(wo.id),false);
-    return res.json({finalized:true,fast:true,status_persisted:statusPersisted,work_order:{...wo,status:'completed'},archive,inventory,...docs});
+    return res.json({finalized:true,fast:true,status_persisted:statusPersisted,appointment_completed:appointmentCompleted,work_order:{...wo,status:'completed'},archive,inventory,...docs});
   }catch(e:any){
     await c.query('ROLLBACK').catch(()=>undefined);
     console.error('[workorder-finalization-fast] failed',e?.code||'',e?.message||e);
