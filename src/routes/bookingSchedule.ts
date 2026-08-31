@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import db from "../db";
 import ensureOnlineBooking from "../booking/ensureOnlineBooking";
+import { employeeSkillEligibility } from "../booking/employeeSkillEligibility";
 
 const router=Router();
 const UUID_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -27,7 +28,7 @@ async function serviceDuration(serviceIds:string[],locationId:string){
 }
 
 async function eligibleEmployees(locationId:string,employeeId:string,serviceIds:string[]){
-  return (await db.query(`SELECT e.id::text id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name FROM employees e WHERE COALESCE(e.active,true)=true AND (e.location_id=$1::uuid OR e.location_id IS NULL) AND ($2::uuid IS NULL OR e.id=$2::uuid) AND (NOT EXISTS(SELECT 1 FROM employee_service_overrides eo0 WHERE eo0.employee_id=e.id) OR NOT EXISTS(SELECT 1 FROM unnest($3::uuid[]) sid(service_id) WHERE NOT EXISTS(SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id=e.id AND eo.service_id=sid.service_id))) ORDER BY full_name`,[locationId,employeeId||null,serviceIds])).rows;
+  return (await db.query(`SELECT e.id::text id,COALESCE(NULLIF(btrim(e.full_name),''),NULLIF(btrim(concat_ws(' ',e.last_name,e.first_name)),''),'Munkatárs') full_name FROM employees e WHERE COALESCE(e.active,true)=true AND (e.location_id=$1::uuid OR e.location_id IS NULL) AND ($2::uuid IS NULL OR e.id=$2::uuid) AND (NOT EXISTS(SELECT 1 FROM employee_service_overrides eo0 WHERE eo0.employee_id=e.id) OR NOT EXISTS(SELECT 1 FROM unnest($3::uuid[]) sid(service_id) WHERE NOT EXISTS(SELECT 1 FROM employee_service_overrides eo WHERE eo.employee_id=e.id AND eo.service_id=sid.service_id AND COALESCE(eo.can_perform,true)=true AND (eo.qualification_valid_until IS NULL OR eo.qualification_valid_until>=CURRENT_DATE))) ORDER BY full_name`,[locationId,employeeId||null,serviceIds])).rows;
 }
 
 type Interval={from:Date;to:Date};
@@ -66,6 +67,8 @@ async function validateBookSchedule(req:Request,res:Response,next:NextFunction){
   try{
     const locationId=String(req.body?.location_id||"").trim(),employeeId=String(req.body?.employee_id||"").trim(),serviceIds=Array.isArray(req.body?.service_ids)?req.body.service_ids.map(String).filter(Boolean):[],start=new Date(req.body?.start_time);
     if(!locationId||!employeeId||!serviceIds.length||!Number.isFinite(start.getTime()))return next();
+    const skillEligibility=await employeeSkillEligibility(db,employeeId,serviceIds);
+    if(!skillEligibility.allowed)return res.status(409).json({error:"A kiválasztott szakember jelenlegi szakmai jogosultsága alapján nem foglalható minden kiválasztott szolgáltatásra.",code:"EMPLOYEE_SKILL_NOT_ELIGIBLE"});
     const cfg=await config(locationId),duration=await serviceDuration(serviceIds,locationId);if(duration==null)return next();const end=addMinutes(start,duration);
     const local=(await db.query(`SELECT to_char(($1::timestamptz AT TIME ZONE 'Europe/Budapest')::date,'YYYY-MM-DD') AS booking_day,EXTRACT(HOUR FROM ($1::timestamptz AT TIME ZONE 'Europe/Budapest'))::int*60+EXTRACT(MINUTE FROM ($1::timestamptz AT TIME ZONE 'Europe/Budapest'))::int AS start_min,to_char(($2::timestamptz AT TIME ZONE 'Europe/Budapest')::date,'YYYY-MM-DD') AS end_day,EXTRACT(HOUR FROM ($2::timestamptz AT TIME ZONE 'Europe/Budapest'))::int*60+EXTRACT(MINUTE FROM ($2::timestamptz AT TIME ZONE 'Europe/Budapest'))::int AS end_min`,[start.toISOString(),end.toISOString()])).rows[0];
     if(local.booking_day!==local.end_day||Number(local.start_min)<Number(cfg.opening_minute||480)||Number(local.end_min)>Number(cfg.closing_minute||1200))return res.status(409).json({error:"A kiválasztott időpont a szalon online foglalási nyitvatartásán kívül esik."});
