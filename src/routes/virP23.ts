@@ -1,0 +1,13 @@
+import {Router,Response} from 'express';
+import pool from '../db';
+import type {AuthRequest} from '../middleware/auth';
+import {requireManagement} from '../middleware/requireRoles';
+import {actorId,tenantId,validateLocation} from './virP20P22Shared';
+import {buildDigitalTwin} from './virP23P25Shared';
+
+const router=Router();router.use(requireManagement);
+router.get('/status',async(req:AuthRequest,res:Response)=>{const tenant=tenantId(req,res);if(!tenant)return;try{const counts=(await pool.query(`SELECT COUNT(*)::int snapshots,MAX(created_at) last_snapshot_at,AVG(completeness)::numeric avg_completeness FROM vir_p23_twin_snapshots WHERE tenant_id=$1::bigint`,[tenant])).rows[0];return res.json({ok:true,model:'business_digital_twin_v1',simulation_only:true,automatic_execution:false,counts});}catch(e:any){return res.status(500).json({ok:false,error:e?.message||'p23_status_failed'});}});
+router.get('/twin',async(req:AuthRequest,res:Response)=>{const tenant=tenantId(req,res);if(!tenant)return;const location=await validateLocation(req.query.locationId,tenant,res);if(location===undefined)return;try{return res.json({ok:true,twin:await buildDigitalTwin(tenant,location)});}catch(e:any){return res.status(500).json({ok:false,error:e?.message||'p23_twin_failed'});}});
+router.post('/snapshot',async(req:AuthRequest,res:Response)=>{const tenant=tenantId(req,res);if(!tenant)return;const location=await validateLocation(req.body?.locationId,tenant,res);if(location===undefined)return;try{const twin=await buildDigitalTwin(tenant,location),row=(await pool.query(`INSERT INTO vir_p23_twin_snapshots(tenant_id,location_id,model_key,completeness,freshness_at,snapshot,created_by) VALUES($1::bigint,$2::uuid,$3,$4,now(),$5::jsonb,$6) RETURNING *`,[tenant,location,twin.model,twin.completeness,JSON.stringify(twin),actorId(req)])).rows[0];return res.status(201).json({ok:true,item:row,twin});}catch(e:any){return res.status(500).json({ok:false,error:e?.message||'p23_snapshot_failed'});}});
+router.get('/snapshots',async(req:AuthRequest,res:Response)=>{const tenant=tenantId(req,res);if(!tenant)return;try{return res.json({ok:true,items:(await pool.query(`SELECT id,tenant_id,location_id,model_key,completeness,freshness_at,created_by,created_at,snapshot FROM vir_p23_twin_snapshots WHERE tenant_id=$1::bigint ORDER BY created_at DESC LIMIT 100`,[tenant])).rows});}catch(e:any){return res.status(500).json({ok:false,error:e?.message||'p23_snapshots_failed'});}});
+export default router;
