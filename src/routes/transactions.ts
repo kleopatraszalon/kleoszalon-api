@@ -9,6 +9,7 @@ import cashierShiftRouter from "./cashierShift";
 import cashierAltegioParityRouter from "./cashierAltegioParity";
 import retailProducts500HotfixRouter from "./retailProducts500Hotfix";
 import workOrderCashierFastRouter from "./workOrderCashierFast";
+import workOrderSettlementErrorRecovery from "./workOrderSettlementErrorRecovery";
 import financeOperationsRouter from "./financeOperations";
 import financeAltegioRouter from "./financeAltegio";
 import financeAltegioV5Router from "./financeAltegioV5";
@@ -148,6 +149,7 @@ router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierS
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
+router.use("/cashier",workOrderSettlementErrorRecovery);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
 router.use("/finance-v5",ensureFinanceReady,requireFeature("finance"),financeAltegioV5Router);
@@ -165,6 +167,7 @@ router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpen
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
 router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
+router.use("/loyalty-cashier",workOrderSettlementErrorRecovery);
 
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
 router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
