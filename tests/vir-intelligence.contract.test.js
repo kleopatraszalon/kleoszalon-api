@@ -10,9 +10,11 @@ test("VIR intelligence router is authenticated, management-only and mounted",()=
  assert.ok(source.includes("router.use(requireManagement)"));
 });
 
-test("VIR intelligence is tenant-scoped and validates requested location",()=>{
+test("VIR intelligence is tenant-scoped and validates requested location with canonical bigint tenant id",()=>{
  const source=read("src/routes/virIntelligence.ts");
- for(const marker of ["req.user?.tenant_id","locations WHERE id=$1::uuid AND tenant_id=$2::uuid","tenantLocations(scope)"])assert.ok(source.includes(marker),`missing ${marker}`);
+ for(const marker of ["req.user?.tenant_id","locations WHERE id=$1::uuid AND tenant_id=$2::bigint","tenantLocations(scope)"])assert.ok(source.includes(marker),`missing ${marker}`);
+ assert.ok(source.includes("tenant_id=$1::bigint"),"tenant-wide location lookup must use canonical bigint tenant id");
+ assert.ok(!source.includes("tenant_id=$2::uuid"),"legacy UUID tenant cast must not return");
 });
 
 test("profitability intelligence reuses canonical Wave II profit engine and tenant aggregates it",()=>{
