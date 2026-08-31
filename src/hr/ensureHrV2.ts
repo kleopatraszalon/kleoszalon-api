@@ -45,10 +45,23 @@ async function ensureSafeHrCore() {
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now()`);
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
   await pool.query(`ALTER TABLE hr_positions ADD COLUMN IF NOT EXISTS revenue_target_per_hour numeric(14,2) NOT NULL DEFAULT 0`);
+
+  // Canonical employee columns used by the current timetable/scheduling runtime.
+  // Older installations may only expose legacy name/photo/location variants;
+  // adding the canonical nullable columns keeps the runtime fail-safe while the
+  // schema-tolerant read paths continue to support those legacy variants.
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS full_name text`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS photo_url text`);
+  await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS location_id uuid`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS position_id uuid`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS active boolean NOT NULL DEFAULT true`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS login_name text`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()`);
+  await pool.query(`
+    UPDATE employees
+       SET full_name = COALESCE(NULLIF(btrim(full_name), ''), NULLIF(btrim(login_name), ''), 'Munkatárs')
+     WHERE full_name IS NULL OR btrim(full_name) = ''
+  `);
 }
 
 async function alreadyApplied(version: string) {
