@@ -88,24 +88,25 @@ FOR EACH ROW EXECUTE FUNCTION vir_default_work_order_legal_entity();
 -- A cég nélküli operatív munkalapot még ki lehet választott céghez rendelni,
 -- de pénzügyi bizonyítékot nem engedünk létrehozni addig, amíg ez nem történt meg.
 CREATE OR REPLACE FUNCTION vir_fill_legal_entity() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE location_value text;
+DECLARE
+  location_value text;
+  reversal_id_text text;
 BEGIN
   IF NEW.legal_entity_id IS NOT NULL THEN RETURN NEW; END IF;
   IF NEW.work_order_id IS NOT NULL THEN
-    SELECT legal_entity_id INTO NEW.legal_entity_id FROM work_orders WHERE id=NEW.work_order_id;
+    SELECT legal_entity_id INTO NEW.legal_entity_id FROM work_orders WHERE id::text=NEW.work_order_id::text;
     IF NEW.legal_entity_id IS NULL THEN
       RAISE EXCEPTION 'A munkalap pénzügyi művelete előtt válasszon kibocsátó céget.' USING ERRCODE='23514';
     END IF;
   END IF;
-  IF NEW.legal_entity_id IS NULL AND TG_TABLE_NAME='financial_movements' AND NEW.reversal_of_id IS NOT NULL THEN
-    SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id=NEW.reversal_of_id;
+  IF NEW.legal_entity_id IS NULL AND TG_TABLE_NAME='financial_movements' THEN
+    reversal_id_text:=to_jsonb(NEW)->>'reversal_of_id';
+    IF NULLIF(btrim(COALESCE(reversal_id_text,'')),'') IS NOT NULL THEN
+      SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id::text=reversal_id_text;
+    END IF;
   END IF;
   IF NEW.legal_entity_id IS NULL THEN
-    BEGIN
-      location_value:=NEW.location_id::text;
-    EXCEPTION WHEN undefined_column THEN
-      location_value:=NULL;
-    END;
+    location_value:=to_jsonb(NEW)->>'location_id';
     IF NULLIF(location_value,'') IS NOT NULL THEN
       SELECT el.legal_entity_id INTO NEW.legal_entity_id
       FROM legal_entity_locations el JOIN legal_entities e ON e.id=el.legal_entity_id
