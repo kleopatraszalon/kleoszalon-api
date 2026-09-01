@@ -1,6 +1,6 @@
 import {readFile} from 'fs/promises';
 import path from 'path';
-import pool from '../db';
+import pool,{PG_POOL_MAX} from '../db';
 import {ensureHrV2} from '../hr/ensureHrV2';
 import {ensureMenuHealth} from '../menu/ensureMenuHealth';
 import {ensureFinanceV5Menu} from './ensureFinanceV5Menu';
@@ -8,6 +8,43 @@ import {ensureWorkOrderWorkflow} from '../workorders/ensureWorkOrderWorkflow';
 import {ensureFixedAssetSchema} from '../routes/fixedAssets';
 
 let ensurePromise:Promise<void>|null=null;
+let bootstrapQueue:Promise<void>=Promise.resolve();
+const RUNTIME_SCHEMA_LOCK_KEY='kleoszalon:runtime-schema-bootstrap:v1';
+
+/**
+ * Serializes lazy DDL bootstraps both inside one Node process and, when the pool
+ * has a spare connection, across API instances through a PostgreSQL advisory
+ * lock. This prevents cold-start deadlocks caused by independent modules taking
+ * overlapping table locks in a different order.
+ *
+ * PG_POOL_MAX=1 falls back to the in-process queue so the dedicated advisory
+ * lock connection cannot starve the callback's pool.query calls.
+ */
+export async function withRuntimeSchemaBootstrapLock<T>(fn:()=>Promise<T>):Promise<T>{
+  let releaseQueue!:()=>void;
+  const previous=bootstrapQueue;
+  bootstrapQueue=new Promise<void>(resolve=>{releaseQueue=resolve});
+  await previous;
+
+  let client:any=null;
+  const statementTimeout=Math.max(1000,Number(process.env.PG_STATEMENT_TIMEOUT_MS??8000));
+  const lockTimeout=Math.max(statementTimeout,Number(process.env.PG_BOOTSTRAP_LOCK_TIMEOUT_MS??60000));
+  try{
+    if(PG_POOL_MAX>1){
+      client=await pool.connect();
+      await client.query(`SET statement_timeout = ${lockTimeout}`);
+      await client.query(`SELECT pg_advisory_lock(hashtext($1)::bigint)`,[RUNTIME_SCHEMA_LOCK_KEY]);
+    }
+    return await fn();
+  }finally{
+    if(client){
+      try{await client.query(`SELECT pg_advisory_unlock(hashtext($1)::bigint)`,[RUNTIME_SCHEMA_LOCK_KEY])}catch(error){console.error('Runtime schema advisory unlock failed',error)}
+      try{await client.query(`SET statement_timeout = ${statementTimeout}`)}catch{}
+      client.release();
+    }
+    releaseQueue();
+  }
+}
 
 export class FinanceNavBootstrapError extends Error{
   stage:string;
@@ -38,7 +75,7 @@ async function step(stage:string,fn:()=>Promise<any>){try{return await fn()}catc
 
 export function ensureFinanceNav(){
   if(!ensurePromise){
-    ensurePromise=(async()=>{
+    ensurePromise=withRuntimeSchemaBootstrapLock(async()=>{
       await step('work_order_workflow',()=>ensureWorkOrderWorkflow(pool));
       await step('hr_v2',()=>ensureHrV2());
       await step('fixed_assets_schema',()=>ensureFixedAssetSchema());
@@ -63,6 +100,6 @@ export function ensureFinanceNav(){
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3.sql',
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V3'
       ));
-    })().catch(err=>{ensurePromise=null;throw err});
+    }).catch(err=>{ensurePromise=null;throw err});
   }return ensurePromise;
 }
