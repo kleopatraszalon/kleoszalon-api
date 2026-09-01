@@ -5,13 +5,12 @@ const path=require('node:path');
 const root=path.resolve(__dirname,'..');
 const read=p=>fs.readFileSync(path.join(root,p),'utf8');
 
-test('workorder company access accepts authenticated tenant ownership without weakening employee fallback',()=>{
+test('workorder company access accepts signed tenant location ownership without weakening employee fallback',()=>{
  const route=read('src/routes/workOrderLegalEntity.ts');
  assert.match(route,/req\.user\?\.tenant_id/);
- assert.match(route,/to_jsonb\(w\)->>'tenant_id'/);
- assert.match(route,/work_order_tenant_id/);
- assert.match(route,/employeeCanAccess\(req,employeeId\)/);
  assert.match(route,/locationBelongsToTenant\(locationId,tokenTenant\)/);
+ assert.match(route,/resolveTenantIdentity\(req\)/);
+ assert.match(route,/employeeCanAccess\(req,employeeId\)/);
  assert.match(route,/konyveles/);
  assert.match(route,/könyvelés/);
 });
