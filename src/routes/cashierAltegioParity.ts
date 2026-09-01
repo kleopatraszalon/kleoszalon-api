@@ -121,7 +121,7 @@ router.get('/altegio/partners',async(req:AuthRequest,res,next)=>{try{const loc=l
 
 router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{const client=await db.connect();try{
  const payments=Array.isArray(req.body?.payments)?req.body.payments:[];if(!payments.length)return next();
- const order=(await client.query(`SELECT location_id FROM work_orders WHERE id::text=$1`,[req.params.id])).rows[0];if(!order)return next();const locationId=String(order.location_id),shift=await currentShift(locationId);if(!shift)return res.status(409).json({message:'A fizetéshez nyitott pénztári műszak szükséges.'});
+ const order=(await client.query(`SELECT location_id FROM work_orders WHERE id::text=$1`,[req.params.id])).rows[0];if(!order)return next();const locationId=String(order.location_id),shift=await currentShift(locationId);
  await client.query('BEGIN');await client.query(`DELETE FROM cashier_payment_context WHERE work_order_id=$1 AND (consumed_at IS NOT NULL OR expires_at<=now())`,[req.params.id]);
  for(let i=0;i<payments.length;i++){
   const p=payments[i],code=String(p?.payment_method_code||p?.payment_method||'').trim().toLowerCase();
@@ -129,10 +129,11 @@ router.post('/workorders/:id/settle',async(req:AuthRequest,res,next)=>{const cli
   let config:any=null,base=builtin[code]||'';
   if(!base){config=(await client.query(`SELECT * FROM finance_payment_methods WHERE lower(code)=lower($1) AND active=true AND (location_id=$2 OR location_id IS NULL) ORDER BY location_id NULLS LAST LIMIT 1`,[code,locationId])).rows[0];if(!config){await client.query('ROLLBACK');return res.status(400).json({message:`Ismeretlen fizetési mód: ${code}`})}const t=String(config.method_type||'custom');base=t==='cash'?'cash':t==='card'||t==='online_card'?'card':t==='bank_transfer'?'transfer':t==='voucher'?'voucher':'other'}
   if(!config)config=(await client.query(`SELECT * FROM finance_payment_methods WHERE lower(code)=lower($1) AND active=true AND (location_id=$2 OR location_id IS NULL) ORDER BY location_id NULLS LAST LIMIT 1`,[code,locationId])).rows[0]||null;
+  if(base==='cash'&&!shift){await client.query('ROLLBACK');return res.status(409).json({message:'Készpénzes fizetéshez nyitott pénztári műszak szükséges.'})}
   const amount=money(p?.amount);if(!(amount>0)){await client.query('ROLLBACK');return res.status(400).json({message:'A fizetési összeg legyen pozitív.'})}
   const brand=String(p?.card_brand||''),brandRate=brand&&config?.brand_fees?.[brand]!=null?Number(config.brand_fees[brand]):Number(config?.fee_percent||0),fee=money(amount*brandRate/100+Number(config?.fee_fixed||0));
-  p.payment_method=base;p.payment_method_code=code;p.finance_account_id=p.finance_account_id||config?.account_id||null;p.cashier_shift_id=shift.id;p.fee_amount=fee;
-  await client.query(`INSERT INTO cashier_payment_context(work_order_id,sequence_no,base_method,amount,payment_method_code,finance_account_id,cashier_shift_id,card_brand,fee_amount) VALUES($1,$2,$3,$4,$5,$6::uuid,$7,$8,$9)`,[req.params.id,i,base,amount,code,p.finance_account_id||null,shift.id,brand||null,fee]);
+  p.payment_method=base;p.payment_method_code=code;p.finance_account_id=p.finance_account_id||config?.account_id||null;p.cashier_shift_id=shift?.id||null;p.fee_amount=fee;
+  await client.query(`INSERT INTO cashier_payment_context(work_order_id,sequence_no,base_method,amount,payment_method_code,finance_account_id,cashier_shift_id,card_brand,fee_amount) VALUES($1,$2,$3,$4,$5,$6::uuid,$7,$8,$9)`,[req.params.id,i,base,amount,code,p.finance_account_id||null,shift?.id||null,brand||null,fee]);
  }
  await client.query('COMMIT');next();
 }catch(e){await client.query('ROLLBACK').catch(()=>undefined);next(e)}finally{client.release()}});
