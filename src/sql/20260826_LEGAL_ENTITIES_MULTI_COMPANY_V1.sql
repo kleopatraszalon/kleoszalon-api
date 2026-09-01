@@ -134,12 +134,16 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION vir_fill_legal_entity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE reversal_id_text text;
 BEGIN
   IF NEW.legal_entity_id IS NULL AND NEW.work_order_id IS NOT NULL THEN
     SELECT legal_entity_id INTO NEW.legal_entity_id FROM work_orders WHERE id::text=NEW.work_order_id::text;
   END IF;
-  IF NEW.legal_entity_id IS NULL AND TG_TABLE_NAME='financial_movements' AND NEW.reversal_of_id IS NOT NULL THEN
-    SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id::text=NEW.reversal_of_id::text;
+  IF NEW.legal_entity_id IS NULL AND TG_TABLE_NAME='financial_movements' THEN
+    reversal_id_text:=to_jsonb(NEW)->>'reversal_of_id';
+    IF NULLIF(btrim(COALESCE(reversal_id_text,'')),'') IS NOT NULL THEN
+      SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id::text=reversal_id_text;
+    END IF;
   END IF;
   RETURN NEW;
 END $$;
