@@ -76,7 +76,7 @@ async function ensureKioskQueueSchema() {
           n := next_kiosk_daily_queue(NEW.location_id,d);
           NEW.kiosk_queue_date := d;
           NEW.kiosk_queue_no := n;
-          NEW.kiosk_queue_code := 'KIOSK'||lpad(n::text,3,'0');
+          NEW.kiosk_queue_code := 'KIOSK'||CASE WHEN n<1000 THEN lpad(n::text,3,'0') ELSE n::text END;
         END IF;
         RETURN NEW;
       END $$;
@@ -103,7 +103,8 @@ async function ensureKioskQueueSchema() {
         LOOP
           n:=next_kiosk_daily_queue(r.location_id,d);
           UPDATE work_orders
-             SET kiosk_queue_date=d,kiosk_queue_no=n,kiosk_queue_code='KIOSK'||lpad(n::text,3,'0')
+             SET kiosk_queue_date=d,kiosk_queue_no=n,
+                 kiosk_queue_code='KIOSK'||CASE WHEN n<1000 THEN lpad(n::text,3,'0') ELSE n::text END
            WHERE id=r.id;
         END LOOP;
       END $$;
@@ -116,7 +117,7 @@ async function resolveQueueLocation(explicit: unknown) {
   const id=String(explicit||"").trim();
   if(id){
     const r=await pool.query(`SELECT id::text id,name FROM locations WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[id]);
-    if(r.rows[0])return r.rows[0];
+    return r.rows[0]||null;
   }
   const r=await pool.query(`SELECT id::text id,name FROM locations WHERE COALESCE(is_active,true)=true ORDER BY CASE WHEN lower(name) LIKE '%gyöngy%' OR lower(name) LIKE '%gyongy%' THEN 0 ELSE 1 END,name LIMIT 1`);
   return r.rows[0]||null;
