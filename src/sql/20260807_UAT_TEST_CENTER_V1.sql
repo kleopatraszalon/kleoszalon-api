@@ -65,10 +65,60 @@ ON CONFLICT(code) DO UPDATE SET
  expected_result=EXCLUDED.expected_result,route=EXCLUDED.route,order_index=EXCLUDED.order_index,
  critical=EXCLUDED.critical,active=true,updated_at=now();
 
+-- A Finance runtime bootstrap a teljes adatbázis mellett minimális integrációs
+-- sémán is lefuthat. Az UAT menü ezért maga biztosítja a saját minimális,
+-- canonical-kompatibilis menü/RBAC infrastruktúráját, mielőtt azt használja.
+CREATE TABLE IF NOT EXISTS menus(
+  id bigserial PRIMARY KEY,
+  code text,
+  name text NOT NULL,
+  icon text,
+  route text,
+  order_index integer NOT NULL DEFAULT 0,
+  parent_id bigint,
+  feature_key text,
+  is_active boolean NOT NULL DEFAULT true
+);
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS code text;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS icon text;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS route text;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS order_index integer NOT NULL DEFAULT 0;
+ALTER TABLE menus ADD COLUMN IF NOT EXISTS parent_id bigint;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS feature_key text;
 ALTER TABLE menus ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
 CREATE UNIQUE INDEX IF NOT EXISTS menus_code_uq ON menus(code) WHERE code IS NOT NULL;
+-- ON CONFLICT(code) cannot infer a partial unique index; a full unique index
+-- still permits multiple NULL codes while providing a valid upsert arbiter.
+CREATE UNIQUE INDEX IF NOT EXISTS menus_code_conflict_uq ON menus(code);
+
+CREATE TABLE IF NOT EXISTS role_menu_permissions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_key text NOT NULL,
+  menu_id bigint NOT NULL REFERENCES menus(id) ON DELETE CASCADE,
+  can_view boolean NOT NULL DEFAULT false,
+  can_create boolean NOT NULL DEFAULT false,
+  can_edit boolean NOT NULL DEFAULT false,
+  can_delete boolean NOT NULL DEFAULT false,
+  can_approve boolean NOT NULL DEFAULT false,
+  can_export boolean NOT NULL DEFAULT false,
+  can_view_financial boolean NOT NULL DEFAULT false,
+  can_manage_permissions boolean NOT NULL DEFAULT false,
+  scope_type text NOT NULL DEFAULT 'own_location',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(role_key,menu_id)
+);
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_view boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_create boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_edit boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_delete boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_approve boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_export boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_view_financial boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_manage_permissions boolean NOT NULL DEFAULT false;
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS scope_type text NOT NULL DEFAULT 'own_location';
+ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE UNIQUE INDEX IF NOT EXISTS role_menu_permissions_role_menu_uq ON role_menu_permissions(role_key,menu_id);
 
 DO $$
 DECLARE v_parent_id bigint; v_item_id bigint;
