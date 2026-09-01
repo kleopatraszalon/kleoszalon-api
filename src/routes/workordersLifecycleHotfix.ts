@@ -26,6 +26,10 @@ const CONNECTION_CODES=new Set(['08000','08001','08003','08004','08006','08007',
 const archivedPredicate=`COALESCE(NULLIF(to_jsonb(w)->>'status',''),'')='completed'
   AND (NULLIF(to_jsonb(w)->>'locked_at','') IS NOT NULL OR NULLIF(to_jsonb(w)->>'archived_at','') IS NOT NULL)`;
 const uuidLike=(value:string)=>/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value);
+const positiveInt=(raw:any,fallback:number,max:number)=>{const n=Number.parseInt(String(raw??''),10);return Number.isFinite(n)&&n>0?Math.min(n,max):fallback};
+type ListGroup='all'|'new'|'open'|'closed';
+const listGroup=(raw:any):ListGroup=>{const v=String(raw||'all').toLowerCase();return v==='new'||v==='open'||v==='closed'?v:'all'};
+const listGroupSql=(group:ListGroup)=>group==='new'?`w.status='waiting'`:group==='open'?`w.status IN ('arrived','in_progress')`:group==='closed'?`COALESCE(w.status,'') NOT IN ('waiting','arrived','in_progress')`:'TRUE';
 
 async function workOrderColumnTypes(){
   const q=await db.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='work_orders'`);
@@ -53,10 +57,23 @@ router.get('/dashboard/summary',async(req:AuthRequest,res,next)=>{
 });
 
 router.get('/',async(req:AuthRequest,res,next)=>{
-  if(!isAccounting(req.user?.role))return next();
   try{
-    const rows=(await db.query(`SELECT w.id::text id,COALESCE(NULLIF(to_jsonb(w)->>'work_order_number',''),w.id::text) work_order_number,COALESCE(NULLIF(to_jsonb(w)->>'title',''),NULLIF(to_jsonb(w)->>'service_name',''),'Munkalap') title,COALESCE(NULLIF(to_jsonb(w)->>'status',''),'completed') status,NULLIF(to_jsonb(w)->>'created_at','') created_at,NULLIF(to_jsonb(w)->>'locked_at','') locked_at,NULLIF(to_jsonb(w)->>'archived_at','') archived_at,COALESCE((SELECT NULLIF(to_jsonb(l)->>'name','') FROM locations l WHERE l.id::text=NULLIF(to_jsonb(w)->>'location_id','') LIMIT 1),'—') location_name,COALESCE((SELECT COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name','')) FROM clients c WHERE c.id::text=NULLIF(to_jsonb(w)->>'client_id','') LIMIT 1),'—') client_name,COALESCE((SELECT COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(to_jsonb(e)->>'name','')) FROM employees e WHERE e.id::text=NULLIF(to_jsonb(w)->>'employee_id','') LIMIT 1),'—') employee_name,false can_edit FROM work_orders w WHERE ${archivedPredicate} ORDER BY COALESCE(NULLIF(to_jsonb(w)->>'archived_at',''),NULLIF(to_jsonb(w)->>'locked_at',''),NULLIF(to_jsonb(w)->>'created_at','')) DESC NULLS LAST LIMIT 1000`)).rows;
-    return res.json(rows);
+    if(isAccounting(req.user?.role)){
+      const rows=(await db.query(`SELECT w.id::text id,COALESCE(NULLIF(to_jsonb(w)->>'work_order_number',''),w.id::text) work_order_number,COALESCE(NULLIF(to_jsonb(w)->>'title',''),NULLIF(to_jsonb(w)->>'service_name',''),'Munkalap') title,COALESCE(NULLIF(to_jsonb(w)->>'status',''),'completed') status,NULLIF(to_jsonb(w)->>'created_at','') created_at,NULLIF(to_jsonb(w)->>'locked_at','') locked_at,NULLIF(to_jsonb(w)->>'archived_at','') archived_at,COALESCE((SELECT NULLIF(to_jsonb(l)->>'name','') FROM locations l WHERE l.id::text=NULLIF(to_jsonb(w)->>'location_id','') LIMIT 1),'—') location_name,COALESCE((SELECT COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name','')) FROM clients c WHERE c.id::text=NULLIF(to_jsonb(w)->>'client_id','') LIMIT 1),'—') client_name,COALESCE((SELECT COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(to_jsonb(e)->>'name','')) FROM employees e WHERE e.id::text=NULLIF(to_jsonb(w)->>'employee_id','') LIMIT 1),'—') employee_name,false can_edit FROM work_orders w WHERE ${archivedPredicate} ORDER BY COALESCE(NULLIF(to_jsonb(w)->>'archived_at',''),NULLIF(to_jsonb(w)->>'locked_at',''),NULLIF(to_jsonb(w)->>'created_at','')) DESC NULLS LAST LIMIT 1000`)).rows;
+      return res.json(rows);
+    }
+    if(!canEditRole(req.user?.role)||String(req.query.paginated||'')!=='1')return next();
+
+    const admin=isAdmin(req.user?.role);
+    const locationId=admin?'':String(req.user?.location_id||'');
+    if(!admin&&!locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});
+    const group=listGroup(req.query.group),page=positiveInt(req.query.page,1,1000000),limit=positiveInt(req.query.limit,50,200),offset=(page-1)*limit;
+    const locationWhere=`($1::text='' OR w.location_id::text=$1)`;
+    const count=(await db.query(`SELECT COUNT(*)::int all_count,COUNT(*) FILTER(WHERE w.status='waiting')::int new_count,COUNT(*) FILTER(WHERE w.status IN ('arrived','in_progress'))::int open_count,COUNT(*) FILTER(WHERE COALESCE(w.status,'') NOT IN ('waiting','arrived','in_progress'))::int closed_count FROM work_orders w WHERE ${locationWhere}`,[locationId])).rows[0]||{};
+    const counts={all:Number(count.all_count||0),new:Number(count.new_count||0),open:Number(count.open_count||0),closed:Number(count.closed_count||0)};
+    const total=counts[group];
+    const {rows}=await db.query(`SELECT w.*,l.name location_name,e.full_name employee_name,true can_edit FROM work_orders w LEFT JOIN locations l ON l.id=w.location_id LEFT JOIN employees e ON e.id=w.employee_id WHERE ${locationWhere} AND ${listGroupSql(group)} ORDER BY w.created_at DESC LIMIT $2 OFFSET $3`,[locationId,limit,offset]);
+    return res.json({items:rows,page,limit,total,total_pages:Math.max(1,Math.ceil(total/limit)),group,counts});
   }catch(error){return next(error)}
 });
 
