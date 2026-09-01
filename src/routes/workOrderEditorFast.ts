@@ -57,6 +57,7 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     const admin=isAdmin(req.user?.role);
     const requestedLocation=String(req.query.location_id||'').trim();
     const locationId=admin?requestedLocation:String(req.user?.location_id||'');
+    const tenantId=String((req.user as any)?.tenant_id||'').trim()||null;
     const locationsPromise=locationsFor(req);
 
     if(!locationId){
@@ -68,7 +69,7 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     // Cache entries must be authorization-scope specific. Without the scope
     // discriminator an admin response could be served to a receptionist or
     // location manager who happens to request the same location/employee.
-    const key=`${admin?'admin':'scoped'}:${locationId}:${requestedEmployee||'-'}`;
+    const key=`${admin?'admin':'scoped'}:${locationId}:${tenantId||'-'}:${requestedEmployee||'-'}`;
     const cached=cache.get(key);
     if(cached&&cached.expires>Date.now()){
       const locations=await locationsPromise;
@@ -77,14 +78,14 @@ router.get('/options',async(req:AuthRequest,res:Response,next:NextFunction)=>{
     }
 
     if(requestedEmployee){
-      const ok=await db.query(`SELECT 1 FROM employees WHERE id::text=$1 AND location_id::text=$2 AND COALESCE(active,true)=true LIMIT 1`,[requestedEmployee,locationId]);
-      if(!ok.rows[0])return res.status(400).json({message:'A kiválasztott munkatárs nem ehhez a szalonhoz tartozik.'});
+      const ok=await db.query(`SELECT 1 FROM employees e WHERE e.id::text=$1 AND (NULLIF(to_jsonb(e)->>'location_id','')=$2 OR NULLIF(to_jsonb(e)->>'location_id','') IS NULL) AND ($3::text IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','')=$3) AND COALESCE(NULLIF(to_jsonb(e)->>'active','')::boolean,true)=true LIMIT 1`,[requestedEmployee,locationId,tenantId]);
+      if(!ok.rows[0])return res.status(400).json({message:'A kiválasztott munkatárs nem ehhez a szalonhoz vagy tenanthez tartozik.'});
     }
 
     const [locationQ,employees,clients,services,products,locations]=await Promise.all([
       db.query(`SELECT id::text,name,city,address FROM locations WHERE id::text=$1 AND COALESCE(is_active,true)=true LIMIT 1`,[locationId]),
-      optionalRows('employees',db.query(`SELECT id::text,full_name,email,phone,position_id::text,location_id::text FROM employees WHERE location_id::text=$1 AND COALESCE(active,true)=true ORDER BY full_name`,[locationId])),
-      optionalRows('clients',db.query(`SELECT id::text,COALESCE(NULLIF(to_jsonb(clients)->>'full_name',''),NULLIF(to_jsonb(clients)->>'name',''),'') name,to_jsonb(clients)->>'phone' phone,to_jsonb(clients)->>'email' email,to_jsonb(clients)->>'location_id' location_id FROM clients WHERE to_jsonb(clients)->>'location_id'=$1 AND COALESCE(NULLIF(to_jsonb(clients)->>'is_active','')::boolean,true)=true ORDER BY 2 LIMIT 500`,[locationId])),
+      optionalRows('employees',db.query(`SELECT e.id::text,COALESCE(NULLIF(to_jsonb(e)->>'full_name',''),NULLIF(to_jsonb(e)->>'name',''),'Munkatárs') full_name,NULLIF(to_jsonb(e)->>'email','') email,NULLIF(to_jsonb(e)->>'phone','') phone,NULLIF(to_jsonb(e)->>'position_id','') position_id,NULLIF(to_jsonb(e)->>'location_id','') location_id FROM employees e WHERE (NULLIF(to_jsonb(e)->>'location_id','')=$1 OR NULLIF(to_jsonb(e)->>'location_id','') IS NULL) AND ($2::text IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','')=$2) AND COALESCE(NULLIF(to_jsonb(e)->>'active','')::boolean,true)=true ORDER BY 2`,[locationId,tenantId])),
+      optionalRows('clients',db.query(`SELECT clients.id::text,COALESCE(NULLIF(to_jsonb(clients)->>'full_name',''),NULLIF(to_jsonb(clients)->>'name',''),'') name,to_jsonb(clients)->>'phone' phone,to_jsonb(clients)->>'email' email,NULLIF(to_jsonb(clients)->>'location_id','') location_id FROM clients WHERE (NULLIF(to_jsonb(clients)->>'location_id','')=$1 OR NULLIF(to_jsonb(clients)->>'location_id','') IS NULL) AND ($2::text IS NULL OR NULLIF(to_jsonb(clients)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(clients)->>'tenant_id','')=$2) AND COALESCE(NULLIF(to_jsonb(clients)->>'is_active','')::boolean,true)=true ORDER BY 2 LIMIT 500`,[locationId,tenantId])),
       optionalRows('services',db.query(`SELECT s.id::text,s.name,COALESCE(NULLIF(to_jsonb(eo)->>'custom_price','')::numeric,NULLIF(to_jsonb(s)->>'promo_price','')::numeric,NULLIF(to_jsonb(s)->>'list_price','')::numeric,NULLIF(to_jsonb(s)->>'base_price','')::numeric,0)::numeric price,COALESCE(NULLIF(to_jsonb(eo)->>'custom_duration_minutes','')::int,NULLIF(to_jsonb(s)->>'duration_minutes','')::int,30)::int duration_minutes FROM services s LEFT JOIN employee_service_overrides eo ON eo.service_id::text=s.id::text AND eo.employee_id::text=NULLIF($2,'') WHERE COALESCE(NULLIF(to_jsonb(s)->>'is_active','')::boolean,true)=true AND EXISTS(SELECT 1 FROM service_locations sl WHERE sl.service_id::text=s.id::text AND sl.location_id::text=$1) AND (NULLIF($2,'') IS NULL OR eo.service_id IS NOT NULL) ORDER BY s.name`,[locationId,requestedEmployee])),
       optionalRows('products',db.query(`SELECT p.id::text,p.name,COALESCE(NULLIF(to_jsonb(p)->>'retail_price_gross','')::numeric,0)::numeric price,'db'::text unit,COALESCE(NULLIF(to_jsonb(b)->>'quantity','')::numeric,0)::numeric available_stock FROM products p LEFT JOIN product_stock_balances b ON b.product_id::text=p.id::text AND b.location_id::text=$1 WHERE COALESCE(NULLIF(to_jsonb(p)->>'is_active','')::boolean,true)=true ORDER BY p.name`,[locationId])),
       locationsPromise,
