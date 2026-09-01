@@ -107,8 +107,8 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const locationRow = await tenantFromAuthenticatedLocation(userId, authUser.location_id, authUser.role);
 
   // A stale signed tenant_id may only be repaired from the user's authenticated
-  // location. This does not create a default tenant fallback; downstream scope
-  // guards still validate tenant and location ownership for every entity.
+  // location. The normal tenant/location boundary middleware still applies after
+  // this recovery, so entity ownership and subscription checks remain fail-closed.
   let row = tokenRow;
   if (isDashboardRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
   if (isVirRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
