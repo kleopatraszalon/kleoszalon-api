@@ -1,6 +1,6 @@
 import {Router,Response,NextFunction} from 'express';
 import db from '../db';
-import {ensureFinanceNav} from '../finance/ensureFinanceNav';
+import {withRuntimeSchemaBootstrapLock} from '../finance/ensureFinanceNav';
 import {requireAuth,AuthRequest} from '../middleware/auth';
 
 const router=Router();
@@ -17,12 +17,7 @@ let readyPromise:Promise<void>|null=null;
 async function ensureSchema(){
  if(ready)return;
  if(!readyPromise){
-  readyPromise=(async()=>{
-   // A Finance/NAV bootstrap ugyanazokat a törzstáblákat és work-order
-   // struktúrákat is érinti. Hideg induláskor előbb ezt várjuk meg, így a
-   // két egymástól független DDL bootstrap nem tud eltérő lock-sorrenddel
-   // PostgreSQL deadlockot létrehozni.
-   await ensureFinanceNav();
+  readyPromise=withRuntimeSchemaBootstrapLock(async()=>{
    await db.query(`
  CREATE EXTENSION IF NOT EXISTS pgcrypto;
  CREATE TABLE IF NOT EXISTS service_material_requirements(
@@ -137,7 +132,7 @@ async function ensureSchema(){
  END $$;
  `);
    ready=true;
-  })().catch(error=>{readyPromise=null;throw error});
+  }).catch(error=>{readyPromise=null;throw error});
  }
  return readyPromise;
 }
