@@ -7,13 +7,17 @@ import {locationBelongsToTenant,resolveTenantIdentity} from '../saas/tenantAcces
 
 const router=Router();
 router.use(requireAuth);
-const GLOBAL=new Set(['admin','manager','accounting','bookkeeper']);
+const GLOBAL=new Set(['admin','manager','accounting','bookkeeper','konyveles','könyvelés']);
 const canChoose=new Set(['admin','manager','location_manager','salon_manager','receptionist']);
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 function roles(req:AuthRequest){return parseRoleKeys(req.user?.role)}
 function global(req:AuthRequest){return roles(req).some(r=>GLOBAL.has(r))}
 function chooser(req:AuthRequest){return roles(req).some(r=>canChoose.has(r))}
-async function tenantCanAccess(req:AuthRequest,locationId:string){try{const tenant=await resolveTenantIdentity(req);if(!tenant)return false;return locationBelongsToTenant(locationId,tenant.id)}catch{return false}}
+async function tenantCanAccess(req:AuthRequest,locationId:string){
+ const tokenTenant=String(req.user?.tenant_id||'').trim();
+ if(tokenTenant&&locationId){try{if(await locationBelongsToTenant(locationId,tokenTenant))return true}catch{}}
+ try{const tenant=await resolveTenantIdentity(req);if(!tenant)return false;return locationBelongsToTenant(locationId,tenant.id)}catch{return false}
+}
 async function employeeCanAccess(req:AuthRequest,employeeId:string){
  if(!employeeId)return false;
  const uid=String(req.user?.id||''),email=String(req.user?.email||'').trim();
