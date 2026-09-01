@@ -34,6 +34,20 @@ function isVirRequest(req: AuthRequest): boolean {
   return path === "/api/vir" || path.startsWith("/api/vir/");
 }
 
+function isFirstPartyLocationScopedRequest(req: AuthRequest): boolean {
+  const path = requestPath(req);
+  return [
+    "/api/clients",
+    "/api/employees",
+    "/api/appointments",
+    "/api/bookings",
+    "/api/workorders",
+    "/api/timetable",
+    "/api/checklists",
+    "/api/transactions/workorder-editor",
+  ].some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 async function tenantFromAuthenticatedLocation(userId: string, locationId: unknown, role: unknown) {
   const value = String(locationId ?? "").trim();
   if (!value) return null;
@@ -92,12 +106,13 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const tokenRow = tokenTenantId ? await tenantFromToken(userId, tokenTenantId) : null;
   const locationRow = await tenantFromAuthenticatedLocation(userId, authUser.location_id, authUser.role);
 
-  // A stale signed tenant_id may only be repaired from the user's authenticated
-  // location for first-party dashboard/VIR compatibility. It never grants access
-  // to an arbitrary tenant; normal tenant/location boundary middleware still applies afterwards.
+  // A stale signed tenant_id can be repaired only from the authenticated user's
+  // own persisted location. This is not an arbitrary tenant fallback: the location
+  // is part of the authenticated account and the downstream location/tenant guards
+  // still enforce entity ownership and subscription features.
   let row = tokenRow;
-  if (isDashboardRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
-  if (isVirRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
+  const allowLocationRepair = isDashboardRequest(req) || isVirRequest(req) || isFirstPartyLocationScopedRequest(req);
+  if (allowLocationRepair && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
   if (!row && !tokenTenantId) row = locationRow;
   if (!row && !tokenTenantId) row = await tenantFromMembership(userId);
 
