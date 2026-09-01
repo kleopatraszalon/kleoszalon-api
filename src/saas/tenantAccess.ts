@@ -106,13 +106,13 @@ export async function resolveTenantIdentity(req: AuthRequest): Promise<TenantIde
   const tokenRow = tokenTenantId ? await tenantFromToken(userId, tokenTenantId) : null;
   const locationRow = await tenantFromAuthenticatedLocation(userId, authUser.location_id, authUser.role);
 
-  // A stale signed tenant_id can be repaired only from the authenticated user's
-  // own persisted location. This is not an arbitrary tenant fallback: the location
-  // is part of the authenticated account and the downstream location/tenant guards
-  // still enforce entity ownership and subscription features.
+  // A stale signed tenant_id may only be repaired from the user's authenticated
+  // location. This does not create a default tenant fallback; downstream scope
+  // guards still validate tenant and location ownership for every entity.
   let row = tokenRow;
-  const allowLocationRepair = isDashboardRequest(req) || isVirRequest(req) || isFirstPartyLocationScopedRequest(req);
-  if (allowLocationRepair && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
+  if (isDashboardRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
+  if (isVirRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
+  if (isFirstPartyLocationScopedRequest(req) && locationRow && (!tokenRow || String(locationRow.id) !== String(tokenRow.id))) row = locationRow;
   if (!row && !tokenTenantId) row = locationRow;
   if (!row && !tokenTenantId) row = await tenantFromMembership(userId);
 
