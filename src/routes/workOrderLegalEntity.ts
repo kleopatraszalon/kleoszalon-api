@@ -14,7 +14,24 @@ function roles(req:AuthRequest){return parseRoleKeys(req.user?.role)}
 function global(req:AuthRequest){return roles(req).some(r=>GLOBAL.has(r))}
 function chooser(req:AuthRequest){return roles(req).some(r=>canChoose.has(r))}
 async function tenantCanAccess(req:AuthRequest,locationId:string){try{const tenant=await resolveTenantIdentity(req);if(!tenant)return false;return locationBelongsToTenant(locationId,tenant.id)}catch{return false}}
-async function canAccessWorkOrderLocation(req:AuthRequest,locationId:string){if(global(req))return true;const own=String(req.user?.location_id||'').trim();if(own&&own===locationId)return true;return tenantCanAccess(req,locationId)}
+async function employeeCanAccess(req:AuthRequest,employeeId:string){
+ if(!employeeId)return false;
+ const uid=String(req.user?.id||''),email=String(req.user?.email||'').trim();
+ try{
+  const hasLoginName=(await db.query(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='employees' AND column_name='login_name') ok`)).rows[0]?.ok;
+  const q=hasLoginName
+   ?await db.query(`SELECT id::text FROM employees WHERE ($1<>'' AND (lower(COALESCE(email,''))=lower($1) OR lower(COALESCE(login_name,''))=lower($1))) OR id::text=$2 ORDER BY CASE WHEN $1<>'' AND lower(COALESCE(email,''))=lower($1) THEN 0 ELSE 1 END LIMIT 1`,[email,uid])
+   :await db.query(`SELECT id::text FROM employees WHERE ($1<>'' AND lower(COALESCE(email,''))=lower($1)) OR id::text=$2 ORDER BY CASE WHEN $1<>'' AND lower(COALESCE(email,''))=lower($1) THEN 0 ELSE 1 END LIMIT 1`,[email,uid]);
+  return String(q.rows[0]?.id||'')===employeeId
+ }catch{return false}
+}
+async function canAccessWorkOrder(req:AuthRequest,locationId:string,employeeId:string){
+ if(global(req))return true;
+ const own=String(req.user?.location_id||'').trim();
+ if(own&&own===locationId)return true;
+ if(await tenantCanAccess(req,locationId))return true;
+ return employeeCanAccess(req,employeeId)
+}
 
 router.post('/pending-selection',async(req:AuthRequest,res:Response)=>{try{
  await ensureFinanceNav();if(!chooser(req))return res.status(403).json({message:'Kibocsátó céget csak adminisztrátor, vezető vagy recepciós választhat.'});
@@ -29,14 +46,14 @@ router.post('/pending-selection',async(req:AuthRequest,res:Response)=>{try{
 router.delete('/pending-selection',async(req:AuthRequest,res:Response)=>{try{await ensureFinanceNav();await db.query(`DELETE FROM legal_entity_workorder_selections WHERE actor_key=$1`,[actor(req)]);return res.json({ok:true})}catch(e:any){return res.status(500).json({message:e?.message||'A cégválasztás nem törölhető.'})}});
 
 router.get('/workorders/:id',async(req:AuthRequest,res:Response)=>{try{
- await ensureFinanceNav();const wo=(await db.query(`SELECT w.id::text,w.work_order_number,w.location_id::text,w.legal_entity_id::text,w.financial_closed_at,w.fully_paid,w.payment_status,e.legal_name,e.short_name,e.tax_number,e.accounting_ledger_code FROM work_orders w LEFT JOIN legal_entities e ON e.id=w.legal_entity_id WHERE w.id::text=$1`,[req.params.id])).rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(!(await canAccessWorkOrderLocation(req,String(wo.location_id||''))))return res.status(403).json({message:'Másik szalon munkalapja nem érhető el.'});
+ await ensureFinanceNav();const wo=(await db.query(`SELECT w.id::text,w.work_order_number,w.location_id::text,w.employee_id::text,w.legal_entity_id::text,w.financial_closed_at,w.fully_paid,w.payment_status,e.legal_name,e.short_name,e.tax_number,e.accounting_ledger_code FROM work_orders w LEFT JOIN legal_entities e ON e.id=w.legal_entity_id WHERE w.id::text=$1`,[req.params.id])).rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(!(await canAccessWorkOrder(req,String(wo.location_id||''),String(wo.employee_id||''))))return res.status(403).json({message:'A munkalap kibocsátó cége ehhez a felhasználóhoz nem érhető el.'});
  const choices=(await db.query(`SELECT e.id::text,e.legal_name,e.short_name,e.tax_number,e.accounting_ledger_code,el.is_default FROM legal_entities e JOIN legal_entity_locations el ON el.legal_entity_id=e.id WHERE el.location_id::text=$1 AND el.active=true AND e.active=true ORDER BY el.is_default DESC,e.legal_name`,[wo.location_id])).rows;
  return res.json({ok:true,work_order:wo,choices,locked:Boolean(wo.financial_closed_at||wo.fully_paid||String(wo.payment_status||'')==='paid')});
  }catch(e:any){return res.status(500).json({message:e?.message||'A munkalap cége nem tölthető be.'})}});
 
 router.put('/workorders/:id',async(req:AuthRequest,res:Response)=>{const c=await db.connect();try{
  await ensureFinanceNav();if(!chooser(req))return res.status(403).json({message:'A munkalap kibocsátó cégét csak adminisztrátor, vezető vagy recepciós választhatja ki.'});const legalEntityId=String(req.body?.legal_entity_id||'').trim();if(!legalEntityId)return res.status(400).json({message:'Válasszon céget.'});await c.query('BEGIN');
- const wo=(await c.query(`SELECT w.id::text,w.work_order_number,w.location_id::text,w.legal_entity_id::text,w.financial_closed_at,w.fully_paid,w.payment_status FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}if(!(await canAccessWorkOrderLocation(req,String(wo.location_id||'')))){await c.query('ROLLBACK');return res.status(403).json({message:'Másik szalon munkalapja nem módosítható.'})}
+ const wo=(await c.query(`SELECT w.id::text,w.work_order_number,w.location_id::text,w.employee_id::text,w.legal_entity_id::text,w.financial_closed_at,w.fully_paid,w.payment_status FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}if(!(await canAccessWorkOrder(req,String(wo.location_id||''),String(wo.employee_id||'')))){await c.query('ROLLBACK');return res.status(403).json({message:'Másik szalon munkalapja nem módosítható.'})}
  const choice=(await c.query(`SELECT e.id::text,e.legal_name,e.tax_number,e.accounting_ledger_code FROM legal_entities e JOIN legal_entity_locations el ON el.legal_entity_id=e.id WHERE e.id::text=$1 AND el.location_id::text=$2 AND e.active=true AND el.active=true`,[legalEntityId,wo.location_id])).rows[0];if(!choice){await c.query('ROLLBACK');return res.status(409).json({message:'A kiválasztott cég nincs aktívan hozzárendelve ehhez a szalonhoz.'})}
  if(String(wo.legal_entity_id||'')===legalEntityId){await c.query('COMMIT');return res.json({ok:true,work_order:{...wo,legal_entity_id:legalEntityId},legal_entity:choice,idempotent:true})}
  await c.query(`UPDATE work_orders SET legal_entity_id=$2::uuid WHERE id::text=$1`,[wo.id,legalEntityId]);

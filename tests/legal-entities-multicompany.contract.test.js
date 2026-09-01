@@ -73,9 +73,18 @@ test('multi-company salon requires an explicit one-time company selection',()=>{
 test('work order legal-entity access accepts active tenant members while remaining tenant scoped',()=>{
   assert.match(workorder,/async function tenantCanAccess\(req:AuthRequest,locationId:string\)/);
   assert.match(workorder,/const tenant=await resolveTenantIdentity\(req\);if\(!tenant\)return false;return locationBelongsToTenant\(locationId,tenant\.id\)/);
-  assert.match(workorder,/return tenantCanAccess\(req,locationId\)/);
+  assert.match(workorder,/if\(await tenantCanAccess\(req,locationId\)\)return true/);
   assert.match(workorder,/const tenantMatches=await Promise\.all\(locations\.map\(\(x:any\)=>tenantCanAccess/);
   assert.doesNotMatch(workorder,/\['owner','admin'\]\.includes\(String\(tenant\.role/);
+});
+
+test('work order company read also accepts the canonical employee-visible workorder scope',()=>{
+  assert.match(workorder,/async function employeeCanAccess\(req:AuthRequest,employeeId:string\)/);
+  assert.match(workorder,/SELECT id::text FROM employees/);
+  assert.match(workorder,/return String\(q\.rows\[0\]\?\.id\|\|''\)===employeeId/);
+  assert.match(workorder,/return employeeCanAccess\(req,employeeId\)/);
+  assert.match(workorder,/w\.employee_id::text/);
+  assert.match(workorder,/canAccessWorkOrder\(req,String\(wo\.location_id\|\|''\),String\(wo\.employee_id\|\|''\)\)/);
 });
 
 test('company master data and per-company accounting APIs are present',()=>{
