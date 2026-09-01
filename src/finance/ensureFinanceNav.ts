@@ -88,6 +88,80 @@ async function ensureFinanceSupplierProjectionCompat(){
   `);
 }
 
+async function relationExists(name:string){
+  const {rows}=await pool.query(`SELECT to_regclass($1) AS relation_name`,[`public.${name}`]);
+  return Boolean(rows[0]?.relation_name);
+}
+
+async function ensureRbacBootstrapPrerequisites(){
+  await pool.query(`
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+    CREATE TABLE IF NOT EXISTS access_roles (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      role_key text NOT NULL,
+      name text NOT NULL,
+      description text,
+      level integer NOT NULL DEFAULT 10,
+      is_system boolean NOT NULL DEFAULT false,
+      is_active boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS description text;
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS level integer NOT NULL DEFAULT 10;
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS is_system boolean NOT NULL DEFAULT false;
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    ALTER TABLE access_roles ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+    CREATE UNIQUE INDEX IF NOT EXISTS access_roles_key_uq ON access_roles(lower(role_key));
+
+    CREATE TABLE IF NOT EXISTS role_menu_permissions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      role_key text NOT NULL,
+      menu_id bigint NOT NULL REFERENCES menus(id) ON DELETE CASCADE,
+      can_view boolean NOT NULL DEFAULT false,
+      can_create boolean NOT NULL DEFAULT false,
+      can_edit boolean NOT NULL DEFAULT false,
+      can_delete boolean NOT NULL DEFAULT false,
+      can_approve boolean NOT NULL DEFAULT false,
+      can_export boolean NOT NULL DEFAULT false,
+      can_view_financial boolean NOT NULL DEFAULT false,
+      can_manage_permissions boolean NOT NULL DEFAULT false,
+      scope_type text NOT NULL DEFAULT 'own_location',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(role_key,menu_id)
+    );
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_view boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_create boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_edit boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_delete boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_approve boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_export boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_view_financial boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS can_manage_permissions boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS scope_type text NOT NULL DEFAULT 'own_location';
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+    ALTER TABLE role_menu_permissions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+    CREATE UNIQUE INDEX IF NOT EXISTS role_menu_permissions_role_menu_uq ON role_menu_permissions(role_key,menu_id);
+    CREATE INDEX IF NOT EXISTS role_menu_permissions_lookup_idx ON role_menu_permissions(lower(role_key),menu_id,can_view);
+
+    CREATE TABLE IF NOT EXISTS role_feature_permissions (
+      role_key text NOT NULL,
+      feature_key text NOT NULL,
+      can_use boolean NOT NULL DEFAULT false,
+      scope_type text NOT NULL DEFAULT 'own_location',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY(role_key,feature_key)
+    );
+    ALTER TABLE role_feature_permissions ADD COLUMN IF NOT EXISTS can_use boolean NOT NULL DEFAULT false;
+    ALTER TABLE role_feature_permissions ADD COLUMN IF NOT EXISTS scope_type text NOT NULL DEFAULT 'own_location';
+    ALTER TABLE role_feature_permissions ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+    CREATE UNIQUE INDEX IF NOT EXISTS role_feature_permissions_role_feature_uq ON role_feature_permissions(role_key,feature_key);
+  `);
+}
+
 export function ensureFinanceNav(){
   if(!ensurePromise){
     ensurePromise=withRuntimeSchemaBootstrapLock(async()=>{
@@ -106,8 +180,13 @@ export function ensureFinanceNav(){
       await step('sql:20260827_EXTERNAL_INVOICE_NAV_BRIDGE_V6.sql',()=>runSqlOnce('20260827_EXTERNAL_INVOICE_NAV_BRIDGE_V6.sql','20260827_EXTERNAL_INVOICE_NAV_BRIDGE_V6'));
       await step('menu_health',()=>ensureMenuHealth());
       await step('finance_v5_menu',()=>ensureFinanceV5Menu());
+      await step('rbac_core_schema',()=>ensureRbacBootstrapPrerequisites());
       await step('sql:20260810_RBAC_FAIL_CLOSED_V1.sql',()=>runSql('20260810_RBAC_FAIL_CLOSED_V1.sql'));
-      await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
+      if(await relationExists('users')){
+        await step('sql:20260814_ACCOUNTING_USER_RBAC_V1.sql',()=>runSql('20260814_ACCOUNTING_USER_RBAC_V1.sql'));
+      }else{
+        console.warn('[Finance/NAV bootstrap] accounting user RBAC skipped: users relation is not present in this schema');
+      }
       await step('sql:20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',()=>runSqlOnce(
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2.sql',
         '20260818_FIXED_ASSET_ACCOUNTING_GOVERNANCE_V2'
