@@ -112,11 +112,11 @@ BEGIN
     UPDATE work_orders w SET legal_entity_id=COALESCE(w.legal_entity_id,
       (SELECT x.legal_entity_id FROM legal_entity_locations x WHERE x.location_id=w.location_id AND x.active=true ORDER BY x.is_default DESC LIMIT 1),entity_id)
     WHERE w.legal_entity_id IS NULL;
-    UPDATE work_order_payments p SET legal_entity_id=COALESCE(p.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id=p.work_order_id),entity_id)
+    UPDATE work_order_payments p SET legal_entity_id=COALESCE(p.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=p.work_order_id::text),entity_id)
     WHERE p.legal_entity_id IS NULL;
-    UPDATE finance_invoices i SET legal_entity_id=COALESCE(i.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id=i.work_order_id),entity_id)
+    UPDATE finance_invoices i SET legal_entity_id=COALESCE(i.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=i.work_order_id::text),entity_id)
     WHERE i.legal_entity_id IS NULL;
-    UPDATE financial_movements m SET legal_entity_id=COALESCE(m.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id=m.work_order_id),entity_id)
+    UPDATE financial_movements m SET legal_entity_id=COALESCE(m.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=m.work_order_id::text),entity_id)
     WHERE m.legal_entity_id IS NULL;
     IF to_regclass('public.retail_sales') IS NOT NULL THEN
       UPDATE retail_sales r SET legal_entity_id=COALESCE(r.legal_entity_id,
@@ -125,8 +125,8 @@ BEGIN
     END IF;
     IF to_regclass('public.vir_receipts') IS NOT NULL THEN
       UPDATE vir_receipts r SET legal_entity_id=COALESCE(r.legal_entity_id,
-        CASE WHEN r.source_type='WORK_ORDER' THEN (SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=r.source_id) ELSE NULL END,
-        CASE WHEN r.source_type='RETAIL_SALE' AND to_regclass('public.retail_sales') IS NOT NULL THEN (SELECT s.legal_entity_id FROM retail_sales s WHERE s.id::text=r.source_id) ELSE NULL END,
+        CASE WHEN r.source_type='WORK_ORDER' THEN (SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=r.source_id::text) ELSE NULL END,
+        CASE WHEN r.source_type='RETAIL_SALE' AND to_regclass('public.retail_sales') IS NOT NULL THEN (SELECT s.legal_entity_id FROM retail_sales s WHERE s.id::text=r.source_id::text) ELSE NULL END,
         entity_id)
       WHERE r.legal_entity_id IS NULL;
     END IF;
@@ -136,10 +136,10 @@ END $$;
 CREATE OR REPLACE FUNCTION vir_fill_legal_entity() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.legal_entity_id IS NULL AND NEW.work_order_id IS NOT NULL THEN
-    SELECT legal_entity_id INTO NEW.legal_entity_id FROM work_orders WHERE id=NEW.work_order_id;
+    SELECT legal_entity_id INTO NEW.legal_entity_id FROM work_orders WHERE id::text=NEW.work_order_id::text;
   END IF;
   IF NEW.legal_entity_id IS NULL AND TG_TABLE_NAME='financial_movements' AND NEW.reversal_of_id IS NOT NULL THEN
-    SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id=NEW.reversal_of_id;
+    SELECT legal_entity_id INTO NEW.legal_entity_id FROM financial_movements WHERE id::text=NEW.reversal_of_id::text;
   END IF;
   RETURN NEW;
 END $$;
