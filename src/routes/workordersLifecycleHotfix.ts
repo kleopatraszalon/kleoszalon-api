@@ -98,7 +98,7 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
       if(String(row.location_id||'')!==userLocation)return res.status(404).json({message:'Másik szalon munkalapja nem módosítható.'});
     }
     if(row.locked_at||row.archived_at)return res.status(409).json({message:`A(z) ${row.work_order_number||'munkalap'} lezárt és archivált; nem módosítható.`});
-    if(row.source==='kiosk'&&requested==='arrived'&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább. Előbb válasszon munkatársat a munkalapon.'});
+    if(row.source==='kiosk'&&['arrived','in_progress'].includes(requested)&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább vagy indítható el. Előbb válasszon munkatársat a munkalapon.'});
     const current=String(row.status||'waiting').toLowerCase();
     if(requested===current)return res.json({...row,hotfix:true});
     if(!NEXT[current]?.has(requested))return res.status(409).json({message:`Nem engedélyezett státuszváltás: ${current} → ${requested}.`});
@@ -123,7 +123,7 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',error_code:code});
     if(code==='57014'||code==='55P03'||CONNECTION_CODES.has(code))return res.status(503).json({message:'Az adatbázis kapcsolata, zárolása vagy timeout akadályozta a státuszváltást. Próbálja újra néhány másodperc múlva.',error_code:code||'DB_UNAVAILABLE'});
     if(row&&requested&&STATUSES.has(requested)){
-      if(row.source==='kiosk'&&requested==='arrived'&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább. Előbb válasszon munkatársat a munkalapon.'});
+      if(row.source==='kiosk'&&['arrived','in_progress'].includes(requested)&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább vagy indítható el. Előbb válasszon munkatársat a munkalapon.'});
       const fallback=await minimalLifecycleUpdate(String(req.params.id),requested);
       if(fallback){
         let lateness:any=null;
