@@ -8,6 +8,7 @@ const finalizer=fs.readFileSync(path.join(root,'src/routes/workOrderFinalization
 
 test('fast finalizer completes the linked appointment before work-order locking',()=>{
   assert.match(finalizer,/async function completeLinkedAppointment/);
+  assert.match(finalizer,/SELECT \* FROM appointments WHERE id::text=\$1 FOR UPDATE/);
   assert.match(finalizer,/UPDATE appointments SET \$\{sets\.join\(','\)\} WHERE id::text=\$1 RETURNING id/);
   assert.match(finalizer,/status='completed'/);
   assert.match(finalizer,/work_order_id=COALESCE\(work_order_id,/);
@@ -19,7 +20,11 @@ test('fast finalizer completes the linked appointment before work-order locking'
   assert.ok(lockUpdate>freshCall,'appointment completion must happen before the work-order lock/final update');
 });
 
-test('idempotent finalization repairs a stale linked appointment too',()=>{
+test('idempotent finalization does not update an appointment already completed for the same work order',()=>{
+  assert.match(finalizer,/String\(current\.status\|\|''\)\.toLowerCase\(\)==='completed'/);
+  assert.match(finalizer,/linkedWorkOrder===String\(wo\.id\)/);
+  assert.match(finalizer,/return true;/);
+
   const closedBranch=finalizer.slice(finalizer.indexOf('if(alreadyClosed){'),finalizer.indexOf("if(['cancelled','no_show']"));
   assert.match(closedBranch,/completeLinkedAppointment\(c,wo\)/);
   assert.match(closedBranch,/appointment_completed:appointmentCompleted/);

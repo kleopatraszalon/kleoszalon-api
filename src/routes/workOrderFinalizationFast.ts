@@ -39,6 +39,10 @@ async function completeLinkedAppointment(c:any,wo:any){
   if(!wo?.appointment_id||!(await tableExists('appointments')))return false;
   const appointmentCols=await columns('appointments');
   if(!appointmentCols.has('status'))return false;
+  const current=(await c.query(`SELECT * FROM appointments WHERE id::text=$1 FOR UPDATE`,[String(wo.appointment_id)])).rows[0];
+  if(!current)return false;
+  const linkedWorkOrder=appointmentCols.has('work_order_id')?String(current.work_order_id||''):'';
+  if(String(current.status||'').toLowerCase()==='completed'&&(!appointmentCols.has('work_order_id')||linkedWorkOrder===String(wo.id)))return true;
   const params:any[]=[String(wo.appointment_id)];
   const sets:string[]=[`status='completed'`];
   if(appointmentCols.has('work_order_id')){
