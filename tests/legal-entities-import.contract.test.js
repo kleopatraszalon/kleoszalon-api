@@ -44,8 +44,11 @@ test('import updates company-location dimensions and writes audit events',()=>{
   assert.match(source,/legal_entity_audit_log/);
 });
 
-test('import router is mounted under legal entities API before standard entity routes',()=>{
+test('admin-only import router remains mounted but cannot shadow standard or workorder entity routes',()=>{
   const imp=mount.indexOf('router.use("/legal-entities",legalEntitiesImportRouter)');
   const standard=mount.indexOf('router.use("/legal-entities",legalEntitiesRouter)');
-  assert.ok(imp>=0&&standard>imp);
+  const workorder=mount.indexOf('router.use("/legal-entities",workOrderLegalEntityRouter)');
+  assert.ok(imp>=0&&standard>=0&&workorder>=0);
+  assert.ok(standard<imp&&workorder<imp);
+  assert.match(source,/router\.use\(requireRoles\('admin'\)\)/);
 });
