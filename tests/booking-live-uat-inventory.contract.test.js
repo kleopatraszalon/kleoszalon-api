@@ -26,6 +26,6 @@ test('real booking mutation lifecycle remains mandatory whenever a slot exists',
     'Real booking reschedule write',
     'Real booking cancellation write',
     'Cancellation persistence + lockout',
-  ]) assert.match(src,new RegExp(marker));
+  ]) assert.ok(src.includes(marker),`missing booking lifecycle marker: ${marker}`);
   assert.match(src,/await exerciseBookingLifecycle\(selected\)/);
 });
