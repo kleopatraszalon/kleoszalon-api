@@ -30,3 +30,14 @@ test('external invoice lines and migration are production bootstrapped',()=>{
  assert.match(bootstrap,/20260827_EXTERNAL_INVOICE_NAV_BRIDGE_V6\.sql/);
  assert.match(receipt,/externalInvoiceNavBridgeRouter/);
 });
+
+test('external invoice NAV migration is safe on a clean database before route bootstrap',()=>{
+ const batchCreate=migration.indexOf('CREATE TABLE IF NOT EXISTS external_financial_import_batches');
+ const documentCreate=migration.indexOf('CREATE TABLE IF NOT EXISTS external_financial_documents');
+ const firstDocumentAlter=migration.indexOf('ALTER TABLE external_financial_documents');
+ assert.ok(batchCreate>=0,'external import batch base table must be created by the migration');
+ assert.ok(documentCreate>=0,'external financial document base table must be created by the migration');
+ assert.ok(documentCreate<firstDocumentAlter,'base external financial document table must exist before ALTER TABLE statements');
+ assert.match(migration,/CREATE UNIQUE INDEX IF NOT EXISTS uq_external_document_source_id/);
+ assert.match(migration,/CREATE INDEX IF NOT EXISTS external_financial_documents_review_idx/);
+});

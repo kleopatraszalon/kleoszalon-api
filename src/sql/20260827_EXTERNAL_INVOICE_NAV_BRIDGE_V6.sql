@@ -2,6 +2,75 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- Külső pénzügyi dokumentumok alap-sémája itt is létrejön, hogy a NAV bridge
+-- migráció tiszta adatbázison se függjön attól, hogy egy HTTP route runtime
+-- ensureSchema() bootstrapja korábban lefutott-e.
+CREATE TABLE IF NOT EXISTS external_financial_import_batches(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  legal_entity_id uuid NOT NULL REFERENCES legal_entities(id) ON DELETE RESTRICT,
+  location_id uuid REFERENCES locations(id) ON DELETE RESTRICT,
+  source text NOT NULL,
+  import_profile text NOT NULL DEFAULT 'generic_file',
+  file_name text NOT NULL,
+  mime_type text NOT NULL,
+  content_sha256 text NOT NULL,
+  payload bytea NOT NULL,
+  imported_count integer NOT NULL DEFAULT 0,
+  duplicate_count integer NOT NULL DEFAULT 0,
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK(source IN('invee','google_drive','altegio','file_upload','manual'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_external_import_batch_hash
+  ON external_financial_import_batches(legal_entity_id,source,content_sha256);
+
+CREATE TABLE IF NOT EXISTS external_financial_documents(
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  legal_entity_id uuid NOT NULL REFERENCES legal_entities(id) ON DELETE RESTRICT,
+  location_id uuid REFERENCES locations(id) ON DELETE RESTRICT,
+  import_batch_id uuid REFERENCES external_financial_import_batches(id) ON DELETE SET NULL,
+  source text NOT NULL,
+  document_type text NOT NULL DEFAULT 'other',
+  external_id text,
+  external_document_number text,
+  issue_date date,
+  counterparty_name text,
+  counterparty_tax_number text,
+  currency text NOT NULL DEFAULT 'HUF',
+  net_amount numeric(14,2) NOT NULL DEFAULT 0,
+  vat_amount numeric(14,2) NOT NULL DEFAULT 0,
+  gross_amount numeric(14,2) NOT NULL DEFAULT 0,
+  payment_method text,
+  work_order_id text,
+  source_url text,
+  source_file_id text,
+  file_name text,
+  mime_type text,
+  content_sha256 text,
+  status text NOT NULL DEFAULT 'pending_review',
+  nav_reporting_owner text NOT NULL DEFAULT 'external',
+  nav_excluded boolean NOT NULL DEFAULT true,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by text,
+  reviewed_by text,
+  reviewed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK(source IN('invee','google_drive','altegio','file_upload','manual')),
+  CHECK(document_type IN('invoice','receipt','credit_note','void_receipt','transaction','other')),
+  CHECK(status IN('pending_review','approved','rejected','duplicate','voided')),
+  CHECK(nav_reporting_owner IN('vir','external','not_applicable')),
+  CHECK(nav_reporting_owner<>'external' OR nav_excluded=true)
+);
+ALTER TABLE external_financial_documents
+  ADD COLUMN IF NOT EXISTS import_batch_id uuid REFERENCES external_financial_import_batches(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_external_document_source_id
+  ON external_financial_documents(legal_entity_id,source,external_id) WHERE external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_external_document_hash
+  ON external_financial_documents(legal_entity_id,content_sha256) WHERE content_sha256 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS external_financial_documents_review_idx
+  ON external_financial_documents(status,legal_entity_id,issue_date DESC,created_at DESC);
+
 -- NAV Online Számla konfiguráció jogi személyhez kötése.
 ALTER TABLE nav_online_invoice_settings
   ADD COLUMN IF NOT EXISTS legal_entity_id uuid REFERENCES legal_entities(id) ON DELETE CASCADE;
