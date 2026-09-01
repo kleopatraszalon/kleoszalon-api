@@ -169,13 +169,29 @@ jobs:
         env:
           BOOKING_UAT_BASE: https://kleoszalon-api-1.onrender.com/api/public/marketing/booking
           BOOKING_UAT_EMAIL: vir-booking-uat@example.com
+          BOOKING_UAT_RESULT_FILE: /tmp/booking-uat-result.json
+          BOOKING_UAT_MAX_PROBES: 96
+          BOOKING_UAT_PROBE_CONCURRENCY: 8
         run: node tests/booking_live_uat.mjs
 
       - name: Publish exact-SHA integration evidence after live UAT
         shell: bash
         run: |
           set -euo pipefail
-          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.integration",status:"pass",evidence:"Exact-SHA Render health/readiness/WallBoard/cashier boundary + controlled production booking create/collision/reschedule/readback/cancel/cleanup UAT PASS"}]}))')"
+          test -s /tmp/booking-uat-result.json || { echo "Booking UAT result file is missing." >&2; exit 1; }
+          booking_evidence="$(node - <<'NODE'
+          const fs=require('fs');
+          const r=JSON.parse(fs.readFileSync('/tmp/booking-uat-result.json','utf8'));
+          if(r.ok!==true) process.exit(2);
+          const common=`Exact-SHA Render health/readiness/WallBoard/cashier boundary PASS; booking inventory probe ${r.probe_count}/${r.probe_limit} across ${r.horizon_days} days`;
+          const evidence=r.lifecycle_exercised
+            ? `${common}; controlled production booking create/collision/reschedule/readback/cancel/cleanup lifecycle PASS`
+            : `${common}; no bookable production slot found in bounded sample, mutation lifecycle SKIPPED and not claimed as passed`;
+          process.stdout.write(evidence);
+          NODE
+          )"
+          export BOOKING_UAT_EVIDENCE="$booking_evidence"
+          payload="$(node -e 'process.stdout.write(JSON.stringify({expected_release_ref:process.env.GITHUB_SHA,entries:[{key:"tests.integration",status:"pass",evidence:process.env.BOOKING_UAT_EVIDENCE}]}))')"
           accepted=0
           for attempt in $(seq 1 30); do
             response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=kleoszalon-release-control")"
@@ -183,7 +199,7 @@ jobs:
             test -n "$oidc"
             rm -f /tmp/integration-evidence.json
             code="$(curl -sS --max-time 30 -o /tmp/integration-evidence.json -w '%{http_code}' -H "Authorization: Bearer $oidc" -H 'Content-Type: application/json' --data "$payload" "$API_BASE_URL/api/uat/release-control/evidence" || true)"
-            if [ "$code" = "200" ]; then accepted=1; echo "Integration evidence accepted for exact running SHA $GITHUB_SHA"; cat /tmp/integration-evidence.json; break; fi
+            if [ "$code" = "200" ]; then accepted=1; echo "Integration evidence accepted for exact running SHA $GITHUB_SHA: $booking_evidence"; cat /tmp/integration-evidence.json; break; fi
             if [ "$code" = "409" ]; then
               current="$(node -e "const fs=require('fs');try{const x=JSON.parse(fs.readFileSync('/tmp/integration-evidence.json','utf8'));process.stdout.write(String(x.current_release_ref||''))}catch{}")"
               echo "Render rollout still mixed after live UAT ($attempt/30): expected=$GITHUB_SHA current=${current:-unknown}"; sleep 5; continue
@@ -198,7 +214,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          body="$(node -e 'process.stdout.write(JSON.stringify({state:"success",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA, live booking UAT and Release Control evidence verified",context:"release-control/render-backend"}))')"
+          body="$(node -e 'process.stdout.write(JSON.stringify({state:"success",target_url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,description:"Exact Render SHA and production integration evidence verified",context:"release-control/render-backend"}))')"
           curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -X POST --data "$body" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA"
       - name: Mark backend release verification failure
         if: ${{ failure() }}
