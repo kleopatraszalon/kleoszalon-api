@@ -90,7 +90,7 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     requested=String(req.body?.status||'').trim().toLowerCase();
     if(!STATUSES.has(requested))return res.status(400).json({message:'Érvénytelen munkalap státusz.'});
     if(requested==='completed')return res.status(409).json({message:'A munkalap nem zárható le közvetlen státuszváltással. Előbb zárja le a fizetést, majd használja a végleges munkalaplezárást.'});
-    row=(await db.query(`SELECT w.id::text id,COALESCE(NULLIF(to_jsonb(w)->>'work_order_number',''),w.id::text) work_order_number,COALESCE(NULLIF(to_jsonb(w)->>'status',''),'waiting') status,NULLIF(to_jsonb(w)->>'location_id','') location_id,NULLIF(to_jsonb(w)->>'locked_at','') locked_at,NULLIF(to_jsonb(w)->>'archived_at','') archived_at FROM work_orders w WHERE w.id::text=$1 LIMIT 1`,[req.params.id])).rows[0];
+    row=(await db.query(`SELECT w.id::text id,COALESCE(NULLIF(to_jsonb(w)->>'work_order_number',''),w.id::text) work_order_number,COALESCE(NULLIF(to_jsonb(w)->>'status',''),'waiting') status,NULLIF(to_jsonb(w)->>'location_id','') location_id,NULLIF(to_jsonb(w)->>'employee_id','') employee_id,COALESCE(to_jsonb(w)->'source_snapshot'->>'source','') source,NULLIF(to_jsonb(w)->>'locked_at','') locked_at,NULLIF(to_jsonb(w)->>'archived_at','') archived_at FROM work_orders w WHERE w.id::text=$1 LIMIT 1`,[req.params.id])).rows[0];
     if(!row)return res.status(404).json({message:'A munkalap nem található.'});
     if(!isAdmin(req.user?.role)){
       const userLocation=String(req.user?.location_id||'');
@@ -98,6 +98,7 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
       if(String(row.location_id||'')!==userLocation)return res.status(404).json({message:'Másik szalon munkalapja nem módosítható.'});
     }
     if(row.locked_at||row.archived_at)return res.status(409).json({message:`A(z) ${row.work_order_number||'munkalap'} lezárt és archivált; nem módosítható.`});
+    if(row.source==='kiosk'&&requested==='arrived'&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább. Előbb válasszon munkatársat a munkalapon.'});
     const current=String(row.status||'waiting').toLowerCase();
     if(requested===current)return res.json({...row,hotfix:true});
     if(!NEXT[current]?.has(requested))return res.status(409).json({message:`Nem engedélyezett státuszváltás: ${current} → ${requested}.`});
@@ -122,6 +123,7 @@ router.patch('/:id/lifecycle',async(req:AuthRequest,res,next)=>{
     if(code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',error_code:code});
     if(code==='57014'||code==='55P03'||CONNECTION_CODES.has(code))return res.status(503).json({message:'Az adatbázis kapcsolata, zárolása vagy timeout akadályozta a státuszváltást. Próbálja újra néhány másodperc múlva.',error_code:code||'DB_UNAVAILABLE'});
     if(row&&requested&&STATUSES.has(requested)){
+      if(row.source==='kiosk'&&requested==='arrived'&&!row.employee_id)return res.status(409).json({message:'A kioskos vendég csak kijelölt szakemberrel küldhető tovább. Előbb válasszon munkatársat a munkalapon.'});
       const fallback=await minimalLifecycleUpdate(String(req.params.id),requested);
       if(fallback){
         let lateness:any=null;
