@@ -27,6 +27,15 @@ test('legal entity schema separates company, salon and accounting dimensions',()
   assert.match(v1,/legal_entity_locations_one_default_uq/);
 });
 
+test('legal entity migration tolerates legacy work-order id type drift',()=>{
+  assert.match(v1,/w\.id::text=p\.work_order_id::text/);
+  assert.match(v1,/w\.id::text=i\.work_order_id::text/);
+  assert.match(v1,/w\.id::text=m\.work_order_id::text/);
+  assert.match(v1,/id::text=NEW\.work_order_id::text/);
+  assert.match(v1,/id::text=NEW\.reversal_of_id::text/);
+  assert.doesNotMatch(v1,/w\.id=m\.work_order_id/);
+});
+
 test('all multi-company migrations run through finance bootstrap',()=>{
   for(const version of ['MULTI_COMPANY_V1','WORKORDER_GUARD_V2','ACCOUNTING_DEFAULTS_V3','PENDING_SELECTION_V4']){
     assert.match(ensure,new RegExp(`20260826_LEGAL_ENTITIES_${version}\\.sql`));
