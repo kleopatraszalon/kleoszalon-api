@@ -8,6 +8,7 @@ const v1=read('src/sql/20260826_LEGAL_ENTITIES_MULTI_COMPANY_V1.sql');
 const v2=read('src/sql/20260826_LEGAL_ENTITIES_WORKORDER_GUARD_V2.sql');
 const v3=read('src/sql/20260826_LEGAL_ENTITIES_ACCOUNTING_DEFAULTS_V3.sql');
 const v4=read('src/sql/20260826_LEGAL_ENTITIES_PENDING_SELECTION_V4.sql');
+const v5=read('src/sql/20260826_LEGAL_ENTITIES_OPERATIONAL_DRAFT_V5.sql');
 const ensure=read('src/finance/ensureFinanceNav.ts');
 const entities=read('src/routes/legalEntities.ts');
 const workorder=read('src/routes/workOrderLegalEntity.ts');
@@ -32,8 +33,17 @@ test('legal entity migration tolerates legacy work-order id type drift',()=>{
   assert.match(v1,/w\.id::text=i\.work_order_id::text/);
   assert.match(v1,/w\.id::text=m\.work_order_id::text/);
   assert.match(v1,/id::text=NEW\.work_order_id::text/);
-  assert.match(v1,/id::text=NEW\.reversal_of_id::text/);
+  assert.match(v5,/id::text=NEW\.work_order_id::text/);
   assert.doesNotMatch(v1,/w\.id=m\.work_order_id/);
+});
+
+test('shared legal entity trigger never dereferences table-specific fields directly',()=>{
+  for(const migration of [v1,v5]){
+    assert.match(migration,/reversal_id_text:=to_jsonb\(NEW\)->>'reversal_of_id'/);
+    assert.match(migration,/id::text=reversal_id_text/);
+    assert.doesNotMatch(migration,/TG_TABLE_NAME='financial_movements' AND NEW\.reversal_of_id/);
+  }
+  assert.match(v5,/location_value:=to_jsonb\(NEW\)->>'location_id'/);
 });
 
 test('all multi-company migrations run through finance bootstrap',()=>{
