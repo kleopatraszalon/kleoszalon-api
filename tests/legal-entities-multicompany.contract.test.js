@@ -70,6 +70,14 @@ test('multi-company salon requires an explicit one-time company selection',()=>{
   assert.match(workorder,/A kiválasztott cég nincs hozzárendelve a saját szalonhoz/);
 });
 
+test('work order legal-entity access accepts active tenant members while remaining tenant scoped',()=>{
+  assert.match(workorder,/async function tenantCanAccess\(req:AuthRequest,locationId:string\)/);
+  assert.match(workorder,/const tenant=await resolveTenantIdentity\(req\);if\(!tenant\)return false;return locationBelongsToTenant\(locationId,tenant\.id\)/);
+  assert.match(workorder,/return tenantCanAccess\(req,locationId\)/);
+  assert.match(workorder,/const tenantMatches=await Promise\.all\(locations\.map\(\(x:any\)=>tenantCanAccess/);
+  assert.doesNotMatch(workorder,/\['owner','admin'\]\.includes\(String\(tenant\.role/);
+});
+
 test('company master data and per-company accounting APIs are present',()=>{
   assert.match(entities,/router\.post\('\/',requireRoles\('admin'\)/);
   assert.match(entities,/router\.put\('\/:id',requireRoles\('admin'\)/);
