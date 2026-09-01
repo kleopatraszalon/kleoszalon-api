@@ -21,6 +21,27 @@ const accountType=(method:string)=>method==='cash'?'cash':method==='card'?'card'
 const accountName=(method:string)=>method==='cash'?'Készpénz pénztár':method==='card'?'Bankkártya terminál':method==='transfer'?'Bankszámla':'Egyéb fizetési számla';
 const money=(value:unknown)=>Math.round(Number(value||0)*100)/100;
 
+async function ensureWorkOrderLegalEntity(client:PoolClient,workOrder:any){
+  const existing=String(workOrder?.legal_entity_id||'').trim();
+  if(existing)return existing;
+  const workOrderId=String(workOrder?.id||'').trim(),locationId=String(workOrder?.location_id||'').trim();
+  if(!workOrderId||!locationId)throw Object.assign(new Error('A munkalap lezárása előtt kibocsátó céget és szalont kell megadni.'),{status:409,publicCode:'LEGAL_ENTITY_REQUIRED'});
+  const rows=(await client.query(`SELECT el.legal_entity_id::text id,el.is_default
+    FROM legal_entity_locations el
+    JOIN legal_entities e ON e.id=el.legal_entity_id
+    WHERE el.location_id::text=$1 AND el.active=true AND e.active=true
+    ORDER BY el.is_default DESC,e.created_at,el.legal_entity_id`,[locationId])).rows;
+  if(!rows.length)throw Object.assign(new Error('Ehhez a szalonhoz nincs aktív kibocsátó cég rendelve.'),{status:409,publicCode:'LEGAL_ENTITY_NOT_CONFIGURED'});
+  const defaults=rows.filter((row:any)=>Boolean(row.is_default));
+  const chosen=defaults.length===1?defaults[0]:rows.length===1?rows[0]:null;
+  if(!chosen)throw Object.assign(new Error('A munkalap lezárása előtt válasszon kibocsátó céget.'),{status:409,publicCode:'LEGAL_ENTITY_REQUIRED'});
+  await client.query(`UPDATE work_orders SET legal_entity_id=$2::uuid WHERE id::text=$1 AND legal_entity_id IS NULL`,[workOrderId,String(chosen.id)]);
+  const actual=(await client.query(`SELECT legal_entity_id::text id FROM work_orders WHERE id::text=$1`,[workOrderId])).rows[0]?.id;
+  if(!actual)throw Object.assign(new Error('A munkalap kibocsátó cége nem rögzíthető.'),{status:409,publicCode:'LEGAL_ENTITY_REQUIRED'});
+  workOrder.legal_entity_id=String(actual);
+  return String(actual);
+}
+
 async function resolveAccount(client:PoolClient,workOrder:any,method:string,supplied?:string|null){
   const requested=String(supplied||'').trim();
   if(requested){
@@ -42,6 +63,7 @@ export async function recordProtectedWorkOrderPayment(client:PoolClient,input:Pa
   const method=String(input.method||'').toLowerCase();
   const amount=money(input.amount);
   const recognition:Recognition=input.recognition||(method==='voucher'?'voucher_redemption':'ledger_income');
+  await ensureWorkOrderLegalEntity(client,input.workOrder);
   const payment=(await client.query(`INSERT INTO work_order_payments(
       work_order_id,payment_method,amount,paid_at,note,payment_method_code,finance_account_id,
       financial_account_id,cashier_shift_id,fee_amount,settlement_key,payment_sequence,
