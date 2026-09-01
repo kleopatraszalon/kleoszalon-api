@@ -88,7 +88,7 @@ async function employeeDtos(locationId: string | null, includeInactive = false, 
     const { rows } = await db.query(
       `SELECT to_jsonb(e) AS data
          FROM employees e
-        WHERE ($1::text IS NULL OR NULLIF(to_jsonb(e)->>'location_id','') = $1)
+        WHERE ($1::text IS NULL OR NULLIF(to_jsonb(e)->>'location_id','') = $1 OR NULLIF(to_jsonb(e)->>'location_id','') IS NULL)
           AND ($2::text IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(e)->>'tenant_id','') = $2)
         ORDER BY COALESCE(NULLIF(to_jsonb(e)->>'full_name',''), NULLIF(to_jsonb(e)->>'last_name',''), NULLIF(to_jsonb(e)->>'first_name',''), '')`,
       [locationId, tenantId],
@@ -99,7 +99,8 @@ async function employeeDtos(locationId: string | null, includeInactive = false, 
     try {
       const { rows } = await db.query("SELECT to_jsonb(e) AS data FROM employees e");
       raw = rows.map((row: any) => jsonObject(row.data)).filter(row => {
-        if (locationId && nullableText(row.location_id) !== locationId) return false;
+        const rowLocation = nullableText(row.location_id);
+        if (locationId && rowLocation && rowLocation !== locationId) return false;
         const rowTenant = nullableText(row.tenant_id);
         if (tenantId && rowTenant && rowTenant !== tenantId) return false;
         return true;
@@ -200,11 +201,69 @@ router.get("/employees", requireAuth, requireTenantContext, async (req: AuthRequ
   const includeInactive = text(req.query.include_inactive) === "1";
   try {
     const employees = await employeeDtos(locationId, includeInactive, tokenTenantId(req));
-    res.setHeader("X-Kleo-Hotfix", "api500-employees-v4");
+    res.setHeader("X-Kleo-Hotfix", "api500-employees-v5");
     return res.json(employees);
   } catch (error) {
     warn("employees final fallback", error);
-    res.setHeader("X-Kleo-Hotfix", "api500-employees-empty-v4");
+    res.setHeader("X-Kleo-Hotfix", "api500-employees-empty-v5");
+    return res.status(200).json([]);
+  }
+});
+
+router.get("/clients/booking-search", requireAuth, requireTenantContext, async (req: AuthRequest, res: Response) => {
+  const query = text(req.query.q).trim();
+  if (!query) return res.json([]);
+  const locationId = readLocationScope(req);
+  if (!elevated(req) && !locationId) return res.status(403).json({ error: "A felhasználói fiókhoz nincs telephely rendelve." });
+  const tenantId = tokenTenantId(req);
+  const contains = `%${query}%`;
+  const prefix = `${query}%`;
+  try {
+    const { rows } = await db.query(
+      `SELECT c.id::text id,
+              NULLIF(to_jsonb(c)->>'location_id','') location_id,
+              COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'Névtelen vendég') name,
+              COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'Névtelen vendég') full_name,
+              NULLIF(to_jsonb(c)->>'phone','') phone,
+              NULLIF(to_jsonb(c)->>'email','') email,
+              NULLIF(to_jsonb(c)->>'barcode','') barcode,
+              NULLIF(to_jsonb(c)->>'vip_status','') vip_status,
+              NULLIF(to_jsonb(c)->>'loyalty_points','') loyalty_points,
+              NULLIF(to_jsonb(c)->>'points','') points,
+              NULLIF(to_jsonb(c)->>'visit_count','') visit_count,
+              NULLIF(to_jsonb(c)->>'appointments_count','') appointments_count,
+              NULLIF(to_jsonb(c)->>'last_visit_at','') last_visit_at,
+              NULLIF(to_jsonb(c)->>'last_appointment_at','') last_appointment_at,
+              NULLIF(to_jsonb(c)->>'favorite_service_name','') favorite_service_name,
+              NULLIF(to_jsonb(c)->>'favourite_service_name','') favourite_service_name,
+              to_jsonb(c)->>'allergies' allergies,
+              NULLIF(to_jsonb(c)->>'allergy_notes','') allergy_notes,
+              NULLIF(to_jsonb(c)->>'notes','') notes,
+              NULLIF(to_jsonb(c)->>'internal_notes','') internal_notes
+         FROM clients c
+        WHERE ($1::text IS NULL OR NULLIF(to_jsonb(c)->>'location_id','') = $1 OR NULLIF(to_jsonb(c)->>'location_id','') IS NULL)
+          AND ($2::text IS NULL OR NULLIF(to_jsonb(c)->>'tenant_id','') IS NULL OR NULLIF(to_jsonb(c)->>'tenant_id','') = $2)
+          AND CASE
+                WHEN lower(COALESCE(NULLIF(to_jsonb(c)->>'is_active',''),'true')) IN ('false','f','0','no','nem','n') THEN false
+                ELSE true
+              END
+          AND (
+            COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','') ILIKE $3
+            OR COALESCE(to_jsonb(c)->>'phone','') ILIKE $3
+            OR COALESCE(to_jsonb(c)->>'email','') ILIKE $3
+            OR COALESCE(to_jsonb(c)->>'barcode','') ILIKE $3
+          )
+        ORDER BY
+          CASE WHEN COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),to_jsonb(c)->>'name','') ILIKE $4 THEN 0 ELSE 1 END,
+          lower(COALESCE(NULLIF(to_jsonb(c)->>'full_name',''),NULLIF(to_jsonb(c)->>'name',''),'')) ASC
+        LIMIT 12`,
+      [locationId, tenantId, contains, prefix],
+    );
+    res.setHeader("X-Kleo-Hotfix", "api500-booking-client-search-v1");
+    return res.json(rows);
+  } catch (error) {
+    warn("booking client search", error);
+    res.setHeader("X-Kleo-Hotfix", "api500-booking-client-search-empty-v1");
     return res.status(200).json([]);
   }
 });
