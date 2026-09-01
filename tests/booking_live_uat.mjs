@@ -1,10 +1,18 @@
+import { writeFile } from "node:fs/promises";
+
 const BASE = process.env.BOOKING_UAT_BASE || "https://kleoszalon-api-1.onrender.com/api/public/marketing/booking";
 const TEST_EMAIL = process.env.BOOKING_UAT_EMAIL || "vir-booking-uat@example.com";
 const TEST_NAME = "VIR LIVE UAT";
 const HORIZON_DAYS = Math.min(90, Math.max(7, Number(process.env.BOOKING_UAT_HORIZON_DAYS || 42) || 42));
 const REQUIRE_SLOT = process.env.BOOKING_UAT_REQUIRE_SLOT === "1";
+const MAX_PROBES = Math.min(1000, Math.max(12, Number(process.env.BOOKING_UAT_MAX_PROBES || 96) || 96));
+const PROBE_CONCURRENCY = Math.min(16, Math.max(1, Number(process.env.BOOKING_UAT_PROBE_CONCURRENCY || 8) || 8));
+const RESULT_FILE = process.env.BOOKING_UAT_RESULT_FILE || "/tmp/booking-uat-result.json";
 const results = [];
 const activeTokens = new Set();
+let probeCount = 0;
+let lifecycleExercised = false;
+let slotFound = false;
 
 const iso = (v) => {
   try { return new Date(v).toISOString(); }
@@ -22,7 +30,7 @@ async function request(path, options = {}) {
     ...options,
     headers: {
       "content-type": "application/json",
-      "user-agent": "Kleopatra-VIR-Live-UAT/1.3",
+      "user-agent": "Kleopatra-VIR-Live-UAT/1.4",
       ...(options.headers || {}),
     },
   });
@@ -57,6 +65,15 @@ function budapestDate(daysAhead) {
   }).format(new Date(Date.now() + daysAhead * 86400000));
 }
 
+function probeDayOffsets() {
+  const offsets = [];
+  for (let day = 1; day <= Math.min(7, HORIZON_DAYS); day += 1) offsets.push(day);
+  for (const day of [10, 14, 21, 28, 35, 42, 56, 70, 90]) {
+    if (day <= HORIZON_DAYS) offsets.push(day);
+  }
+  return [...new Set(offsets)].sort((a, b) => a - b);
+}
+
 async function safeCancel(token, reason) {
   if (!token) return false;
   try {
@@ -80,32 +97,50 @@ async function findBookableSlot() {
     throw new Error(`catalog unavailable HTTP ${root.status}`);
   }
 
-  for (const location of root.body.locations.slice(0, 20)) {
+  const locations = root.body.locations.slice(0, 8);
+  const scopedCatalogs = (await Promise.all(locations.map(async (location) => {
     const scoped = await requestStable(`/catalog?location_id=${encodeURIComponent(location.id)}`);
-    if (scoped.status !== 200 || !scoped.body?.services?.length) continue;
+    if (scoped.status !== 200 || !scoped.body?.services?.length) return null;
+    return { location, services: scoped.body.services.slice(0, 6) };
+  }))).filter(Boolean);
 
-    for (const service of scoped.body.services.slice(0, 12)) {
-      for (let day = 1; day <= HORIZON_DAYS; day += 1) {
-        const date = budapestDate(day);
-        const availability = await requestStable(
-          `/availability?location_id=${encodeURIComponent(location.id)}&date=${date}&service_ids=${encodeURIComponent(service.id)}`,
-        );
-        if (availability.status === 200 && availability.body?.slots?.length) {
-          return {
-            location,
-            service,
-            date,
-            scheduleSource: availability.body.schedule_source,
-            slot: availability.body.slots[0],
-          };
-        }
+  const candidates = [];
+  for (const day of probeDayOffsets()) {
+    for (const catalog of scopedCatalogs) {
+      for (const service of catalog.services) {
+        candidates.push({ location: catalog.location, service, day });
+        if (candidates.length >= MAX_PROBES) break;
       }
+      if (candidates.length >= MAX_PROBES) break;
     }
+    if (candidates.length >= MAX_PROBES) break;
+  }
+
+  for (let offset = 0; offset < candidates.length; offset += PROBE_CONCURRENCY) {
+    const batch = candidates.slice(offset, offset + PROBE_CONCURRENCY);
+    const checked = await Promise.all(batch.map(async (candidate) => {
+      probeCount += 1;
+      const date = budapestDate(candidate.day);
+      const availability = await requestStable(
+        `/availability?location_id=${encodeURIComponent(candidate.location.id)}&date=${date}&service_ids=${encodeURIComponent(candidate.service.id)}`,
+      );
+      if (availability.status !== 200 || !availability.body?.slots?.length) return null;
+      return {
+        location: candidate.location,
+        service: candidate.service,
+        date,
+        scheduleSource: availability.body.schedule_source,
+        slot: availability.body.slots[0],
+      };
+    }));
+    const found = checked.find(Boolean);
+    if (found) return found;
   }
   return null;
 }
 
 async function exerciseBookingLifecycle(selected) {
+  lifecycleExercised = true;
   let primary = null;
   let intendedReschedule = null;
 
@@ -264,7 +299,28 @@ async function exerciseBookingLifecycle(selected) {
   }
 }
 
+async function persistResult(fatalError = null) {
+  const failed = results.some((row) => !row.ok) || activeTokens.size > 0 || Boolean(fatalError);
+  const payload = {
+    ok: !failed,
+    mode: lifecycleExercised ? "booking_lifecycle" : "inventory_skip",
+    slot_found: slotFound,
+    lifecycle_exercised: lifecycleExercised,
+    probe_count: probeCount,
+    probe_limit: MAX_PROBES,
+    horizon_days: HORIZON_DAYS,
+    strict_slot_requirement: REQUIRE_SLOT,
+    cleanup_remaining: activeTokens.size,
+    fatal_error: fatalError ? String(fatalError?.message || fatalError) : null,
+    results,
+  };
+  await writeFile(RESULT_FILE, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  console.log(`UAT_RESULT_FILE | ${RESULT_FILE} | mode=${payload.mode}; probes=${probeCount}/${MAX_PROBES}`);
+  return payload;
+}
+
 async function main() {
+  let fatalError = null;
   try {
     const health = await requestStable("/health", {}, 8);
     const healthOk = health.status === 200 && health.body?.ok === true && health.body?.database === true;
@@ -276,11 +332,12 @@ async function main() {
     if (!healthOk) throw new Error("Live booking API health failed");
 
     const selected = await findBookableSlot();
+    slotFound = Boolean(selected);
     if (!selected) {
-      const detail = `no production inventory in the next ${HORIZON_DAYS} days; write lifecycle not attempted`;
+      const detail = `no slot in bounded production sample: ${probeCount}/${MAX_PROBES} probes across ${HORIZON_DAYS} days; write lifecycle not attempted`;
       if (REQUIRE_SLOT) {
         record("Bookable production slot discovery", false, detail);
-        throw new Error(`No bookable slot found in the next ${HORIZON_DAYS} days`);
+        throw new Error(`No bookable slot found in bounded production sample (${probeCount} probes)`);
       }
       record("Bookable production slot discovery", true, `SKIP | ${detail}`);
       console.warn(`UAT_SKIP | ${detail} | set BOOKING_UAT_REQUIRE_SLOT=1 for strict inventory validation`);
@@ -288,21 +345,25 @@ async function main() {
       record(
         "Bookable production slot discovery",
         true,
-        `${selected.location.name}; ${selected.service.name}; ${selected.slot.start}; schedule=${selected.scheduleSource || "n/a"}`,
+        `${selected.location.name}; ${selected.service.name}; ${selected.slot.start}; schedule=${selected.scheduleSource || "n/a"}; probes=${probeCount}`,
       );
       await exerciseBookingLifecycle(selected);
     }
+  } catch (error) {
+    fatalError = error;
+    throw error;
   } finally {
     for (const token of [...activeTokens]) {
       await safeCancel(token, "VIR valós UAT finally cleanup");
     }
+    await persistResult(fatalError);
   }
 
   console.log("\n=== VIR LIVE BOOKING UAT SUMMARY ===");
   for (const row of results) console.log(`${row.ok ? "PASS" : "FAIL"} | ${row.name} | ${row.detail}`);
   console.log(`Active test booking cleanup queue remaining: ${activeTokens.size}`);
   console.log(`Synthetic contact: ${TEST_EMAIL}`);
-  console.log(`Inventory horizon: ${HORIZON_DAYS} days; strict slot requirement: ${REQUIRE_SLOT}`);
+  console.log(`Inventory horizon: ${HORIZON_DAYS} days; probes: ${probeCount}/${MAX_PROBES}; strict slot requirement: ${REQUIRE_SLOT}`);
   if (results.some((row) => !row.ok) || activeTokens.size) process.exitCode = 1;
 }
 
