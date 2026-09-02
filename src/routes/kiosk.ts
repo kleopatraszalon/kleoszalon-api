@@ -3,6 +3,7 @@ import { pool } from "../db";
 import { ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
 import { repairBookingWorkOrderStatusConstraints } from "../booking/repairBookingWorkOrderStatusConstraints";
 import { ensureKioskQueueSchema } from "../services/kioskQueue";
+import { ensureKioskWorkOrderInsertCompatibility, finalizeKioskWorkOrderTotals } from "../services/kioskWorkOrderRuntime";
 
 export const kioskRouter = Router();
 const clean=(v:unknown)=>String(v??"").trim();
@@ -64,6 +65,10 @@ async function ensureKioskWorkOrderRuntime(){
   try{
    await ensureBookingWorkOrderSchema(cx);
    await repairBookingWorkOrderStatusConstraints(cx);
+   // A két általános bootstrap readiness feltétele történeti okból nem ellenőriz
+   // minden legacy defaultot. A KIOSK saját guardja ezért mindig közvetlenül
+   // biztosítja a tényleges INSERT-kompatibilitást.
+   await ensureKioskWorkOrderInsertCompatibility(cx);
   }finally{cx.release()}
   await ensureKioskQueueSchema();
   workOrderRuntimeReady=true;
@@ -160,17 +165,46 @@ kioskRouter.get("/products",async(req,res)=>{try{
  }catch(e:any){console.error("Kiosk products hiba:",e);res.status(500).json({ok:false,error:"kiosk_products_failed",detail:e?.message||String(e)})}});
 
 kioskRouter.post("/workorders",async(req,res)=>{
+ let stage="runtime-guard";
  try{await ensureKioskWorkOrderRuntime()}
- catch(e:any){console.error("Kiosk workorder runtime guard hiba:",e);return res.status(503).json({error:"A kiosk munkalap adatbázis-előkészítése átmenetileg nem sikerült.",error_code:"kiosk_workorder_runtime_not_ready"})}
+ catch(e:any){console.error("Kiosk workorder runtime guard hiba:",e);return res.status(503).json({error:"A kiosk munkalap adatbázis-előkészítése átmenetileg nem sikerült.",error_code:"kiosk_workorder_runtime_not_ready",stage,diagnostic:{code:e?.code||null,table:e?.table||null,column:e?.column||null,constraint:e?.constraint||null}})}
+ stage="resolve-location";
  const resolved=await resolveLocation(req.body?.location_id);const locationId=resolved?.id||"",employeeId=clean(req.body?.employee_id),clientName=clean(req.body?.client_name),phone=clean(req.body?.phone),email=clean(req.body?.email),note=clean(req.body?.note),paymentMethod=clean(req.body?.payment_method)||"reception",items=Array.isArray(req.body?.items)?req.body.items:[];
  if(!locationId||!clientName||(!phone&&!email)||!items.length)return res.status(400).json({error:"Telephely, vendégnév, elérhetőség és legalább egy tétel szükséges."});
- const cx=await pool.connect();try{await cx.query("BEGIN");const loc=await cx.query(`SELECT id,name FROM locations WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[locationId]);if(!loc.rows[0]){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott szalon nem található."})}
- let client=await cx.query(`SELECT id,COALESCE(NULLIF(full_name,''),NULLIF(name,''),'') client_name,phone,email FROM clients WHERE location_id=$1::uuid AND (($2<>'' AND regexp_replace(COALESCE(phone,''),'[^0-9]','','g')=regexp_replace($2,'[^0-9]','','g')) OR ($3<>'' AND lower(COALESCE(email,''))=lower($3))) ORDER BY updated_at DESC NULLS LAST LIMIT 1`,[locationId,phone,email]);let clientId=client.rows[0]?.id;if(!clientId){client=await cx.query(`INSERT INTO clients(full_name,name,phone,email,location_id,marketing_consent,is_active,source,created_at,updated_at) VALUES($1,$1,$2,$3,$4::uuid,false,true,'kiosk',now(),now()) RETURNING id`,[clientName,phone||null,email||null,locationId]);clientId=client.rows[0].id}
- if(employeeId){const emp=await cx.query(`SELECT id FROM employees WHERE id=$1::uuid AND COALESCE(active,true)=true AND (location_id=$2::uuid OR location_id IS NULL)`,[employeeId,locationId]);if(!emp.rows[0]){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott munkatárs nem található ebben a szalonban."})}}
- const number=(await cx.query(`SELECT next_official_work_order_number(now()) work_order_number`)).rows[0].work_order_number;const sourceSnapshot={source:"kiosk",device_key:"gyongyos-main",payment_method:paymentMethod,items,location_id:locationId};const header=await cx.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES('Kiosk rendelés / szolgáltatás',$1,'waiting',$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,false,false,'public-kiosk',now(),$8,now(),$9::jsonb) RETURNING id,work_order_number,status,created_at`,[note||`Kiosk fizetési mód: ${paymentMethod}`,employeeId||null,clientId,clientName,phone||null,email||null,locationId,number,JSON.stringify(sourceSnapshot)]);const workOrderId=header.rows[0].id;
- for(const raw of items){const kind=clean(raw?.kind||raw?.meta?.kind).toLowerCase(),id=clean(raw?.id),quantity=qty(raw?.qty);if(!id)continue;if(kind==="product"){const p=(await cx.query(`SELECT id,COALESCE(NULLIF(to_jsonb(products)->>'name_hu',''),name) name,COALESCE(NULLIF(to_jsonb(products)->>'retail_price_gross','')::numeric,0)::numeric price FROM products WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];if(p){const price=Number(p.price||0);await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,product_id,item_name,quantity,unit_price,discount_amount,line_total) VALUES($1,'product',$2,$3,$4,$5,0,$6)`,[workOrderId,p.id,p.name,quantity,price,quantity*price])}}else if(kind==="service"){const s=(await cx.query(`SELECT id,name,COALESCE(promo_price,list_price,base_price,0)::numeric price,COALESCE(duration_minutes,30)::int duration FROM services WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];if(s){const price=Number(s.price||0);await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,$4,$5,0,$6,$7)`,[workOrderId,s.id,s.name,quantity,price,quantity*price,s.duration])}}}
- const recalc=(await cx.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;if(recalc)await cx.query(`SELECT recalc_work_order_totals($1::uuid)`,[workOrderId]);await cx.query("COMMIT");res.status(201).json({ok:true,...header.rows[0],source:"kiosk",location:resolved,payment_method:paymentMethod})
- }catch(e:any){await cx.query("ROLLBACK").catch(()=>undefined);console.error("Kiosk workorder hiba:",e);res.status(500).json({error:"A kiosk munkalap létrehozása sikertelen.",error_code:"kiosk_workorder_create_failed",diagnostic:{code:e?.code||null,table:e?.table||null,column:e?.column||null,constraint:e?.constraint||null}})}finally{cx.release()}
+ const validateOnly=String(req.query.validate_only||"")==="1"&&String(req.headers["x-kleo-kiosk-uat"]||"")==="1";
+ const cx=await pool.connect();
+ try{
+  stage="begin";await cx.query("BEGIN");
+  stage="location";const loc=await cx.query(`SELECT id,name FROM locations WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[locationId]);if(!loc.rows[0]){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott szalon nem található."})}
+  stage="client-find";let client=await cx.query(`SELECT id,COALESCE(NULLIF(full_name,''),NULLIF(name,''),'') client_name,phone,email FROM clients WHERE location_id=$1::uuid AND (($2<>'' AND regexp_replace(COALESCE(phone,''),'[^0-9]','','g')=regexp_replace($2,'[^0-9]','','g')) OR ($3<>'' AND lower(COALESCE(email,''))=lower($3))) ORDER BY updated_at DESC NULLS LAST LIMIT 1`,[locationId,phone,email]);
+  let clientId=client.rows[0]?.id;
+  if(!clientId){stage="client-create";client=await cx.query(`INSERT INTO clients(full_name,name,phone,email,location_id,marketing_consent,is_active,source,created_at,updated_at) VALUES($1,$1,$2,$3,$4::uuid,false,true,'kiosk',now(),now()) RETURNING id`,[clientName,phone||null,email||null,locationId]);clientId=client.rows[0].id}
+  if(employeeId){stage="employee";const emp=await cx.query(`SELECT id FROM employees WHERE id=$1::uuid AND COALESCE(active,true)=true AND (location_id=$2::uuid OR location_id IS NULL)`,[employeeId,locationId]);if(!emp.rows[0]){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott munkatárs nem található ebben a szalonban."})}}
+  stage="official-number";const number=(await cx.query(`SELECT next_official_work_order_number(now()) work_order_number`)).rows[0].work_order_number;
+  const sourceSnapshot={source:"kiosk",device_key:"gyongyos-main",payment_method:paymentMethod,items,location_id:locationId};
+  stage="workorder-header";const header=await cx.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES('Kiosk rendelés / szolgáltatás',$1,'waiting',$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,false,false,'public-kiosk',now(),$8,now(),$9::jsonb) RETURNING id,work_order_number,status,created_at,kiosk_queue_no,kiosk_queue_date,kiosk_queue_code`,[note||`Kiosk fizetési mód: ${paymentMethod}`,employeeId||null,clientId,clientName,phone||null,email||null,locationId,number,JSON.stringify(sourceSnapshot)]);
+  const workOrderId=String(header.rows[0].id);let calculatedTotal=0;let savedItemCount=0;
+  stage="items";
+  for(const raw of items){
+   const kind=clean(raw?.kind||raw?.meta?.kind).toLowerCase(),id=clean(raw?.id),quantity=qty(raw?.qty);if(!id)continue;
+   if(kind==="product"){
+    const p=(await cx.query(`SELECT id,COALESCE(NULLIF(to_jsonb(products)->>'name_hu',''),name) name,COALESCE(NULLIF(to_jsonb(products)->>'retail_price_gross','')::numeric,0)::numeric price FROM products WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];
+    if(p){const price=Number(p.price||0),lineTotal=quantity*price;await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,product_id,item_name,quantity,unit_price,discount_amount,line_total) VALUES($1,'product',$2,$3,$4,$5,0,$6)`,[workOrderId,p.id,p.name,quantity,price,lineTotal]);calculatedTotal+=lineTotal;savedItemCount++}
+   }else if(kind==="service"){
+    const s=(await cx.query(`SELECT id,name,COALESCE(promo_price,list_price,base_price,0)::numeric price,COALESCE(duration_minutes,30)::int duration FROM services WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];
+    if(s){const price=Number(s.price||0),lineTotal=quantity*price;await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,$4,$5,0,$6,$7)`,[workOrderId,s.id,s.name,quantity,price,lineTotal,s.duration]);calculatedTotal+=lineTotal;savedItemCount++}
+   }
+  }
+  if(!savedItemCount){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott tételek közül egyik sem található az aktuális katalógusban."})}
+  stage="totals";await finalizeKioskWorkOrderTotals(cx,workOrderId,calculatedTotal);
+  stage=validateOnly?"uat-rollback":"commit";
+  if(validateOnly)await cx.query("ROLLBACK");else await cx.query("COMMIT");
+  res.status(201).json({ok:true,...header.rows[0],source:"kiosk",location:resolved,payment_method:paymentMethod,total:calculatedTotal,item_count:savedItemCount,validated_only:validateOnly});
+ }catch(e:any){
+  await cx.query("ROLLBACK").catch(()=>undefined);
+  console.error("Kiosk workorder hiba:",{stage,code:e?.code||null,table:e?.table||null,column:e?.column||null,constraint:e?.constraint||null,message:e?.message||String(e)});
+  res.status(500).json({error:"A kiosk munkalap létrehozása sikertelen.",error_code:"kiosk_workorder_create_failed",stage,diagnostic:{code:e?.code||null,table:e?.table||null,column:e?.column||null,constraint:e?.constraint||null}})
+ }finally{cx.release()}
 });
 
 export default kioskRouter;
