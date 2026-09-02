@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import db from '../db';
+import {ensureOtherPaymentCompatibility} from '../finance/ensureOtherPaymentCompatibility';
 import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
 
 const PAYMENT_METHODS=new Set(['cash','card','transfer','voucher','other']);
@@ -35,6 +36,7 @@ const fallbackSettlementKey=(workOrderId:string,body:any)=>{
 };
 
 export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,actor:string,settlementKey?:string){
+ await ensureOtherPaymentCompatibility();
  const c=await db.connect();
  try{
   await c.query('BEGIN');
@@ -120,7 +122,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const diagnostic={code:code||null,table:error?.table?String(error.table):null,column:error?.column?String(error.column):null,constraint:error?.constraint?String(error.constraint):null};
   console.error('[workorder-settlement-recovery] failed',workOrderId,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
   if(code==='P0001')return{status:409,body:{message:String(error?.message||'A pénzügyi helyreállítást üzleti szabály akadályozza.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic}};
-  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:'A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza.',error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
+  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:`A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza${diagnostic.constraint?` (${diagnostic.constraint})`:''}.`,error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
   if(['57014','55P03','40P01'].includes(code))return{status:503,body:{message:'A pénzügyi helyreállítást adatbázis-zárolás vagy timeout akadályozta. Próbáld újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic}};
   return{status:500,body:{message:'A munkalap pénzügyi helyreállítása sikertelen.',error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',diagnostic}};
  }finally{c.release()}
