@@ -57,9 +57,13 @@ router.use("/documents", async (_req, _res, next) => {
 router.use("/external-documents", externalFinancialDocumentsAltegioRouter);
 router.use("/external-documents", externalInvoiceNavBridgeRouter);
 router.use("/external-documents", externalFinancialDocumentsRouter);
-router.use("/legal-entities",legalEntitiesImportRouter);
+// A runtime cég- és munkalap-route-oknak meg kell előzniük az admin-only
+// import routert. Az import router globális admin middleware-t használ, ezért
+// ha előrébb van mountolva, a nem-admin /legal-entities/* kéréseket 403-mal
+// leállítja még azelőtt, hogy a saját route-jukhoz eljutnának.
 router.use("/legal-entities",legalEntitiesRouter);
 router.use("/legal-entities",workOrderLegalEntityRouter);
+router.use("/legal-entities",legalEntitiesImportRouter);
 // A V2 életciklus kezeli elsőként a kibocsátást és sztornót. A régi route-ok
 // csak a kompatibilis olvasási/PDF/e-mail/audit végpontokhoz maradnak meg.
 router.use(receiptCompanyLifecycleV2);

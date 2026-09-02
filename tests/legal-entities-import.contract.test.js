@@ -44,8 +44,9 @@ test('import updates company-location dimensions and writes audit events',()=>{
   assert.match(source,/legal_entity_audit_log/);
 });
 
-test('import router is mounted under legal entities API before standard entity routes',()=>{
-  const imp=mount.indexOf('router.use("/legal-entities",legalEntitiesImportRouter)');
+test('admin-only import router cannot shadow runtime legal-entity routes',()=>{
   const standard=mount.indexOf('router.use("/legal-entities",legalEntitiesRouter)');
-  assert.ok(imp>=0&&standard>imp);
+  const workorder=mount.indexOf('router.use("/legal-entities",workOrderLegalEntityRouter)');
+  const imp=mount.indexOf('router.use("/legal-entities",legalEntitiesImportRouter)');
+  assert.ok(standard>=0&&workorder>standard&&imp>workorder);
 });
