@@ -1,4 +1,6 @@
+import {createHash} from 'node:crypto';
 import db from '../db';
+import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
 
 const PAYMENT_METHODS=new Set(['cash','card','transfer','voucher','other']);
 const money=(v:any)=>{const n=Number(v??0);return Number.isFinite(n)?Math.round(n*100)/100:0};
@@ -16,7 +18,12 @@ async function columnTypes(c:any,table:string){
  return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]));
 }
 
-export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,actor:string){
+const fallbackSettlementKey=(workOrderId:string,body:any)=>{
+ const digest=createHash('sha256').update(`${workOrderId}:${JSON.stringify(body||{})}`).digest('hex').slice(0,32);
+ return `workorder-settlement-recovery:${digest}`;
+};
+
+export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,actor:string,settlementKey?:string){
  const c=await db.connect();
  try{
   await c.query('BEGIN');
@@ -29,7 +36,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
    await c.query('ROLLBACK');
    return{status:503,body:{message:'A munkalap pénzügyi lezárási sémája hiányos. A pénzügyi adatbázis-migráció szükséges.',error_code:'WORK_ORDER_SCHEMA_INCOMPLETE'}};
   }
-  if(!itemCols.has('work_order_id')||!itemCols.has('line_total')||!paymentCols.has('work_order_id')||!paymentCols.has('payment_method')||!paymentAmountColumns.length){
+  if(!itemCols.has('work_order_id')||!itemCols.has('line_total')||!paymentCols.has('work_order_id')||!paymentCols.has('payment_method')||!paymentCols.has('amount')){
    await c.query('ROLLBACK');
    return{status:503,body:{message:'A munkalap tétel- vagy fizetési sémája hiányos. Az adatbázis-migráció szükséges.',error_code:'WORK_ORDER_PAYMENT_SCHEMA_INCOMPLETE'}};
   }
@@ -47,19 +54,27 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const paymentAmountExpression=paymentCols.has('amount')&&paymentCols.has('amount_huf')?'COALESCE(amount,amount_huf)':paymentAmountColumns[0];
   let existingPaid=money((await c.query(`SELECT COALESCE(SUM(${paymentAmountExpression}),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   let remaining=Math.max(0,money(due-existingPaid));
+  const protectedSettlementKey=String(settlementKey||'').trim()||fallbackSettlementKey(workOrderId,body);
 
-  const paymentWorkOrderCast=paymentTypes.get('work_order_id')==='uuid'?'::uuid':'';
-  for(const p of Array.isArray(body?.payments)?body.payments:[]){
+  for(const [sequence,p] of (Array.isArray(body?.payments)?body.payments:[]).entries()){
    if(remaining<=.009)break;
    const method=paymentMethod(p?.payment_method),requestedAmount=money(p?.amount??p?.amount_huf);
    if(!PAYMENT_METHODS.has(method)){await c.query('ROLLBACK');return{status:400,body:{message:`Érvénytelen fizetési mód: ${method}`}}}
    if(!(requestedAmount>0)){await c.query('ROLLBACK');return{status:400,body:{message:'A fizetési összegnek pozitívnak kell lennie.'}}}
    const amount=Math.min(requestedAmount,remaining);
-   const names=['work_order_id','payment_method'],vals=[`$1${paymentWorkOrderCast}`,'$2'],params:any[]=[workOrderId,method];
-   for(const column of paymentAmountColumns){names.push(column);params.push(amount);vals.push(`$${params.length}`)}
-   if(timestampLike(paymentTypes.get('paid_at'))){names.push('paid_at');vals.push('now()')}
-   if(paymentCols.has('note')){names.push('note');params.push([p?.note||'', 'Műszak nélküli lezárási recovery'].filter(Boolean).join(' · '));vals.push(`$${params.length}`)}
-   await c.query(`INSERT INTO work_order_payments(${names.join(',')}) VALUES(${vals.join(',')})`,params);
+   await recordProtectedWorkOrderPayment(c,{
+    workOrder:wo,
+    method,
+    amount,
+    note:[p?.note||'','Automatikus pénzügyi helyreállítás'].filter(Boolean).join(' · '),
+    actor,
+    settlementKey:protectedSettlementKey,
+    sequence,
+    financeAccountId:p?.finance_account_id||null,
+    paymentMethodCode:p?.payment_method_code||method,
+    cashierShiftId:p?.cashier_shift_id||null,
+    feeAmount:money(p?.fee_amount),
+   });
    existingPaid=money(existingPaid+amount);
    remaining=Math.max(0,money(due-existingPaid));
   }
@@ -67,6 +82,9 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const paid=money((await c.query(`SELECT COALESCE(SUM(${paymentAmountExpression}),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   if(paid+.009<due){await c.query('ROLLBACK');return{status:400,body:{message:`A munkalap nem zárható pénzügyileg: még ${money(due-paid).toLocaleString('hu-HU')} Ft fizetendő.`}}}
 
+  // A recovery csak a pénzügyi lezárás lényegi, minden sémagenerációban
+  // azonos jelentésű mezőit írja. Az invoice/document lifecycle mezők meglévő
+  // értékei érintetlenek maradnak, így egy régi státusz-CHECK nem ismétlődik.
   const sets:string[]=[],params:any[]=[workOrderId];
   const add=(column:string,value:any)=>{if(!woCols.has(column))return;params.push(value);sets.push(`${column}=$${params.length}`)};
   add('gross_total',gross);
@@ -76,17 +94,13 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   add('amount_paid',paid);
   add('payment_status','paid');
   add('fully_paid',true);
-  // Recovery során az invoice_status meglévő, adatbázis által már elfogadott
-  // értékét érintetlenül hagyjuk. Egy schema-drift miatti helyreállítás nem
-  // próbálhatja újra ugyanazt a státusz-constraintet, amely a primary ágat
-  // megakaszthatta; a számlázási életciklus külön kezeli az átmenetet.
   sets.push('financial_closed_at=COALESCE(financial_closed_at,now())');
   if(woCols.has('financial_closed_by')&&textLike(woTypes.get('financial_closed_by'))){params.push(actor);sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}
   if(timestampLike(woTypes.get('updated_at')))sets.push('updated_at=now()');
 
   const updated=(await c.query(`UPDATE work_orders SET ${sets.join(',')} WHERE id::text=$1 RETURNING *`,params)).rows[0];
   await c.query('COMMIT');
-  return{status:200,body:{...updated,recovery:true,cashier_shift_id:null,idempotent_payment_recovery:remaining<=.009}}
+  return{status:200,body:{...updated,recovery:true,protected_payment_recovery:true,idempotent_payment_recovery:remaining<=.009}}
  }catch(error:any){
   await c.query('ROLLBACK').catch(()=>undefined);
   console.error('[workorder-settlement-recovery] failed',workOrderId,error?.code||'',error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);

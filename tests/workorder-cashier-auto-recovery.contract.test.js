@@ -19,7 +19,9 @@ test('settlement error recovery only activates for financial close requests',()=
 });
 
 test('settlement error recovery invokes hardened retry-safe recovery service',()=>{
-  assert.match(recovery,/settleWorkOrderWithoutShift\(workOrderId,req\.body,actor\(req\)\)/);
+  assert.match(recovery,/settleWorkOrderWithoutShift\(workOrderId,req\.body,actor\(req\),settlementKey\(req\)\)/);
+  assert.match(recovery,/Idempotency-Key/);
+  assert.match(recovery,/workorder-settlement:/);
   assert.match(recovery,/auto_recovery:true/);
   assert.match(recovery,/primary_settlement_failure/);
   assert.match(recovery,/schema_drift/);
@@ -35,7 +37,8 @@ test('postgres constraint conflicts are routed through recovery instead of retur
 test('non-recoverable database failures are still mapped to actionable statuses',()=>{
   assert.match(recovery,/code===\'22P02\'/);
   assert.match(recovery,/code===\'P0001\'/);
-  assert.match(recovery,/code===\'57014\'\|\|code===\'55P03\'\|\|code===\'40P01\'/);
+  assert.match(recovery,/RETRYABLE_CODES=new Set\(\['57014','55P03','40P01'\]\)/);
+  assert.match(recovery,/RETRYABLE_CODES\.has\(code\)/);
   assert.match(recovery,/CASHIER_SETTLEMENT_INVALID_ID/);
   assert.match(recovery,/CASHIER_SETTLEMENT_RULE_CONFLICT/);
   assert.match(recovery,/CASHIER_SETTLEMENT_RETRYABLE_DB/);
@@ -43,6 +46,7 @@ test('non-recoverable database failures are still mapped to actionable statuses'
 
 test('double failure returns structured postgres diagnostics',()=>{
   assert.match(recovery,/CASHIER_SETTLEMENT_RECOVERY_FAILED/);
-  assert.match(recovery,/recovery_error:/);
-  assert.match(recovery,/constraint:recoveryError\?\.constraint/);
+  assert.match(recovery,/const recoveryDiagnostic=diagnostic\(recoveryError\)/);
+  assert.match(recovery,/constraint:error\?\.constraint\?String\(error\.constraint\):null/);
+  assert.match(recovery,/recovery_error:recoveryDiagnostic/);
 });

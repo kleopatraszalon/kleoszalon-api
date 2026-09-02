@@ -13,6 +13,10 @@ const diagnostic=(error:any)=>({
   column:error?.column?String(error.column):null,
   constraint:error?.constraint?String(error.constraint):null,
 });
+const settlementKey=(req:AuthRequest)=>{
+  const raw=String(req.get?.('Idempotency-Key')||req.headers?.['idempotency-key']||req.body?.idempotency_key||'').trim();
+  return /^[A-Za-z0-9._:-]{8,120}$/.test(raw)?`workorder-settlement:${raw}`:undefined;
+};
 
 export default async function workOrderSettlementErrorRecovery(err:any,req:AuthRequest,res:Response,next:NextFunction){
   const match=String(req.path||'').match(SETTLE_PATH);
@@ -26,10 +30,13 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
 
   if(code==='22P02')return res.status(400).json({message:'Érvénytelen azonosító vagy pénzügyi hivatkozás.',error_code:'CASHIER_SETTLEMENT_INVALID_ID',diagnostic:primaryDiagnostic});
   if(code==='P0001')return res.status(409).json({message:String(err?.message||'A pénztári művelet üzleti szabály miatt nem hajtható végre.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic:primaryDiagnostic});
-  if(code==='57014'||code==='55P03'||code==='40P01')return res.status(503).json({message:'A pénzügyi lezárást adatbázis-zárolás vagy timeout akadályozta. Próbálja újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic:primaryDiagnostic});
+  if(RETRYABLE_CODES.has(code))return res.status(503).json({message:'A pénzügyi lezárást adatbázis-zárolás vagy timeout akadályozta. Próbálja újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic:primaryDiagnostic});
 
   try{
-    const recovered=await settleWorkOrderWithoutShift(workOrderId,req.body,actor(req));
+    // A primary pénzügyi tranzakció visszagörgetése után ugyanazt az idempotencia-
+    // kulcsot használjuk a védett recovery könyveléshez. Így nincs párhuzamos
+    // "legacy" fizetési sor: a helyreállítás is ugyanazon ledger-integritási úton fut.
+    const recovered=await settleWorkOrderWithoutShift(workOrderId,req.body,actor(req),settlementKey(req));
     const recoveryReason=SCHEMA_DRIFT_CODES.has(code)
       ?'schema_drift'
       :CONSTRAINT_CODES.has(code)
@@ -80,12 +87,7 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
       message:'A munkalap pénzügyi lezárása és az automatikus helyreállítás is sikertelen.',
       error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',
       primary_error:primaryDiagnostic,
-      recovery_error:{
-        code:recoveryError?.code||null,
-        table:recoveryError?.table||null,
-        column:recoveryError?.column||null,
-        constraint:recoveryError?.constraint||null,
-      },
+      recovery_error:recoveryDiagnostic,
     });
   }
 }
