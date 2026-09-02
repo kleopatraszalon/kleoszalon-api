@@ -1,0 +1,33 @@
+name: KIOSK live checkout UAT
+
+on:
+  workflow_run:
+    workflows: ["Render deploy"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kiosk-live-uat-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  live-kiosk-checkout:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact deployed source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Rollback-only production KIOSK checkout UAT
+        env:
+          KIOSK_UAT_BASE: https://kleoszalon-api-1.onrender.com/api/kiosk
+        run: node tests/kiosk_live_uat.mjs
