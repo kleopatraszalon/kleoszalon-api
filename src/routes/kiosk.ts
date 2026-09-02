@@ -1,10 +1,15 @@
 import { Router } from "express";
 import { pool } from "../db";
+import { ensureBookingWorkOrderSchema } from "../services/bookingWorkOrder";
+import { repairBookingWorkOrderStatusConstraints } from "../booking/repairBookingWorkOrderStatusConstraints";
+import { ensureKioskQueueSchema } from "../services/kioskQueue";
 
 export const kioskRouter = Router();
 const clean=(v:unknown)=>String(v??"").trim();
 const qty=(v:unknown)=>Math.max(1,Math.min(99,Number(v)||1));
 let schemaReady=false;
+let workOrderRuntimeReady=false;
+let workOrderRuntimePromise:Promise<void>|null=null;
 
 async function ensureKioskPublicSchema(){
  if(schemaReady)return;
@@ -49,6 +54,21 @@ async function ensureKioskPublicSchema(){
    );
  `);
  schemaReady=true;
+}
+
+async function ensureKioskWorkOrderRuntime(){
+ if(workOrderRuntimeReady)return;
+ if(workOrderRuntimePromise)return workOrderRuntimePromise;
+ workOrderRuntimePromise=(async()=>{
+  const cx=await pool.connect();
+  try{
+   await ensureBookingWorkOrderSchema(cx);
+   await repairBookingWorkOrderStatusConstraints(cx);
+  }finally{cx.release()}
+  await ensureKioskQueueSchema();
+  workOrderRuntimeReady=true;
+ })().catch(error=>{workOrderRuntimePromise=null;throw error});
+ return workOrderRuntimePromise;
 }
 
 async function gyongyosLocation(){
@@ -140,6 +160,8 @@ kioskRouter.get("/products",async(req,res)=>{try{
  }catch(e:any){console.error("Kiosk products hiba:",e);res.status(500).json({ok:false,error:"kiosk_products_failed",detail:e?.message||String(e)})}});
 
 kioskRouter.post("/workorders",async(req,res)=>{
+ try{await ensureKioskWorkOrderRuntime()}
+ catch(e:any){console.error("Kiosk workorder runtime guard hiba:",e);return res.status(503).json({error:"A kiosk munkalap adatbázis-előkészítése átmenetileg nem sikerült.",error_code:"kiosk_workorder_runtime_not_ready"})}
  const resolved=await resolveLocation(req.body?.location_id);const locationId=resolved?.id||"",employeeId=clean(req.body?.employee_id),clientName=clean(req.body?.client_name),phone=clean(req.body?.phone),email=clean(req.body?.email),note=clean(req.body?.note),paymentMethod=clean(req.body?.payment_method)||"reception",items=Array.isArray(req.body?.items)?req.body.items:[];
  if(!locationId||!clientName||(!phone&&!email)||!items.length)return res.status(400).json({error:"Telephely, vendégnév, elérhetőség és legalább egy tétel szükséges."});
  const cx=await pool.connect();try{await cx.query("BEGIN");const loc=await cx.query(`SELECT id,name FROM locations WHERE id=$1::uuid AND COALESCE(is_active,true)=true`,[locationId]);if(!loc.rows[0]){await cx.query("ROLLBACK");return res.status(400).json({error:"A kiválasztott szalon nem található."})}
@@ -148,7 +170,7 @@ kioskRouter.post("/workorders",async(req,res)=>{
  const number=(await cx.query(`SELECT next_official_work_order_number(now()) work_order_number`)).rows[0].work_order_number;const sourceSnapshot={source:"kiosk",device_key:"gyongyos-main",payment_method:paymentMethod,items,location_id:locationId};const header=await cx.query(`INSERT INTO work_orders(title,notes,status,employee_id,client_id,client_name,client_phone,client_email,location_id,fully_paid,note_for_another_visitor,created_by,status_updated_at,work_order_number,source_created_at,source_snapshot) VALUES('Kiosk rendelés / szolgáltatás',$1,'waiting',$2::uuid,$3::uuid,$4,$5,$6,$7::uuid,false,false,'public-kiosk',now(),$8,now(),$9::jsonb) RETURNING id,work_order_number,status,created_at`,[note||`Kiosk fizetési mód: ${paymentMethod}`,employeeId||null,clientId,clientName,phone||null,email||null,locationId,number,JSON.stringify(sourceSnapshot)]);const workOrderId=header.rows[0].id;
  for(const raw of items){const kind=clean(raw?.kind||raw?.meta?.kind).toLowerCase(),id=clean(raw?.id),quantity=qty(raw?.qty);if(!id)continue;if(kind==="product"){const p=(await cx.query(`SELECT id,COALESCE(NULLIF(to_jsonb(products)->>'name_hu',''),name) name,COALESCE(NULLIF(to_jsonb(products)->>'retail_price_gross','')::numeric,0)::numeric price FROM products WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];if(p){const price=Number(p.price||0);await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,product_id,item_name,quantity,unit_price,discount_amount,line_total) VALUES($1,'product',$2,$3,$4,$5,0,$6)`,[workOrderId,p.id,p.name,quantity,price,quantity*price])}}else if(kind==="service"){const s=(await cx.query(`SELECT id,name,COALESCE(promo_price,list_price,base_price,0)::numeric price,COALESCE(duration_minutes,30)::int duration FROM services WHERE id=$1::uuid LIMIT 1`,[id])).rows[0];if(s){const price=Number(s.price||0);await cx.query(`INSERT INTO work_order_items(work_order_id,item_type,service_id,item_name,quantity,unit_price,discount_amount,line_total,duration_minutes) VALUES($1,'service',$2,$3,$4,$5,0,$6,$7)`,[workOrderId,s.id,s.name,quantity,price,quantity*price,s.duration])}}}
  const recalc=(await cx.query(`SELECT to_regprocedure('recalc_work_order_totals(uuid)') IS NOT NULL ok`)).rows[0]?.ok;if(recalc)await cx.query(`SELECT recalc_work_order_totals($1::uuid)`,[workOrderId]);await cx.query("COMMIT");res.status(201).json({ok:true,...header.rows[0],source:"kiosk",location:resolved,payment_method:paymentMethod})
- }catch(e:any){await cx.query("ROLLBACK").catch(()=>undefined);console.error("Kiosk workorder hiba:",e);res.status(500).json({error:"A kiosk munkalap létrehozása sikertelen.",detail:e?.message||String(e)})}finally{cx.release()}
+ }catch(e:any){await cx.query("ROLLBACK").catch(()=>undefined);console.error("Kiosk workorder hiba:",e);res.status(500).json({error:"A kiosk munkalap létrehozása sikertelen.",error_code:"kiosk_workorder_create_failed",diagnostic:{code:e?.code||null,table:e?.table||null,column:e?.column||null,constraint:e?.constraint||null}})}finally{cx.release()}
 });
 
 export default kioskRouter;
