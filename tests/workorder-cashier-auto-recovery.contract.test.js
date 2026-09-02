@@ -23,15 +23,21 @@ test('settlement error recovery invokes hardened retry-safe recovery service',()
   assert.match(recovery,/auto_recovery:true/);
   assert.match(recovery,/primary_settlement_failure/);
   assert.match(recovery,/schema_drift/);
+  assert.match(recovery,/constraint_conflict/);
 });
 
-test('known database failures are mapped to actionable statuses instead of blind HTTP 500',()=>{
+test('postgres constraint conflicts are routed through recovery instead of returning the old blocking 409',()=>{
+  assert.match(recovery,/CONSTRAINT_CODES\.has\(code\)/);
+  assert.doesNotMatch(recovery,/if\(CONSTRAINT_CODES\.has\(code\)\)return res\.status\(409\)/);
+  assert.match(recovery,/CONSTRAINT_CODES\.has\(code\)[\s\S]*\?'constraint_conflict'/);
+});
+
+test('non-recoverable database failures are still mapped to actionable statuses',()=>{
   assert.match(recovery,/code===\'22P02\'/);
   assert.match(recovery,/code===\'P0001\'/);
-  assert.match(recovery,/CONSTRAINT_CODES/);
   assert.match(recovery,/code===\'57014\'\|\|code===\'55P03\'\|\|code===\'40P01\'/);
   assert.match(recovery,/CASHIER_SETTLEMENT_INVALID_ID/);
-  assert.match(recovery,/CASHIER_SETTLEMENT_DATA_CONFLICT/);
+  assert.match(recovery,/CASHIER_SETTLEMENT_RULE_CONFLICT/);
   assert.match(recovery,/CASHIER_SETTLEMENT_RETRYABLE_DB/);
 });
 
