@@ -24,15 +24,19 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
 
   if(code==='22P02')return res.status(400).json({message:'Érvénytelen azonosító vagy pénzügyi hivatkozás.',error_code:'CASHIER_SETTLEMENT_INVALID_ID',diagnostic});
   if(code==='P0001')return res.status(409).json({message:String(err?.message||'A pénztári művelet üzleti szabály miatt nem hajtható végre.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic});
-  if(CONSTRAINT_CODES.has(code))return res.status(409).json({message:'A munkalap pénzügyi lezárását adatkonzisztencia-hiba akadályozza.',error_code:'CASHIER_SETTLEMENT_DATA_CONFLICT',diagnostic});
   if(code==='57014'||code==='55P03'||code==='40P01')return res.status(503).json({message:'A pénzügyi lezárást adatbázis-zárolás vagy timeout akadályozta. Próbálja újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic});
 
   try{
     const recovered=await settleWorkOrderWithoutShift(workOrderId,req.body,actor(req));
+    const recoveryReason=SCHEMA_DRIFT_CODES.has(code)
+      ?'schema_drift'
+      :CONSTRAINT_CODES.has(code)
+        ?'constraint_conflict'
+        :'primary_settlement_failure';
     const body={
       ...recovered.body,
       auto_recovery:true,
-      recovery_reason:SCHEMA_DRIFT_CODES.has(code)?'schema_drift':'primary_settlement_failure',
+      recovery_reason:recoveryReason,
       primary_error:diagnostic,
     };
     console.warn('[cashier-settle-auto-recovery] recovery result',workOrderId,recovered.status,body.recovery_reason);
