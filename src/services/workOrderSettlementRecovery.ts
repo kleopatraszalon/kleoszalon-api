@@ -4,6 +4,12 @@ const PAYMENT_METHODS=new Set(['cash','card','transfer','voucher','other']);
 const money=(v:any)=>{const n=Number(v??0);return Number.isFinite(n)?Math.round(n*100)/100:0};
 const textLike=(t:string|undefined)=>['text','character varying','character'].includes(String(t||''));
 const timestampLike=(t:string|undefined)=>t==='timestamp with time zone'||t==='timestamp without time zone';
+const paymentMethod=(v:any)=>{
+ const raw=String(v||'').trim().toLowerCase();
+ if(raw==='bank_card'||raw==='bankcard')return 'card';
+ if(raw==='bank_transfer'||raw==='banktransfer')return 'transfer';
+ return raw;
+};
 
 async function columnTypes(c:any,table:string){
  const q=await c.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[table]);
@@ -18,11 +24,12 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
    columnTypes(c,'work_orders'),columnTypes(c,'work_order_items'),columnTypes(c,'work_order_payments')
   ]);
   const woCols=new Set(woTypes.keys()),itemCols=new Set(itemTypes.keys()),paymentCols=new Set(paymentTypes.keys());
+  const paymentAmountColumns=['amount','amount_huf'].filter(column=>paymentCols.has(column));
   if(!woCols.has('payment_status')||!woCols.has('financial_closed_at')){
    await c.query('ROLLBACK');
    return{status:503,body:{message:'A munkalap pénzügyi lezárási sémája hiányos. A pénzügyi adatbázis-migráció szükséges.',error_code:'WORK_ORDER_SCHEMA_INCOMPLETE'}};
   }
-  if(!itemCols.has('work_order_id')||!itemCols.has('line_total')||!paymentCols.has('work_order_id')||!paymentCols.has('payment_method')||!paymentCols.has('amount')){
+  if(!itemCols.has('work_order_id')||!itemCols.has('line_total')||!paymentCols.has('work_order_id')||!paymentCols.has('payment_method')||!paymentAmountColumns.length){
    await c.query('ROLLBACK');
    return{status:503,body:{message:'A munkalap tétel- vagy fizetési sémája hiányos. Az adatbázis-migráció szükséges.',error_code:'WORK_ORDER_PAYMENT_SCHEMA_INCOMPLETE'}};
   }
@@ -37,17 +44,19 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const requestedDiscount=Math.max(0,money(body?.discount_amount)),storedDiscount=Math.max(0,money(j.discount_amount));
   const requestedTip=Math.max(0,money(body?.tip_amount)),storedTip=Math.max(0,money(j.tip_amount));
   const discount=Math.max(requestedDiscount,storedDiscount),tip=Math.max(requestedTip,storedTip),due=Math.max(0,money(gross-discount+tip));
-  let existingPaid=money((await c.query(`SELECT COALESCE(SUM(amount),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
+  const paymentAmountExpression=paymentCols.has('amount')&&paymentCols.has('amount_huf')?'COALESCE(amount,amount_huf)':paymentAmountColumns[0];
+  let existingPaid=money((await c.query(`SELECT COALESCE(SUM(${paymentAmountExpression}),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   let remaining=Math.max(0,money(due-existingPaid));
 
   const paymentWorkOrderCast=paymentTypes.get('work_order_id')==='uuid'?'::uuid':'';
   for(const p of Array.isArray(body?.payments)?body.payments:[]){
    if(remaining<=.009)break;
-   const method=String(p?.payment_method||'').toLowerCase(),requestedAmount=money(p?.amount);
+   const method=paymentMethod(p?.payment_method),requestedAmount=money(p?.amount??p?.amount_huf);
    if(!PAYMENT_METHODS.has(method)){await c.query('ROLLBACK');return{status:400,body:{message:`Érvénytelen fizetési mód: ${method}`}}}
    if(!(requestedAmount>0)){await c.query('ROLLBACK');return{status:400,body:{message:'A fizetési összegnek pozitívnak kell lennie.'}}}
    const amount=Math.min(requestedAmount,remaining);
-   const names=['work_order_id','payment_method','amount'],vals=[`$1${paymentWorkOrderCast}`,'$2','$3'],params:any[]=[workOrderId,method,amount];
+   const names=['work_order_id','payment_method'],vals=[`$1${paymentWorkOrderCast}`,'$2'],params:any[]=[workOrderId,method];
+   for(const column of paymentAmountColumns){names.push(column);params.push(amount);vals.push(`$${params.length}`)}
    if(timestampLike(paymentTypes.get('paid_at'))){names.push('paid_at');vals.push('now()')}
    if(paymentCols.has('note')){names.push('note');params.push([p?.note||'', 'Műszak nélküli lezárási recovery'].filter(Boolean).join(' · '));vals.push(`$${params.length}`)}
    await c.query(`INSERT INTO work_order_payments(${names.join(',')}) VALUES(${vals.join(',')})`,params);
@@ -55,7 +64,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
    remaining=Math.max(0,money(due-existingPaid));
   }
 
-  const paid=money((await c.query(`SELECT COALESCE(SUM(amount),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
+  const paid=money((await c.query(`SELECT COALESCE(SUM(${paymentAmountExpression}),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   if(paid+.009<due){await c.query('ROLLBACK');return{status:400,body:{message:`A munkalap nem zárható pénzügyileg: még ${money(due-paid).toLocaleString('hu-HU')} Ft fizetendő.`}}}
 
   const sets:string[]=[],params:any[]=[workOrderId];
@@ -67,7 +76,10 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   add('amount_paid',paid);
   add('payment_status','paid');
   add('fully_paid',true);
-  add('invoice_status',String(body?.invoice_status||j.invoice_status||'not_requested'));
+  // Recovery során az invoice_status meglévő, adatbázis által már elfogadott
+  // értékét érintetlenül hagyjuk. Egy schema-drift miatti helyreállítás nem
+  // próbálhatja újra ugyanazt a státusz-constraintet, amely a primary ágat
+  // megakaszthatta; a számlázási életciklus külön kezeli az átmenetet.
   sets.push('financial_closed_at=COALESCE(financial_closed_at,now())');
   if(woCols.has('financial_closed_by')&&textLike(woTypes.get('financial_closed_by'))){params.push(actor);sets.push(`financial_closed_by=COALESCE(financial_closed_by,$${params.length})`)}
   if(timestampLike(woTypes.get('updated_at')))sets.push('updated_at=now()');
