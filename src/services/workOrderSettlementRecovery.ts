@@ -18,6 +18,17 @@ async function columnTypes(c:any,table:string){
  return new Map<string,string>(q.rows.map((r:any)=>[String(r.column_name),String(r.data_type)]));
 }
 
+async function resolveOpenCashierShift(c:any,workOrder:any,supplied:any){
+ const requested=String(supplied??'').trim();
+ if(requested)return requested;
+ const exists=(await c.query(`SELECT to_regclass('public.cash_register_shifts') IS NOT NULL ok`)).rows[0]?.ok;
+ if(!exists)return null;
+ const locationId=String(workOrder?.location_id||'').trim();
+ if(!locationId)return null;
+ const shift=(await c.query(`SELECT id FROM cash_register_shifts WHERE location_id::text=$1 AND status='open' ORDER BY opened_at DESC LIMIT 1 FOR UPDATE`,[locationId])).rows[0];
+ return shift?.id??null;
+}
+
 const fallbackSettlementKey=(workOrderId:string,body:any)=>{
  const digest=createHash('sha256').update(`${workOrderId}:${JSON.stringify(body||{})}`).digest('hex').slice(0,32);
  return `workorder-settlement-recovery:${digest}`;
@@ -62,6 +73,11 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
    if(!PAYMENT_METHODS.has(method)){await c.query('ROLLBACK');return{status:400,body:{message:`Érvénytelen fizetési mód: ${method}`}}}
    if(!(requestedAmount>0)){await c.query('ROLLBACK');return{status:400,body:{message:'A fizetési összegnek pozitívnak kell lennie.'}}}
    const amount=Math.min(requestedAmount,remaining);
+   const cashierShiftId=method==='cash'?await resolveOpenCashierShift(c,wo,p?.cashier_shift_id):p?.cashier_shift_id||null;
+   if(method==='cash'&&!cashierShiftId){
+    await c.query('ROLLBACK');
+    return{status:409,body:{message:'Készpénzes munkalapfizetéshez nyitott pénztári műszak szükséges. Nyisd meg a kasszát, majd indítsd újra a fizetést.',error_code:'CASHIER_SHIFT_REQUIRED'}};
+   }
    await recordProtectedWorkOrderPayment(c,{
     workOrder:wo,
     method,
@@ -72,7 +88,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
     sequence,
     financeAccountId:p?.finance_account_id||null,
     paymentMethodCode:p?.payment_method_code||method,
-    cashierShiftId:p?.cashier_shift_id||null,
+    cashierShiftId,
     feeAmount:money(p?.fee_amount),
    });
    existingPaid=money(existingPaid+amount);
@@ -82,9 +98,6 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const paid=money((await c.query(`SELECT COALESCE(SUM(${paymentAmountExpression}),0)::numeric total FROM work_order_payments WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   if(paid+.009<due){await c.query('ROLLBACK');return{status:400,body:{message:`A munkalap nem zárható pénzügyileg: még ${money(due-paid).toLocaleString('hu-HU')} Ft fizetendő.`}}}
 
-  // A recovery csak a pénzügyi lezárás lényegi, minden sémagenerációban
-  // azonos jelentésű mezőit írja. Az invoice/document lifecycle mezők meglévő
-  // értékei érintetlenek maradnak, így egy régi státusz-CHECK nem ismétlődik.
   const sets:string[]=[],params:any[]=[workOrderId];
   const add=(column:string,value:any)=>{if(!woCols.has(column))return;params.push(value);sets.push(`${column}=$${params.length}`)};
   add('gross_total',gross);
@@ -103,7 +116,12 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   return{status:200,body:{...updated,recovery:true,protected_payment_recovery:true,idempotent_payment_recovery:remaining<=.009}}
  }catch(error:any){
   await c.query('ROLLBACK').catch(()=>undefined);
-  console.error('[workorder-settlement-recovery] failed',workOrderId,error?.code||'',error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
-  throw error;
+  const code=String(error?.code||'');
+  const diagnostic={code:code||null,table:error?.table?String(error.table):null,column:error?.column?String(error.column):null,constraint:error?.constraint?String(error.constraint):null};
+  console.error('[workorder-settlement-recovery] failed',workOrderId,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
+  if(code==='P0001')return{status:409,body:{message:String(error?.message||'A pénzügyi helyreállítást üzleti szabály akadályozza.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic}};
+  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:'A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza.',error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
+  if(['57014','55P03','40P01'].includes(code))return{status:503,body:{message:'A pénzügyi helyreállítást adatbázis-zárolás vagy timeout akadályozta. Próbáld újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic}};
+  return{status:500,body:{message:'A munkalap pénzügyi helyreállítása sikertelen.',error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',diagnostic}};
  }finally{c.release()}
 }
