@@ -25,6 +25,14 @@ test('legacy no-default not-null drift cannot block settlement recovery',()=>{
   assert.ok(compat.includes('ALTER TABLE financial_movements ALTER COLUMN %I DROP NOT NULL'));
 });
 
+test('canonical UUID ids and payment timestamp defaults are restored before recovery writes',()=>{
+  assert.ok(compat.includes('CREATE EXTENSION IF NOT EXISTS pgcrypto'));
+  assert.ok(compat.includes('ALTER TABLE work_order_payments ALTER COLUMN id SET DEFAULT gen_random_uuid()'));
+  assert.ok(compat.includes('ALTER TABLE work_order_payments ALTER COLUMN paid_at SET DEFAULT now()'));
+  assert.ok(compat.includes('ALTER TABLE financial_accounts ALTER COLUMN id SET DEFAULT gen_random_uuid()'));
+  assert.ok(compat.includes('ALTER TABLE financial_movements ALTER COLUMN id SET DEFAULT gen_random_uuid()'));
+});
+
 test('settlement recovery runs other-payment compatibility repair before transaction',()=>{
   assert.ok(recovery.includes("import {ensureOtherPaymentCompatibility}"));
   const repair=recovery.indexOf('await ensureOtherPaymentCompatibility()');
