@@ -7,8 +7,8 @@ import {locationBelongsToTenant,resolveTenantIdentity} from '../saas/tenantAcces
 
 const router=Router();
 router.use(requireAuth);
-const GLOBAL=new Set(['admin','manager','accounting','bookkeeper','konyveles','könyvelés']);
-const canChoose=new Set(['admin','manager','location_manager','salon_manager','receptionist']);
+const GLOBAL=new Set(['admin','administrator','rendszergazda','superadmin','super_admin','manager','business_manager','owner','accounting','bookkeeper','konyveles','könyvelés']);
+const canChoose=new Set(['admin','administrator','rendszergazda','superadmin','super_admin','manager','business_manager','owner','location_manager','salon_manager','szalonvezető','szalonvezeto','üzletvezető','uzletvezeto','store_manager','branch_manager','receptionist','recepciós','recepcios','reception']);
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 function roles(req:AuthRequest){return parseRoleKeys(req.user?.role)}
 function global(req:AuthRequest){return roles(req).some(r=>GLOBAL.has(r))}
