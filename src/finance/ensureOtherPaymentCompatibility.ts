@@ -14,6 +14,21 @@ export async function ensureOtherPaymentCompatibility(){
         r record;
       BEGIN
         IF to_regclass('public.work_order_payments') IS NOT NULL THEN
+          -- Legacy deployments accumulated implementation-only NOT NULL columns.
+          -- The protected payment writer cannot populate columns it does not know,
+          -- therefore keep only the canonical business columns mandatory.
+          FOR r IN
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='work_order_payments'
+               AND is_nullable='NO'
+               AND column_default IS NULL
+               AND column_name NOT IN('id','work_order_id','payment_method','amount','paid_at')
+          LOOP
+            EXECUTE format('ALTER TABLE work_order_payments ALTER COLUMN %I DROP NOT NULL',r.column_name);
+          END LOOP;
+
           SELECT attnum INTO v_att
             FROM pg_attribute
            WHERE attrelid='public.work_order_payments'::regclass
@@ -49,6 +64,20 @@ export async function ensureOtherPaymentCompatibility(){
         END IF;
 
         IF to_regclass('public.financial_accounts') IS NOT NULL THEN
+          -- Preserve canonical mandatory account data but release obsolete
+          -- legacy columns that otherwise block automatic account creation.
+          FOR r IN
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='financial_accounts'
+               AND is_nullable='NO'
+               AND column_default IS NULL
+               AND column_name NOT IN('id','name','account_type')
+          LOOP
+            EXECUTE format('ALTER TABLE financial_accounts ALTER COLUMN %I DROP NOT NULL',r.column_name);
+          END LOOP;
+
           SELECT attnum INTO v_att
             FROM pg_attribute
            WHERE attrelid='public.financial_accounts'::regclass
@@ -81,6 +110,22 @@ export async function ensureOtherPaymentCompatibility(){
                 CHECK(account_type IN('cash','bank','card','online','voucher','other')) NOT VALID;
             END IF;
           END IF;
+        END IF;
+
+        IF to_regclass('public.financial_movements') IS NOT NULL THEN
+          -- Same compatibility rule for the audited ledger: only canonical
+          -- identity/account/direction/amount fields stay mandatory.
+          FOR r IN
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='financial_movements'
+               AND is_nullable='NO'
+               AND column_default IS NULL
+               AND column_name NOT IN('id','account_id','direction','amount')
+          LOOP
+            EXECUTE format('ALTER TABLE financial_movements ALTER COLUMN %I DROP NOT NULL',r.column_name);
+          END LOOP;
         END IF;
       END
       $repair$;
