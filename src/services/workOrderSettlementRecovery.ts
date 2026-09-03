@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import db from '../db';
 import {ensureOtherPaymentCompatibility} from '../finance/ensureOtherPaymentCompatibility';
+import {ensureWorkOrderSettlementCompatibility} from '../finance/ensureWorkOrderSettlementCompatibility';
 import {recordProtectedWorkOrderPayment} from '../finance/workOrderPaymentIntegrity';
 
 const PAYMENT_METHODS=new Set(['cash','card','transfer','voucher','other']);
@@ -36,6 +37,10 @@ const fallbackSettlementKey=(workOrderId:string,body:any)=>{
 };
 
 export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,actor:string,settlementKey?:string){
+ // A recovery minden régi munkalapra ugyanazt a kompatibilitási réteget használja.
+ // Ez még a pénzügyi tranzakció előtt kijavítja az egyértelműen feloldható,
+ // cégdimenzió nélküli régi munkalapokat és a hozzájuk tartozó triggereket.
+ await ensureWorkOrderSettlementCompatibility();
  await ensureOtherPaymentCompatibility();
  const c=await db.connect();
  try{
