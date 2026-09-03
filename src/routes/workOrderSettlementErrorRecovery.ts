@@ -37,8 +37,9 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
     // Minden szalon kap egy saját, belső fallback kibocsátó entitást. Ha már van
     // aktív alapértelmezett valódi cég, azt nem írjuk felül. Így a régi, cég nélküli
     // munkalapok determinisztikusan helyreállíthatók anélkül, hogy hamis HU cégadatot
-    // generálnánk vagy egy másik szalon cégét örökölnék.
-    await ensureSalonDefaultLegalEntities();
+    // generálnánk vagy egy másik szalon cégét örökölnék. Recoveryben mindig frissen
+    // ellenőrizzük, hogy egy új szalon se maradjon a rövid normál cache miatt cég nélkül.
+    await ensureSalonDefaultLegalEntities(true);
 
     // A primary pénzügyi tranzakció visszagörgetése után ugyanazt az idempotencia-
     // kulcsot használjuk a védett recovery könyveléshez. Így nincs párhuzamos
