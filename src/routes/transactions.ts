@@ -99,18 +99,31 @@ const ensureNavInvoiceReady=async(_req:Request,res:Response,next:NextFunction)=>
 };
 const ensureVoiceStatsReady=async(_req:Request,res:Response,next:NextFunction)=>{try{await ensureBookingVoiceStats();next()}catch(error:any){console.error('Voice Booking statisztika bootstrap hiba:',error?.message||error);res.status(503).json({ok:false,error:'booking_voice_stats_schema_unavailable',message:'A Voice Booking statisztikai séma jelenleg nem kész.',detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})}};
 const guardSettlementLifecycle=async(req:Request,res:Response,next:NextFunction)=>{try{if(req.method!=='POST')return next();const m=String(req.path||'').match(/^\/workorders\/([^/]+)\/settle\/?$/);if(!m)return next();const id=decodeURIComponent(m[1]);const q=await db.query(`SELECT w.work_order_number,w.status,NULLIF(to_jsonb(w)->>'locked_at','')::timestamptz locked_at,NULLIF(to_jsonb(w)->>'archived_at','')::timestamptz archived_at,NULLIF(to_jsonb(w)->>'financial_closed_at','')::timestamptz financial_closed_at FROM work_orders w WHERE w.id::text=$1 LIMIT 1`,[id]);const wo=q.rows[0];if(!wo)return res.status(404).json({message:'A munkalap nem található.'});if(wo.locked_at||wo.archived_at)return res.status(409).json({message:`A(z) ${wo.work_order_number||'munkalap'} lezárt és archivált; további fizetés nem rögzíthető.`});if(wo.financial_closed_at)return res.status(409).json({message:'A munkalap pénzügyileg már lezárt; újabb fizetés vagy elszámolás nem rögzíthető.'});if(['cancelled','no_show','completed'].includes(String(wo.status||'')))return res.status(409).json({message:'Megszakított vagy lezárt munkalap pénzügyileg nem módosítható.'});next()}catch(error:any){if(error?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.'});next(error)}};
+const normalizePaymentMethod=(raw:any)=>{const method=String(raw||'').trim().toLowerCase();if(method==='bank_card'||method==='bankcard')return 'card';if(method==='bank_transfer'||method==='banktransfer')return 'transfer';return method};
 const guardOpenCashierShift=async(req:Request,res:Response,next:NextFunction)=>{try{
   if(req.method!=='POST')return next();
   const path=String(req.path||'');
-  const needsShift=/^\/workorders\/[^/]+\/settle\/?$/.test(path)||/^\/register-movements(?:\/[^/]+\/void)?\/?$/.test(path);
-  if(!needsShift)return next();
+  const isSettlement=/^\/workorders\/[^/]+\/settle\/?$/.test(path);
+  const isRegisterMovement=/^\/register-movements(?:\/[^/]+\/void)?\/?$/.test(path);
+  if(!isSettlement&&!isRegisterMovement)return next();
+
+  const payments=Array.isArray(req.body?.payments)?req.body.payments:[];
+  const hasCashPayment=isSettlement&&payments.some((p:any)=>normalizePaymentMethod(p?.payment_method)==='cash');
+  // A pénztári műszak üzleti szabály kizárólag valódi kasszamozgásra vonatkozik.
+  // Kártya, átutalás, utalvány és egyéb munkalapfizetés nem blokkolható nyitott kassza hiánya miatt.
+  if(isSettlement&&!hasCashPayment)return next();
+
   const locationId=String((req.query as any)?.location_id??req.body?.location_id??res.locals.workOrderFinanceLocationId??'').trim();
-  if(!locationId)return res.status(400).json({message:'Ehhez a pénztári művelethez telephely és nyitott pénztári műszak szükséges.'});
+  if(!locationId)return res.status(400).json({message:'Ehhez a pénztári művelethez telephely és nyitott pénztári műszak szükséges.',error_code:'CASHIER_LOCATION_REQUIRED'});
   const exists=(await db.query(`SELECT to_regclass('public.cash_register_shifts') IS NOT NULL ok`)).rows[0]?.ok;
-  if(!exists)return res.status(409).json({message:'A pénztári műszak nincs megnyitva. Előbb rögzítsd a nyitópénzt.'});
+  if(!exists)return res.status(409).json({message:'A pénztári műszak nincs megnyitva. Előbb rögzítsd a nyitópénzt.',error_code:'CASHIER_SHIFT_REQUIRED'});
   const shift=(await db.query(`SELECT id,status,current_cashier FROM cash_register_shifts WHERE location_id=$1 AND status='open' ORDER BY opened_at DESC LIMIT 1`,[locationId])).rows[0];
-  if(!shift)return res.status(409).json({message:'A művelet csak nyitott pénztári műszakban végezhető. Függő átadás-átvétel esetén előbb fogadd el az átvételt.'});
-  res.locals.cashierShift=shift;next();
+  if(!shift)return res.status(409).json({message:'A művelet csak nyitott pénztári műszakban végezhető. Függő átadás-átvétel esetén előbb fogadd el az átvételt.',error_code:'CASHIER_SHIFT_REQUIRED'});
+  res.locals.cashierShift=shift;
+  if(isSettlement){
+    req.body.payments=payments.map((p:any)=>normalizePaymentMethod(p?.payment_method)==='cash'?{...p,cashier_shift_id:p?.cashier_shift_id||shift.id}:p);
+  }
+  return next();
 }catch(error){next(error)}};
 const parseRoles=(raw:any)=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const parsed=JSON.parse(String(raw||''));if(Array.isArray(parsed))return parsed.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
 const guardCashierHistoryRole=(req:Request,res:Response,next:NextFunction)=>{
