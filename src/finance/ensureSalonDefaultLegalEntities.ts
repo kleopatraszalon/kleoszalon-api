@@ -37,6 +37,18 @@ export async function ensureSalonDefaultLegalEntities(force=false){
     }
 
     await db.query(`
+      -- Egy korábban letiltott cég ne foglalhassa örökre a részleges unique index
+      -- szerinti alapértelmezett helyet. Ezzel elkerüljük, hogy az új fallback
+      -- is_default=true beállítása 23505 hibával leállítsa a teljes recoveryt.
+      UPDATE legal_entity_locations el
+         SET is_default=false
+       WHERE el.active=true
+         AND el.is_default=true
+         AND NOT EXISTS(
+           SELECT 1 FROM legal_entities e
+           WHERE e.id=el.legal_entity_id AND e.active=true
+         );
+
       WITH location_source AS (
         SELECT
           l.id,
@@ -78,6 +90,24 @@ export async function ensureSalonDefaultLegalEntities(force=false){
       )
       ON CONFLICT DO NOTHING;
 
+      -- Ha a technikai fallbacket korábban letiltották, a rendszer saját rekordját
+      -- újra aktiváljuk. Valódi, kézzel rögzített céget ez a feltétel nem érint.
+      UPDATE legal_entities e
+         SET active=true,updated_by='system-default-salon-company',updated_at=now()
+       WHERE e.created_by='system-default-salon-company'
+         AND e.accounting_ledger_code LIKE 'AUTO-LOCATION-%'
+         AND e.active=false;
+
+      -- Régi live sémában nem feltétlenül létezik a kanonikus composite PK/unique.
+      -- Ezért nem használunk ON CONFLICT(legal_entity_id,location_id) targetet.
+      UPDATE legal_entity_locations el
+         SET active=true
+        FROM legal_entities e
+       WHERE e.id=el.legal_entity_id
+         AND e.accounting_ledger_code='AUTO-LOCATION-'||el.location_id::text
+         AND e.active=true
+         AND el.active=false;
+
       WITH location_fallback AS (
         SELECT l.id AS location_id,e.id AS legal_entity_id
         FROM locations l
@@ -87,8 +117,23 @@ export async function ensureSalonDefaultLegalEntities(force=false){
       INSERT INTO legal_entity_locations(legal_entity_id,location_id,is_default,active)
       SELECT f.legal_entity_id,f.location_id,false,true
       FROM location_fallback f
-      ON CONFLICT(legal_entity_id,location_id)
-      DO UPDATE SET active=true;
+      WHERE NOT EXISTS(
+        SELECT 1 FROM legal_entity_locations existing
+        WHERE existing.legal_entity_id=f.legal_entity_id
+          AND existing.location_id=f.location_id
+      )
+      ON CONFLICT DO NOTHING;
+
+      -- Még egyszer tisztítjuk a stale defaultot arra az esetre, ha egy legacy
+      -- trigger vagy párhuzamos kérés közben deaktivált cég maradt defaultként.
+      UPDATE legal_entity_locations el
+         SET is_default=false
+       WHERE el.active=true
+         AND el.is_default=true
+         AND NOT EXISTS(
+           SELECT 1 FROM legal_entities e
+           WHERE e.id=el.legal_entity_id AND e.active=true
+         );
 
       WITH fallback_links AS (
         SELECT el.legal_entity_id,el.location_id
@@ -108,11 +153,9 @@ export async function ensureSalonDefaultLegalEntities(force=false){
          AND NOT EXISTS(
            SELECT 1
            FROM legal_entity_locations existing
-           JOIN legal_entities ee ON ee.id=existing.legal_entity_id
            WHERE existing.location_id=target.location_id
              AND existing.active=true
              AND existing.is_default=true
-             AND ee.active=true
          );
     `);
     lastSuccessfulAt=Date.now();
