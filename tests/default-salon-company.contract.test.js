@@ -18,10 +18,14 @@ test('every salon can receive its own non-fake fallback legal entity without ove
   assert.doesNotMatch(src,/ON CONFLICT\(legal_entity_id,location_id\)/);
 });
 
-test('settlement recovery seeds salon defaults before retrying protected payment',()=>{
+test('settlement recovery seeds salon defaults before retrying protected payment and cannot die on an unrelated salon seed',()=>{
   const route=read('src/routes/workOrderSettlementErrorRecovery.ts');
   assert.match(route,/ensureSalonDefaultLegalEntities/);
   assert.ok(route.indexOf('await ensureSalonDefaultLegalEntities(true)')<route.indexOf('settleWorkOrderWithoutShift('));
+  assert.match(route,/salonDefaultSeedWarning/);
+  assert.match(route,/salon default seed skipped/);
+  assert.match(route,/23505/);
+  assert.match(route,/42P10/);
 });
 
 test('legacy global legal-entity backfill cannot abort the current workorder recovery',()=>{
