@@ -4,8 +4,8 @@ import {ensureSalonDefaultLegalEntities} from '../finance/ensureSalonDefaultLega
 import {settleWorkOrderWithoutShift} from '../services/workOrderSettlementRecovery';
 
 const SETTLE_PATH=/^\/workorders\/([^/]+)\/settle\/?$/;
-const SCHEMA_DRIFT_CODES=new Set(['42P01','42703','42804','42883','42P07']);
-const CONSTRAINT_CODES=new Set(['23502','23503','23514']);
+const SCHEMA_DRIFT_CODES=new Set(['42P01','42703','42804','42883','42P07','42P10']);
+const CONSTRAINT_CODES=new Set(['23502','23503','23505','23514','23P01']);
 const RETRYABLE_CODES=new Set(['57014','55P03','40P01']);
 const actor=(req:AuthRequest)=>req.user?.email||String(req.user?.id||'');
 const diagnostic=(error:any)=>({
@@ -13,6 +13,7 @@ const diagnostic=(error:any)=>({
   table:error?.table?String(error.table):null,
   column:error?.column?String(error.column):null,
   constraint:error?.constraint?String(error.constraint):null,
+  message:error?.message?String(error.message).slice(0,320):null,
 });
 const settlementKey=(req:AuthRequest)=>{
   const raw=String(req.get?.('Idempotency-Key')||req.headers?.['idempotency-key']||req.body?.idempotency_key||'').trim();
@@ -34,12 +35,17 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
   if(RETRYABLE_CODES.has(code))return res.status(503).json({message:'A pénzügyi lezárást adatbázis-zárolás vagy timeout akadályozta. Próbálja újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic:primaryDiagnostic});
 
   try{
-    // Minden szalon kap egy saját, belső fallback kibocsátó entitást. Ha már van
-    // aktív alapértelmezett valódi cég, azt nem írjuk felül. Így a régi, cég nélküli
-    // munkalapok determinisztikusan helyreállíthatók anélkül, hogy hamis HU cégadatot
-    // generálnánk vagy egy másik szalon cégét örökölnék. Recoveryben mindig frissen
-    // ellenőrizzük, hogy egy új szalon se maradjon a rövid normál cache miatt cég nélkül.
-    await ensureSalonDefaultLegalEntities(true);
+    // A globális szalon-fallback seed best-effort kompatibilitási lépés. Egy régi,
+    // idegen szalon hibás default-linkje nem állíthatja le az éppen fizetett munkalap
+    // célzott recoveryjét; utóbbi saját tranzakcióban fail-closed módon ellenőrzi,
+    // hogy ténylegesen van-e használható kibocsátó cég.
+    let salonDefaultSeedWarning:any=null;
+    try{
+      await ensureSalonDefaultLegalEntities(true);
+    }catch(seedError:any){
+      salonDefaultSeedWarning=diagnostic(seedError);
+      console.error('[cashier-settle-auto-recovery] salon default seed skipped',workOrderId,salonDefaultSeedWarning,seedError?.message||seedError);
+    }
 
     // A primary pénzügyi tranzakció visszagörgetése után ugyanazt az idempotencia-
     // kulcsot használjuk a védett recovery könyveléshez. Így nincs párhuzamos
@@ -55,6 +61,7 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
       auto_recovery:true,
       recovery_reason:recoveryReason,
       primary_error:primaryDiagnostic,
+      ...(salonDefaultSeedWarning?{salon_default_seed_warning:salonDefaultSeedWarning}:{}),
     };
     console.warn('[cashier-settle-auto-recovery] recovery result',workOrderId,recovered.status,body.recovery_reason);
     return res.status(recovered.status).json(body);
@@ -90,9 +97,16 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
       primary_error:primaryDiagnostic,
       recovery_error:recoveryDiagnostic,
     });
+    if(SCHEMA_DRIFT_CODES.has(recoveryCode))return res.status(503).json({
+      message:String(recoveryError?.message||'A pénzügyi helyreállítást egy régi adatbázisséma-eltérés akadályozza.'),
+      error_code:'CASHIER_SETTLEMENT_SCHEMA_DRIFT',
+      primary_error:primaryDiagnostic,
+      recovery_error:recoveryDiagnostic,
+    });
 
+    const marker=[recoveryCode,recoveryDiagnostic.constraint].filter(Boolean).join(' / ');
     return res.status(500).json({
-      message:'A munkalap pénzügyi lezárása és az automatikus helyreállítás is sikertelen.',
+      message:`A munkalap pénzügyi lezárása és az automatikus helyreállítás is sikertelen${marker?` (${marker})`:''}.`,
       error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',
       primary_error:primaryDiagnostic,
       recovery_error:recoveryDiagnostic,

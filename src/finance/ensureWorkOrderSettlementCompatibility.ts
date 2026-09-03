@@ -155,9 +155,11 @@ export async function ensureWorkOrderSettlementCompatibility(){
       END $$;
     `);
 
-    // A már meglévő, nyitott munkalapokat is javítjuk. Egy munkalap hibája nem
-    // állíthatja meg a többi adatjavítását; ellentmondó pénzügyi bizonyítéknál
-    // fail-closed marad és a konkrét munkalap külön vizsgálható.
+    // A már meglévő, nyitott munkalapokat is javítjuk. Egyetlen régi rekord
+    // hibája sem állíthatja meg a settlement recovery bootstrapot. A konkrét,
+    // éppen fizetett munkalap a recovery tranzakcióban külön, fail-closed módon
+    // kerül ellenőrzésre, ezért itt a best-effort backfill hibája biztonságosan
+    // izolálható.
     await db.query(`
       DO $backfill$
       DECLARE
@@ -191,8 +193,8 @@ export async function ensureWorkOrderSettlementCompatibility(){
           IF resolved_id IS NOT NULL THEN
             BEGIN
               UPDATE work_orders SET legal_entity_id=resolved_id WHERE id::text=r.id AND legal_entity_id IS NULL;
-            EXCEPTION WHEN SQLSTATE '23514' THEN
-              RAISE NOTICE 'Legacy workorder legal-entity backfill skipped for %: %',r.id,SQLERRM;
+            EXCEPTION WHEN OTHERS THEN
+              RAISE NOTICE 'Legacy workorder legal-entity backfill skipped for % [%]: %',r.id,SQLSTATE,SQLERRM;
             END;
           END IF;
         END LOOP;
