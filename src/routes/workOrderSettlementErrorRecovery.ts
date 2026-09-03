@@ -1,5 +1,6 @@
 import type {NextFunction,Response} from 'express';
 import type {AuthRequest} from '../middleware/auth';
+import {ensureSalonDefaultLegalEntities} from '../finance/ensureSalonDefaultLegalEntities';
 import {settleWorkOrderWithoutShift} from '../services/workOrderSettlementRecovery';
 
 const SETTLE_PATH=/^\/workorders\/([^/]+)\/settle\/?$/;
@@ -33,6 +34,12 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
   if(RETRYABLE_CODES.has(code))return res.status(503).json({message:'A pénzügyi lezárást adatbázis-zárolás vagy timeout akadályozta. Próbálja újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic:primaryDiagnostic});
 
   try{
+    // Minden szalon kap egy saját, belső fallback kibocsátó entitást. Ha már van
+    // aktív alapértelmezett valódi cég, azt nem írjuk felül. Így a régi, cég nélküli
+    // munkalapok determinisztikusan helyreállíthatók anélkül, hogy hamis HU cégadatot
+    // generálnánk vagy egy másik szalon cégét örökölnék.
+    await ensureSalonDefaultLegalEntities();
+
     // A primary pénzügyi tranzakció visszagörgetése után ugyanazt az idempotencia-
     // kulcsot használjuk a védett recovery könyveléshez. Így nincs párhuzamos
     // "legacy" fizetési sor: a helyreállítás is ugyanazon ledger-integritási úton fut.
@@ -77,7 +84,7 @@ export default async function workOrderSettlementErrorRecovery(err:any,req:AuthR
       recovery_error:recoveryDiagnostic,
     });
     if(CONSTRAINT_CODES.has(recoveryCode))return res.status(409).json({
-      message:'A munkalap pénzügyi helyreállítását egy fennmaradó adatkonzisztencia-feltétel akadályozza.',
+      message:String(recoveryError?.message||'A munkalap pénzügyi helyreállítását egy fennmaradó adatkonzisztencia-feltétel akadályozza.'),
       error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',
       primary_error:primaryDiagnostic,
       recovery_error:recoveryDiagnostic,
