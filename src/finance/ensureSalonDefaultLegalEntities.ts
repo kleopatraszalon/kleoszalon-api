@@ -99,7 +99,7 @@ export async function ensureSalonDefaultLegalEntities(force=false){
          AND e.active=false;
 
       -- Régi live sémában nem feltétlenül létezik a kanonikus composite PK/unique.
-      -- Ezért nem használunk ON CONFLICT(legal_entity_id,location_id) targetet.
+      -- Ezért nem használunk oszloppárra célzott ON CONFLICT klózt.
       UPDATE legal_entity_locations el
          SET active=true
         FROM legal_entities e
