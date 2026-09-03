@@ -14,6 +14,17 @@ const paymentMethod=(v:any)=>{
  if(raw==='bank_transfer'||raw==='banktransfer')return 'transfer';
  return raw;
 };
+const readableConstraintMessage=(error:any,target:string)=>{
+ const raw=String(error?.message||'').trim();
+ if(raw==='KLEO_CROSS_TENANT_WRITE_BLOCKED')return 'A munkalap pénzügyi tétele másik tenant/szalon adatkörébe kerülne; a telephely-hozzárendelést javítani kell.';
+ if(raw&&
+   !/^new row for relation/i.test(raw)&&
+   !/^insert or update on table/i.test(raw)&&
+   !/^update or delete on table/i.test(raw)&&
+   !/^null value in column/i.test(raw)
+ )return raw;
+ return `A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza${target?` (${target})`:''}.`;
+};
 
 async function columnTypes(c:any,table:string){
  const q=await c.query(`SELECT column_name,data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,[table]);
@@ -65,6 +76,60 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   if(j.locked_at||j.archived_at||String(wo.status||'')==='completed'){await c.query('ROLLBACK');return{status:409,body:{message:'A munkalap már lezárt vagy archivált.'}}}
   if(j.financial_closed_at){await c.query('COMMIT');return{status:200,body:{...wo,idempotent:true,recovery:true}}}
 
+  // A többcéges pénzügyi trigger 23514 hibát dob, ha egy régi munkalapnak nincs
+  // kibocsátó cége. Ezt még a fizetési INSERT előtt determinisztikusan feloldjuk:
+  // explicit kérés -> meglévő fizetési bizonyíték -> alapértelmezett -> egyetlen aktív cég.
+  if(woCols.has('legal_entity_id')&&!String(wo.legal_entity_id||'').trim()){
+   const locationId=String(wo.location_id||'').trim();
+   if(!locationId){
+    await c.query('ROLLBACK');
+    return{status:409,body:{message:'A munkalaphoz nincs szalon rendelve, ezért kibocsátó cég sem választható.',error_code:'WORK_ORDER_LOCATION_REQUIRED'}};
+   }
+   const choices=(await c.query(`SELECT e.id::text,e.legal_name,e.short_name,e.tax_number,el.is_default
+      FROM legal_entities e
+      JOIN legal_entity_locations el ON el.legal_entity_id=e.id
+      WHERE el.location_id::text=$1 AND el.active=true AND e.active=true
+      ORDER BY el.is_default DESC,e.legal_name,e.id`,[locationId])).rows;
+   const requestedId=String(body?.legal_entity_id||'').trim();
+   const evidenceRows=(await c.query(`SELECT DISTINCT NULLIF(to_jsonb(p)->>'legal_entity_id','') legal_entity_id
+      FROM work_order_payments p
+      WHERE p.work_order_id::text=$1 AND NULLIF(to_jsonb(p)->>'legal_entity_id','') IS NOT NULL`,[workOrderId])).rows;
+   const evidenceIds=evidenceRows.map((r:any)=>String(r.legal_entity_id||'').trim()).filter(Boolean);
+   if(evidenceIds.length>1){
+    await c.query('ROLLBACK');
+    return{status:409,body:{message:'A munkalap korábbi fizetései több különböző kibocsátó céghez tartoznak. A pénzügyi lezárás előtt ezt az eltérést rendezni kell.',error_code:'WORK_ORDER_LEGAL_ENTITY_CONFLICT',evidence_legal_entity_ids:evidenceIds}};
+   }
+   const evidenceId=evidenceIds[0]||'';
+   const requested= requestedId?choices.find((x:any)=>String(x.id)===requestedId):null;
+   if(requestedId&&!requested){
+    await c.query('ROLLBACK');
+    return{status:409,body:{message:'A kiválasztott kibocsátó cég nincs aktívan hozzárendelve ehhez a szalonhoz.',error_code:'WORK_ORDER_LEGAL_ENTITY_INVALID',legal_entity_choices:choices}};
+   }
+   const evidence=evidenceId?choices.find((x:any)=>String(x.id)===evidenceId):null;
+   if(evidenceId&&!evidence){
+    await c.query('ROLLBACK');
+    return{status:409,body:{message:'A munkalap meglévő fizetése olyan kibocsátó céghez tartozik, amely már nincs aktívan hozzárendelve ehhez a szalonhoz.',error_code:'WORK_ORDER_LEGAL_ENTITY_CONFLICT',evidence_legal_entity_id:evidenceId,legal_entity_choices:choices}};
+   }
+   const defaults=choices.filter((x:any)=>Boolean(x.is_default));
+   const resolved=requested||evidence||(defaults.length===1?defaults[0]:null)||(choices.length===1?choices[0]:null);
+   if(!resolved){
+    await c.query('ROLLBACK');
+    if(!choices.length)return{status:409,body:{message:'A munkalap szalonjához nincs aktív kibocsátó cég rendelve. Előbb rendelj céget a szalonhoz.',error_code:'WORK_ORDER_LEGAL_ENTITY_UNAVAILABLE'}};
+    return{status:409,body:{message:'A munkalaphoz több kibocsátó cég választható, de egyik sincs alapértelmezettként kijelölve. Válassz kibocsátó céget a munkalapon, majd zárd le újra.',error_code:'WORK_ORDER_LEGAL_ENTITY_REQUIRED',legal_entity_choices:choices}};
+   }
+   try{
+    await c.query(`UPDATE work_orders SET legal_entity_id=$2::uuid WHERE id::text=$1 AND legal_entity_id IS NULL`,[workOrderId,resolved.id]);
+   }catch(error:any){
+    if(String(error?.code||'')==='23514'){
+     await c.query('ROLLBACK');
+     return{status:409,body:{message:String(error?.message||'A munkalap kibocsátó cége nem állítható be a meglévő pénzügyi adatok miatt.'),error_code:'WORK_ORDER_LEGAL_ENTITY_CONFLICT',legal_entity_choices:choices}};
+    }
+    throw error;
+   }
+   wo.legal_entity_id=resolved.id;
+   if(wo._json&&typeof wo._json==='object')wo._json.legal_entity_id=resolved.id;
+  }
+
   const gross=money((await c.query(`SELECT COALESCE(SUM(line_total),0)::numeric total FROM work_order_items WHERE work_order_id::text=$1`,[workOrderId])).rows[0]?.total);
   const requestedDiscount=Math.max(0,money(body?.discount_amount)),storedDiscount=Math.max(0,money(j.discount_amount));
   const requestedTip=Math.max(0,money(body?.tip_amount)),storedTip=Math.max(0,money(j.tip_amount));
@@ -80,7 +145,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
    if(!PAYMENT_METHODS.has(method)){await c.query('ROLLBACK');return{status:400,body:{message:`Érvénytelen fizetési mód: ${method}`}}}
    if(!(requestedAmount>0)){await c.query('ROLLBACK');return{status:400,body:{message:'A fizetési összegnek pozitívnak kell lennie.'}}}
    const amount=Math.min(requestedAmount,remaining);
-   const cashierShiftId=method==='cash'?await resolveOpenCashierShift(c,wo,p?.cashier_shift_id):p?.cashier_shift_id||null;
+   const cashierShiftId=method==='cash'?await resolveOpenCashierShift(c,wo,p?.cashier_shift_id):null;
    if(method==='cash'&&!cashierShiftId){
     await c.query('ROLLBACK');
     return{status:409,body:{message:'Készpénzes munkalapfizetéshez nyitott pénztári műszak szükséges. Nyisd meg a kasszát, majd indítsd újra a fizetést.',error_code:'CASHIER_SHIFT_REQUIRED'}};
@@ -128,7 +193,7 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   const diagnosticTarget=diagnostic.constraint||[diagnostic.table,diagnostic.column].filter(Boolean).join('.');
   console.error('[workorder-settlement-recovery] failed',workOrderId,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
   if(code==='P0001')return{status:409,body:{message:String(error?.message||'A pénzügyi helyreállítást üzleti szabály akadályozza.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic}};
-  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:`A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza${diagnosticTarget?` (${diagnosticTarget})`:''}.`,error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
+  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:readableConstraintMessage(error,diagnosticTarget),error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
   if(['57014','55P03','40P01'].includes(code))return{status:503,body:{message:'A pénzügyi helyreállítást adatbázis-zárolás vagy timeout akadályozta. Próbáld újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic}};
   return{status:500,body:{message:'A munkalap pénzügyi helyreállítása sikertelen.',error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',diagnostic}};
  }finally{c.release()}
