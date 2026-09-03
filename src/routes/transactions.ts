@@ -72,6 +72,7 @@ import { requirePurchaseOrderAccess, requireProcurementWorkflowAccess } from "..
 import { requireMenuPermission, requireMenuPermissionByMethod } from "../middleware/menuPermission";
 import { requireFeature } from "../middleware/featureAccess";
 import {ensureFinanceNav} from "../finance/ensureFinanceNav";
+import {ensureSalonDefaultLegalEntities} from "../finance/ensureSalonDefaultLegalEntities";
 import {ensureNavInvoiceCore,getNavInvoiceBootstrapState} from "../finance/ensureNavInvoiceCore";
 import {getNavXsdRuntimeInfo} from "../nav/navXsdValidator";
 import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
@@ -79,7 +80,7 @@ import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
 const router=express.Router();
 
 const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
-  try{await ensureFinanceNav();next()}
+  try{await ensureFinanceNav();await ensureSalonDefaultLegalEntities();next()}
   catch(error:any){
     const stage=error?.stage?String(error.stage):null;
     const dbCode=error?.dbCode?String(error.dbCode):(error?.code?String(error.code):null);
