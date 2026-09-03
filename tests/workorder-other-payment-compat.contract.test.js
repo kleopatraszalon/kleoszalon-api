@@ -15,6 +15,16 @@ test('other workorder payment repairs legacy payment and account constraints',()
   ])assert.ok(compat.includes(marker),marker);
 });
 
+test('legacy no-default not-null drift cannot block settlement recovery',()=>{
+  assert.ok(compat.includes("table_name='work_order_payments'"));
+  assert.ok(compat.includes("column_name NOT IN('id','work_order_id','payment_method','amount','paid_at')"));
+  assert.ok(compat.includes('ALTER TABLE work_order_payments ALTER COLUMN %I DROP NOT NULL'));
+  assert.ok(compat.includes("table_name='financial_accounts'"));
+  assert.ok(compat.includes('ALTER TABLE financial_accounts ALTER COLUMN %I DROP NOT NULL'));
+  assert.ok(compat.includes("table_name='financial_movements'"));
+  assert.ok(compat.includes('ALTER TABLE financial_movements ALTER COLUMN %I DROP NOT NULL'));
+});
+
 test('settlement recovery runs other-payment compatibility repair before transaction',()=>{
   assert.ok(recovery.includes("import {ensureOtherPaymentCompatibility}"));
   const repair=recovery.indexOf('await ensureOtherPaymentCompatibility()');
