@@ -8,12 +8,37 @@ export async function ensureOtherPaymentCompatibility(){
   if(pending)return pending;
   pending=(async()=>{
     await db.query(`
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
       DO $repair$
       DECLARE
         v_att smallint;
         r record;
       BEGIN
         IF to_regclass('public.work_order_payments') IS NOT NULL THEN
+          -- Some long-lived databases lost UUID/default metadata while keeping
+          -- the canonical id column NOT NULL. Every payment writer omits id and
+          -- therefore depends on this database-side default.
+          IF EXISTS(
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='work_order_payments'
+               AND column_name='id'
+               AND data_type='uuid'
+               AND column_default IS NULL
+          ) THEN
+            ALTER TABLE work_order_payments ALTER COLUMN id SET DEFAULT gen_random_uuid();
+          END IF;
+          IF EXISTS(
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='work_order_payments'
+               AND column_name='paid_at'
+               AND column_default IS NULL
+          ) THEN
+            ALTER TABLE work_order_payments ALTER COLUMN paid_at SET DEFAULT now();
+          END IF;
+
           -- Legacy deployments accumulated implementation-only NOT NULL columns.
           -- The protected payment writer cannot populate columns it does not know,
           -- therefore keep only the canonical business columns mandatory.
@@ -64,6 +89,17 @@ export async function ensureOtherPaymentCompatibility(){
         END IF;
 
         IF to_regclass('public.financial_accounts') IS NOT NULL THEN
+          IF EXISTS(
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='financial_accounts'
+               AND column_name='id'
+               AND data_type='uuid'
+               AND column_default IS NULL
+          ) THEN
+            ALTER TABLE financial_accounts ALTER COLUMN id SET DEFAULT gen_random_uuid();
+          END IF;
+
           -- Preserve canonical mandatory account data but release obsolete
           -- legacy columns that otherwise block automatic account creation.
           FOR r IN
@@ -113,6 +149,17 @@ export async function ensureOtherPaymentCompatibility(){
         END IF;
 
         IF to_regclass('public.financial_movements') IS NOT NULL THEN
+          IF EXISTS(
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='financial_movements'
+               AND column_name='id'
+               AND data_type='uuid'
+               AND column_default IS NULL
+          ) THEN
+            ALTER TABLE financial_movements ALTER COLUMN id SET DEFAULT gen_random_uuid();
+          END IF;
+
           -- Same compatibility rule for the audited ledger: only canonical
           -- identity/account/direction/amount fields stay mandatory.
           FOR r IN
