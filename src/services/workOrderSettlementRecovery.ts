@@ -120,9 +120,10 @@ export async function settleWorkOrderWithoutShift(workOrderId:string,body:any,ac
   await c.query('ROLLBACK').catch(()=>undefined);
   const code=String(error?.code||'');
   const diagnostic={code:code||null,table:error?.table?String(error.table):null,column:error?.column?String(error.column):null,constraint:error?.constraint?String(error.constraint):null};
+  const diagnosticTarget=diagnostic.constraint||[diagnostic.table,diagnostic.column].filter(Boolean).join('.');
   console.error('[workorder-settlement-recovery] failed',workOrderId,code,error?.table||'',error?.column||'',error?.constraint||'',error?.message||error);
   if(code==='P0001')return{status:409,body:{message:String(error?.message||'A pénzügyi helyreállítást üzleti szabály akadályozza.'),error_code:'CASHIER_SETTLEMENT_RULE_CONFLICT',diagnostic}};
-  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:`A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza${diagnostic.constraint?` (${diagnostic.constraint})`:''}.`,error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
+  if(['23502','23503','23514'].includes(code))return{status:409,body:{message:`A munkalap pénzügyi helyreállítását egy adatkonzisztencia-feltétel akadályozza${diagnosticTarget?` (${diagnosticTarget})`:''}.`,error_code:'CASHIER_SETTLEMENT_RECOVERY_CONSTRAINT',diagnostic}};
   if(['57014','55P03','40P01'].includes(code))return{status:503,body:{message:'A pénzügyi helyreállítást adatbázis-zárolás vagy timeout akadályozta. Próbáld újra.',error_code:'CASHIER_SETTLEMENT_RETRYABLE_DB',diagnostic}};
   return{status:500,body:{message:'A munkalap pénzügyi helyreállítása sikertelen.',error_code:'CASHIER_SETTLEMENT_RECOVERY_FAILED',diagnostic}};
  }finally{c.release()}
