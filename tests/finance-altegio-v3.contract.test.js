@@ -12,12 +12,12 @@ const required=[
   "router.get('/online-settings'","router.put('/online-settings'"
 ];
 for(const marker of required)assert(route.includes(marker),`missing finance route: ${marker}`);
-assert(route.includes('CREATE TABLE IF NOT EXISTS finance_partners'),'partner schema missing');
-assert(route.includes('CREATE TABLE IF NOT EXISTS finance_document_types'),'document type schema missing');
-assert(route.includes('CREATE TABLE IF NOT EXISTS finance_payment_methods'),'payment method schema missing');
-assert(route.includes('CREATE TABLE IF NOT EXISTS finance_documents'),'document registry schema missing');
-assert(route.includes('CREATE TABLE IF NOT EXISTS finance_online_settings'),'online settings schema missing');
 assert(route.includes('["employee","customer","guest"]'),'operational finance role guard missing');
+assert(route.includes('pm.location_id=m.location_id::text'),'payment method/location join must normalize text-vs-uuid schema types');
+assert(route.includes('m.account_id::text=a.id::text'),'account join must tolerate compatible identifier representations');
+assert(!route.includes('async function ensureSchema()'),'request-path DDL bootstrap must not live in financeAltegio router');
+assert(!route.includes('CREATE TABLE IF NOT EXISTS finance_partners'),'route must rely on serialized ensureFinanceReady bootstrap');
 assert(transactions.includes('financeAltegioRouter'),'finance Altegio router import missing');
 assert(transactions.includes('/finance-operations/altegio'),'finance Altegio router mount missing');
+assert(transactions.includes('ensureFinanceReady'),'central finance schema bootstrap missing');
 console.log('Finance Altegio v3 contract OK');
