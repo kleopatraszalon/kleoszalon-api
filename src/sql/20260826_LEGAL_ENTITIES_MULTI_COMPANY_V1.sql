@@ -101,7 +101,7 @@ END $$;
 DO $$
 DECLARE
   entity_id uuid;
-  r record;
+  check_row record;
   legacy_check_names text[] := ARRAY[]::text[];
   legacy_check_defs text[] := ARRAY[]::text[];
   idx integer;
@@ -119,7 +119,7 @@ BEGIN
     -- ezért még egy teljesen ortogonális legal_entity_id backfill is 23514 hibával elhasalhat.
     -- Csak a már eleve NOT VALID work_orders CHECK-eket függesztjük fel a backfill idejére,
     -- majd az eredeti definícióval NOT VALID állapotban azonnal visszaállítjuk őket.
-    FOR r IN
+    FOR check_row IN
       SELECT c.conname,
              regexp_replace(pg_get_constraintdef(c.oid,true), '\s+NOT VALID$', '', 'i') AS constraint_def
       FROM pg_constraint c
@@ -128,9 +128,9 @@ BEGIN
         AND NOT c.convalidated
       ORDER BY c.conname
     LOOP
-      legacy_check_names := array_append(legacy_check_names,r.conname);
-      legacy_check_defs := array_append(legacy_check_defs,r.constraint_def);
-      EXECUTE format('ALTER TABLE work_orders DROP CONSTRAINT %I',r.conname);
+      legacy_check_names := array_append(legacy_check_names,check_row.conname);
+      legacy_check_defs := array_append(legacy_check_defs,check_row.constraint_def);
+      EXECUTE format('ALTER TABLE work_orders DROP CONSTRAINT %I',check_row.conname);
     END LOOP;
 
     -- A lezárt/archivált munkalap fejléce immutábilis. Runtime bootstrap soha ne próbálja
