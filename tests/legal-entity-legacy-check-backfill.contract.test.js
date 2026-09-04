@@ -26,3 +26,11 @@ test('archived workorders remain immutable during the compatibility backfill',()
   assert.match(sql,/w\.locked_at IS NULL/);
   assert.match(sql,/w\.archived_at IS NULL/);
 });
+
+test('PLpgSQL loop record does not shadow retail or receipt table alias r',()=>{
+  assert.match(sql,/check_row record/);
+  assert.match(sql,/FOR check_row IN/);
+  assert.match(sql,/check_row\.conname/);
+  assert.match(sql,/check_row\.constraint_def/);
+  assert.doesNotMatch(sql,/\br record;/);
+});
