@@ -8,6 +8,7 @@ import axios from "axios";
 import crypto from "crypto";
 import JWT_SECRET from "../security/jwtSecret";
 import { ensureAccountingUser } from "../accounting/ensureAccountingUser";
+import { sendEmail } from "../mailer";
 import releaseControlOidcRouter from "./releaseControlOidc";
 import securitySettingsRouter from "./securitySettings";
 
@@ -302,10 +303,12 @@ router.post("/login", async (req: Request, res: Response) => {
     login?: string;
     phone?: string;
     password?: string;
+    idle_unlock?: boolean;
   };
 
   const loginIdentifier = String(identifier || email || username || login || phone || "").trim();
   const requestedLocationId = requestedLocation(req);
+  const idleUnlock = req.body?.idle_unlock === true;
   if (!loginIdentifier || !password) {
     return res.status(400).json({ error: "Hiányzó azonosító vagy jelszó." });
   }
@@ -337,7 +340,30 @@ router.post("/login", async (req: Request, res: Response) => {
     const ok = String(hash).startsWith("pbkdf2$")
       ? await verifyPassword(password, hash)
       : await bcrypt.compare(password, hash);
-    if (!ok) return res.status(401).json({ error: "Hibás felhasználó vagy jelszó." });
+    if (!ok) {
+      if (idleUnlock && isAdminRole(user.role)) {
+        const recipient = String(process.env.SECURITY_ALERT_EMAIL || user.email || "").trim();
+        if (recipient) {
+          try {
+            await sendEmail({
+              to: recipient,
+              subject: "[Kleoszalon] Sikertelen admin zárolás-feloldás",
+              text: [
+                "Sikertelen jelszóellenőrzés történt egy 5 perces inaktivitás után zárolt admin munkamenet feloldásakor.",
+                `Felhasználó: ${String(user.email || user.login_name || loginIdentifier)}`,
+                `Időpont: ${new Date().toISOString()}`,
+                `IP: ${String(req.ip || req.socket?.remoteAddress || "ismeretlen")}`,
+                `Böngésző: ${String(req.headers["user-agent"] || "ismeretlen")}`,
+                "A zárolt böngészős munkamenet a kliensoldali szabály szerint azonnal kijelentkezik.",
+              ].join("\n"),
+            });
+          } catch (mailError: any) {
+            console.warn("[AUTH] admin idle unlock riasztó e-mail sikertelen:", mailError?.message || mailError);
+          }
+        }
+      }
+      return res.status(401).json({ error: "Hibás felhasználó vagy jelszó.", code: idleUnlock ? "ADMIN_IDLE_UNLOCK_FAILED" : undefined });
+    }
 
     const admin = isAdminRole(user.role);
     if (requestedLocationId && !admin && String(user.location_id ?? "") !== requestedLocationId) {
