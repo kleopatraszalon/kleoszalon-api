@@ -99,7 +99,12 @@ END $$;
 
 -- Ha már van legalább egy cég, minden aktív szalonhoz legyen alapértelmezett hozzárendelés.
 DO $$
-DECLARE entity_id uuid;
+DECLARE
+  entity_id uuid;
+  r record;
+  legacy_check_names text[] := ARRAY[]::text[];
+  legacy_check_defs text[] := ARRAY[]::text[];
+  idx integer;
 BEGIN
   SELECT id INTO entity_id FROM legal_entities WHERE active=true ORDER BY created_at,id LIMIT 1;
   IF entity_id IS NOT NULL THEN
@@ -109,6 +114,25 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM legal_entity_locations x WHERE x.location_id=l.id AND x.active=true)
     ON CONFLICT DO NOTHING;
 
+    -- A production adatbázisban vannak a jelenlegi státuszszabályt megelőző legacy sorok.
+    -- Egy NOT VALID CHECK ezeket megtűri, de bármely későbbi UPDATE újraellenőrzi a sort,
+    -- ezért még egy teljesen ortogonális legal_entity_id backfill is 23514 hibával elhasalhat.
+    -- Csak a már eleve NOT VALID work_orders CHECK-eket függesztjük fel a backfill idejére,
+    -- majd az eredeti definícióval NOT VALID állapotban azonnal visszaállítjuk őket.
+    FOR r IN
+      SELECT c.conname,
+             regexp_replace(pg_get_constraintdef(c.oid,true), '\s+NOT VALID$', '', 'i') AS constraint_def
+      FROM pg_constraint c
+      WHERE c.conrelid='work_orders'::regclass
+        AND c.contype='c'
+        AND NOT c.convalidated
+      ORDER BY c.conname
+    LOOP
+      legacy_check_names := array_append(legacy_check_names,r.conname);
+      legacy_check_defs := array_append(legacy_check_defs,r.constraint_def);
+      EXECUTE format('ALTER TABLE work_orders DROP CONSTRAINT %I',r.conname);
+    END LOOP;
+
     -- A lezárt/archivált munkalap fejléce immutábilis. Runtime bootstrap soha ne próbálja
     -- utólag átírni ezeket: a BEFORE UPDATE archiváló trigger 55000 hibával jogosan tiltja.
     UPDATE work_orders w SET legal_entity_id=COALESCE(w.legal_entity_id,
@@ -116,6 +140,16 @@ BEGIN
     WHERE w.legal_entity_id IS NULL
       AND w.locked_at IS NULL
       AND w.archived_at IS NULL;
+
+    IF array_length(legacy_check_names,1) IS NOT NULL THEN
+      FOR idx IN 1..array_length(legacy_check_names,1)
+      LOOP
+        EXECUTE format(
+          'ALTER TABLE work_orders ADD CONSTRAINT %I %s NOT VALID',
+          legacy_check_names[idx],legacy_check_defs[idx]
+        );
+      END LOOP;
+    END IF;
 
     -- Ugyanez igaz a zárolt munkalaphoz tartozó fizetési sorokra is: a gyermek-tétel
     -- immutability trigger minden UPDATE-et blokkol, ezért csak módosítható munkalaphoz backfillünk.
