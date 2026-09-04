@@ -173,4 +173,10 @@ CREATE INDEX IF NOT EXISTS work_order_payments_legal_entity_idx ON work_order_pa
 CREATE INDEX IF NOT EXISTS finance_invoices_legal_entity_idx ON finance_invoices(legal_entity_id,issue_date DESC);
 CREATE INDEX IF NOT EXISTS financial_movements_legal_entity_idx ON financial_movements(legal_entity_id,occurred_at DESC);
 
+-- runSqlOnce csak a ledgerből tudja, hogy a runtime bootstrap már sikeresen lefutott.
+-- A jelölést ugyanebben a tranzakcióban rögzítjük, így hibás/rollbackelt bootstrap sosem lesz késznek jelölve.
+INSERT INTO schema_migrations(version,description)
+VALUES('20260826_LEGAL_ENTITIES_MULTI_COMPANY_V1','Legal entities multi-company runtime bootstrap')
+ON CONFLICT(version) DO NOTHING;
+
 COMMIT;
