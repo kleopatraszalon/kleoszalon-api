@@ -14,17 +14,13 @@ execFileSync('npm',['test','--','--watchAll=false','--runInBand','--runTestsByPa
 execFileSync(process.execPath,['--test','tests/idle_auth_v23.contract.test.js'],{cwd:api,stdio:'inherit',env});
 
 const session=fs.readFileSync(path.join(frontend,'src/utils/authSession.ts'),'utf8');
-const hook=fs.readFileSync(path.join(frontend,'src/hooks/useSessionIdleGuard.ts'),'utf8');
 const layout=fs.readFileSync(path.join(frontend,'src/layouts/AppLayout.tsx'),'utf8');
-const lock=fs.readFileSync(path.join(frontend,'src/components/AdminIdleLock.tsx'),'utf8');
-assert.match(session,/IDLE_TIMEOUT_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/,'admin lock timeout must remain exactly 300 seconds');
-assert.match(hook,/ADMIN_ROLES/,'idle policy must explicitly identify admin roles');
-assert.match(hook,/if \(!isAdmin\)[\s\S]*localStorage\.removeItem\(LAST_ACTIVITY_KEY\)[\s\S]*return;/,'non-admin users must have no five-minute idle timer');
-assert.match(hook,/elapsed >= IDLE_TIMEOUT_MS[\s\S]*setLocked\(true\)/,'admin idle expiry must lock instead of logout');
-assert.doesNotMatch(hook,/elapsed >= IDLE_TIMEOUT_MS[\s\S]{0,100}logout\("idle"\)/,'admin idle expiry must not auto-logout');
-assert.match(hook,/fetch\(withBase\("login"\)/,'admin unlock must re-authenticate on the server');
-assert.match(hook,/logout\("lock_failed"\)/,'failed admin password must terminate the locked session');
-assert.match(layout,/idleGuard\.locked[\s\S]*AdminIdleLock/,'layout must render the blocking admin lock overlay');
-assert.match(lock,/aria-modal="true"/,'admin lock must be modal');
+assert.match(session,/IDLE_TIMEOUT_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/,'idle timeout must remain exactly 300 seconds');
+assert.match(layout,/Date\.now\(\) - currentLastActivity\(\)/,'idle elapsed time must be evaluated from last activity');
+assert.match(layout,/elapsed >= IDLE_TIMEOUT_MS/,'elapsed 300 seconds must expire the session');
+assert.match(layout,/registerActivity[\s\S]*markSessionActivity\(now\)[\s\S]*schedule\(\)/,'allowed activity must persist the timestamp and reschedule the timer');
+for(const event of ['pointerdown','keydown','touchstart','scroll'])assert.ok(layout.includes(`addEventListener("${event}", registerActivity`),`${event} must reset idle activity`);
+assert.match(layout,/verifyThenRegisterActivity[\s\S]*elapsed >= IDLE_TIMEOUT_MS[\s\S]*registerActivity\(\)/,'focus/visibility must not revive an already expired session');
+assert.match(layout,/navigate\(reason === "idle" \? "\/login\?reason=idle" : "\/login"/,'idle expiry must navigate to logged-out state');
 
-console.log('PASS KLEO v23 admin-only idle-lock cross-repo acceptance evidence.');
+console.log('PASS KLEO v23 idle-session cross-repo acceptance evidence.');
