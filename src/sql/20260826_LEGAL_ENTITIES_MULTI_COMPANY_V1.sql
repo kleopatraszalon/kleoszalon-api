@@ -109,11 +109,24 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM legal_entity_locations x WHERE x.location_id=l.id AND x.active=true)
     ON CONFLICT DO NOTHING;
 
+    -- A lezárt/archivált munkalap fejléce immutábilis. Runtime bootstrap soha ne próbálja
+    -- utólag átírni ezeket: a BEFORE UPDATE archiváló trigger 55000 hibával jogosan tiltja.
     UPDATE work_orders w SET legal_entity_id=COALESCE(w.legal_entity_id,
       (SELECT x.legal_entity_id FROM legal_entity_locations x WHERE x.location_id=w.location_id AND x.active=true ORDER BY x.is_default DESC LIMIT 1),entity_id)
-    WHERE w.legal_entity_id IS NULL;
+    WHERE w.legal_entity_id IS NULL
+      AND w.locked_at IS NULL
+      AND w.archived_at IS NULL;
+
+    -- Ugyanez igaz a zárolt munkalaphoz tartozó fizetési sorokra is: a gyermek-tétel
+    -- immutability trigger minden UPDATE-et blokkol, ezért csak módosítható munkalaphoz backfillünk.
     UPDATE work_order_payments p SET legal_entity_id=COALESCE(p.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=p.work_order_id::text),entity_id)
-    WHERE p.legal_entity_id IS NULL;
+    WHERE p.legal_entity_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM work_orders lw
+        WHERE lw.id::text=p.work_order_id::text
+          AND (lw.locked_at IS NOT NULL OR lw.archived_at IS NOT NULL)
+      );
+
     UPDATE finance_invoices i SET legal_entity_id=COALESCE(i.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=i.work_order_id::text),entity_id)
     WHERE i.legal_entity_id IS NULL;
     UPDATE financial_movements m SET legal_entity_id=COALESCE(m.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=m.work_order_id::text),entity_id)
