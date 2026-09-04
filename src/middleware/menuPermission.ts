@@ -14,6 +14,8 @@ export type MenuAction =
   | "can_view_financial"
   | "can_manage_permissions";
 
+const RECEPTIONIST_CHECKOUT_ACTIONS = new Set<MenuAction>(["can_view", "can_create", "can_edit"]);
+
 async function checkMenuPermission(
   menuCode: string,
   action: MenuAction,
@@ -29,6 +31,15 @@ async function checkMenuPermission(
       return next();
     }
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
+
+    // Üzleti alapszabály: a recepciós a saját telephelyén kezeli a kasszát és a
+    // munkalap fizetését/lezárását. Ezt nem teheti működésképtelenné egy régi vagy
+    // hiányos role_menu_permissions sor. A workOrderFinanceScope továbbra is
+    // own-location határt érvényesít, ezért ez nem ad globális pénzügyi hozzáférést.
+    if (menuCode === "finance.checkout" && roles.includes("receptionist") && RECEPTIONIST_CHECKOUT_ACTIONS.has(action)) {
+      req.accessScope = "own_location";
+      return next();
+    }
 
     strict = await isRbacFailClosed();
     const menu = await db.query(
