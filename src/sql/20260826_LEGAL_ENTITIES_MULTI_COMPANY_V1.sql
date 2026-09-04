@@ -166,16 +166,16 @@ BEGIN
     UPDATE financial_movements m SET legal_entity_id=COALESCE(m.legal_entity_id,(SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=m.work_order_id::text),entity_id)
     WHERE m.legal_entity_id IS NULL;
     IF to_regclass('public.retail_sales') IS NOT NULL THEN
-      UPDATE retail_sales r SET legal_entity_id=COALESCE(r.legal_entity_id,
-        (SELECT x.legal_entity_id FROM legal_entity_locations x WHERE x.location_id::text=r.location_id::text AND x.active=true ORDER BY x.is_default DESC LIMIT 1),entity_id)
-      WHERE r.legal_entity_id IS NULL;
+      UPDATE retail_sales rs SET legal_entity_id=COALESCE(rs.legal_entity_id,
+        (SELECT x.legal_entity_id FROM legal_entity_locations x WHERE x.location_id::text=rs.location_id::text AND x.active=true ORDER BY x.is_default DESC LIMIT 1),entity_id)
+      WHERE rs.legal_entity_id IS NULL;
     END IF;
     IF to_regclass('public.vir_receipts') IS NOT NULL THEN
-      UPDATE vir_receipts r SET legal_entity_id=COALESCE(r.legal_entity_id,
-        CASE WHEN r.source_type='WORK_ORDER' THEN (SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=r.source_id::text) ELSE NULL END,
-        CASE WHEN r.source_type='RETAIL_SALE' AND to_regclass('public.retail_sales') IS NOT NULL THEN (SELECT s.legal_entity_id FROM retail_sales s WHERE s.id::text=r.source_id::text) ELSE NULL END,
+      UPDATE vir_receipts vr SET legal_entity_id=COALESCE(vr.legal_entity_id,
+        CASE WHEN vr.source_type='WORK_ORDER' THEN (SELECT w.legal_entity_id FROM work_orders w WHERE w.id::text=vr.source_id::text) ELSE NULL END,
+        CASE WHEN vr.source_type='RETAIL_SALE' AND to_regclass('public.retail_sales') IS NOT NULL THEN (SELECT s.legal_entity_id FROM retail_sales s WHERE s.id::text=vr.source_id::text) ELSE NULL END,
         entity_id)
-      WHERE r.legal_entity_id IS NULL;
+      WHERE vr.legal_entity_id IS NULL;
     END IF;
   END IF;
 END $$;
