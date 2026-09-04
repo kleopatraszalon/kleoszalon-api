@@ -30,6 +30,19 @@ async function checkMenuPermission(
     }
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
 
+    // A recepció munkakörének kötelező operatív joga a saját szalon pénztári
+    // munkalapjainak megtekintése, fizetése és lezárása. A tényleges telephely-scope-ot
+    // a workOrderFinanceScope middleware külön, fail-closed módon ellenőrzi.
+    // Ezt nem engedjük egy régi/stale role_menu_permissions sorral véletlenül letiltani.
+    if (
+      menuCode === "finance.checkout" &&
+      roles.includes("receptionist") &&
+      ["can_view", "can_create", "can_edit"].includes(action)
+    ) {
+      req.accessScope = "own_location";
+      return next();
+    }
+
     strict = await isRbacFailClosed();
     const menu = await db.query(
       `SELECT id FROM menus WHERE code=$1 ORDER BY COALESCE(is_active,true) DESC,id LIMIT 1`,
