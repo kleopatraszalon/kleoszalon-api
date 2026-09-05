@@ -11,6 +11,12 @@ async function checkFeature(featureKey: string, req: AuthRequest, res: Response,
     if (roles.includes("admin")) return next();
     if (!roles.length) return res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." });
 
+    // A recepciós saját telephelyén a teljes checkout folyamat operátora:
+    // fizetés, pénzügyi lezárás és végleges munkalaplezárás. A lokációs
+    // korlátozást a workOrderFinanceScope, a műveleti jogot a finance.checkout
+    // menüjog továbbra is fail-closed módon érvényesíti.
+    if (featureKey === "finance" && roles.includes("receptionist")) return next();
+
     strict = await isRbacFailClosed();
     const configured = await db.query(
       `SELECT can_use,scope_type
