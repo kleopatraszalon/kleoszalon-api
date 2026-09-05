@@ -73,6 +73,7 @@ import { requireMenuPermission, requireMenuPermissionByMethod } from "../middlew
 import { requireFeature } from "../middleware/featureAccess";
 import {ensureFinanceNav} from "../finance/ensureFinanceNav";
 import {ensureSalonDefaultLegalEntities} from "../finance/ensureSalonDefaultLegalEntities";
+import {ensureWorkOrderOperationalFinance} from "../finance/ensureWorkOrderOperationalFinance";
 import {ensureNavInvoiceCore,getNavInvoiceBootstrapState} from "../finance/ensureNavInvoiceCore";
 import {getNavXsdRuntimeInfo} from "../nav/navXsdValidator";
 import ensureBookingVoiceStats from "../booking/ensureBookingVoiceStats";
@@ -86,6 +87,14 @@ const ensureFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
     const dbCode=error?.dbCode?String(error.dbCode):(error?.code?String(error.code):null);
     console.error('Finance/NAV schema bootstrap hiba:',{stage,dbCode,message:error?.message||String(error)});
     res.status(503).json({ok:false,error:'finance_schema_unavailable',message:'A pénzügyi/NAV adatbázis séma jelenleg nem kész. A rendszer automatikusan újrapróbálja.',bootstrap_stage:stage,db_code:dbCode,detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})
+  }
+};
+const ensureWorkOrderFinanceReady=async(_req:Request,res:Response,next:NextFunction)=>{
+  try{await ensureWorkOrderOperationalFinance();next()}
+  catch(error:any){
+    const dbCode=error?.code?String(error.code):null;
+    console.error('Munkalap operatív pénzügyi bootstrap hiba:',{dbCode,message:error?.message||String(error)});
+    res.status(503).json({ok:false,error:'workorder_finance_schema_unavailable',message:'A munkalap fizetési sémája jelenleg nem kész. A NAV teszt/számlázási állapota ettől független.',db_code:dbCode,detail:process.env.NODE_ENV==='development'?String(error?.message||error):undefined})
   }
 };
 const ensureNavInvoiceReady=async(_req:Request,res:Response,next:NextFunction)=>{
@@ -153,16 +162,17 @@ router.use("/daily-actions/auto-selector",requireManagement,dailyActionAutoSelec
 router.use("/daily-actions",requireManagement,dailyActionsRouter);
 router.use("/masterdata",requireManagement,centralMasterDataRouter);
 
-router.use("/workorder-editor",ensureFinanceReady,workOrderEditorFastRouter);
-router.use("/workorder-editor",ensureFinanceReady,workOrderEditorRouter);
+// A munkalap szerkesztése és pénztára operatív funkció: NAV bootstrap hiba nem blokkolhatja.
+router.use("/workorder-editor",ensureWorkOrderFinanceReady,workOrderEditorFastRouter);
+router.use("/workorder-editor",ensureWorkOrderFinanceReady,workOrderEditorRouter);
 router.use("/workorder-materials",workOrderMaterialsRouter);
 
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
-router.use("/cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardCashierHistoryRole,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierShiftRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRegisterRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
+router.use("/cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierRouter);
 router.use("/cashier",workOrderSettlementErrorRecovery);
 router.use("/finance-operations/altegio",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeAltegioRouter);
 router.use("/finance-operations",ensureFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),financeOperationsRouter);
@@ -177,15 +187,16 @@ router.use("/loyalty-operations",loyaltyOperationsRouter);
 router.use("/loyalty-commission",loyaltyCommissionRouter);
 router.use("/loyalty-v4",loyaltyCustomerFinanceRouter);
 
-router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
-router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
-router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
-router.use("/loyalty-cashier",workOrderFinanceScope,ensureFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),cashierAltegioParityRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),retailProducts500HotfixRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderCashierFastRouter);
+router.use("/loyalty-cashier",workOrderFinanceScope,ensureWorkOrderFinanceReady,guardOpenCashierShift,guardSettlementLifecycle,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),loyaltyCashierRouter);
 router.use("/loyalty-cashier",workOrderSettlementErrorRecovery);
 
-router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
-router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
-router.use("/workorder-finalization",workOrderFinanceScope,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
+// Végleges lezárás is recepciós operatív feladat; NAV csak külön számlázási route-on kötelező.
+router.use("/workorder-finalization",workOrderFinanceScope,ensureWorkOrderFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationFastRouter);
+router.use("/workorder-finalization",workOrderFinanceScope,ensureWorkOrderFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRecoveryRouter);
+router.use("/workorder-finalization",workOrderFinanceScope,ensureWorkOrderFinanceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance.checkout"),workOrderFinalizationRouter);
 
 router.get("/nav-online-invoice/bootstrap-status",requireManagement,async(_req,res)=>{
   const before=getNavInvoiceBootstrapState();
@@ -197,6 +208,7 @@ router.get("/nav-online-invoice/runtime-status",requireManagement,async(_req,res
   catch(error:any){res.status(503).json({ok:false,xsd:{ready:false,message:String(error?.message||error)},bootstrap:getNavInvoiceBootstrapState(),fail_closed:true})}
 });
 
+// NAV csak a tényleges számlázási/beküldési útvonalakon marad fail-closed.
 router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceFastRouter);
 router.use("/workorder-invoice",ensureNavInvoiceReady,requireFeature("finance"),requireMenuPermissionByMethod("finance"),workOrderInvoiceChainRouter);
 router.use("/nav-online-invoice",navTestOnlySubmitGuard);
