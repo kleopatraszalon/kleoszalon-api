@@ -1,6 +1,8 @@
 import db from '../db';
 import {ensureFinanceNav} from './ensureFinanceNav';
+import {ensureOtherPaymentCompatibility} from './ensureOtherPaymentCompatibility';
 import {ensureSalonDefaultLegalEntities} from './ensureSalonDefaultLegalEntities';
+import {ensureWorkOrderSettlementCompatibility} from './ensureWorkOrderSettlementCompatibility';
 
 let pending:Promise<void>|null=null;
 let lastReadyAt=0;
@@ -41,9 +43,10 @@ async function hasOperationalSchema(){
  *
  * A recepciós fizetésének és végleges munkalaplezárásának nem lehet előfeltétele
  * a NAV Online Számla teljes runtime bootstrapja. Ha az operatív pénzügyi séma
- * már rendelkezésre áll, csak a szalon alapértelmezett kibocsátó cégét
- * szinkronizáljuk. A teljes Finance/NAV bootstrap csak valóban hiányos, új
- * adatbázis inicializálásakor fut le.
+ * már rendelkezésre áll, csak a munkalapfizetéshez szükséges kompatibilitási
+ * rétegeket és a szalon alapértelmezett kibocsátó cégét szinkronizáljuk.
+ * A teljes Finance/NAV bootstrap csak valóban hiányos, új adatbázis
+ * inicializálásakor fut le.
  *
  * A NAV-számlázási route-ok továbbra is a külön ensureNavInvoiceCore fail-closed
  * kaput használják; ez a helper kizárólag munkalap/pénztár operatív útvonalra való.
@@ -61,6 +64,8 @@ export function ensureWorkOrderOperationalFinance(force=false){
     if(!ready)throw Object.assign(new Error('A munkalap operatív pénzügyi sémája hiányos.'),{code:'WORKORDER_FINANCE_SCHEMA_INCOMPLETE'});
 
     await ensureSalonDefaultLegalEntities(force);
+    await ensureWorkOrderSettlementCompatibility();
+    await ensureOtherPaymentCompatibility();
     lastReadyAt=Date.now();
   })().finally(()=>{pending=null});
 
