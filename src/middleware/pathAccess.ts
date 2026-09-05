@@ -72,6 +72,14 @@ export async function enforceKnownModuleAccess(req: AuthRequest, res: Response):
   if (roles.includes("admin")) return true;
   if (!roles.length) { res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." }); return false; }
 
+  // A recepciós a saját telephelyén a checkout folyamat operátora. A globális
+  // path guard nem írhatja felül a cashier route-ok erre vonatkozó explicit
+  // üzleti szabályát. A lokációs korlát megmarad, ezért ez nem ad globális
+  // pénzügyi hozzáférést és nem érinti a vezetői management-summary útvonalat.
+  if (rule.feature === "finance" && rule.menu === "finance.checkout" && roles.includes("receptionist")) {
+    return enforceLocationScope(req,res,roles,"own_location");
+  }
+
   let strict=false;
   try {
     strict=await isRbacFailClosed();
