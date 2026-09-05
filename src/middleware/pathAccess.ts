@@ -72,6 +72,13 @@ export async function enforceKnownModuleAccess(req: AuthRequest, res: Response):
   if (roles.includes("admin")) return true;
   if (!roles.length) { res.status(403).json({ error: "Nincs érvényes szerepkör a művelethez." }); return false; }
 
+  // A recepciós pénztár/munkalap-fizetés operatív alapjog. A régi RBAC táblák
+  // hiányos konfigurációja nem blokkolhatja, de kizárólag a saját szalonban használható.
+  // A vezetői management-summary külön rule-on fut, ezért erre a kivétel nem vonatkozik.
+  if (rule.menu === "finance.checkout" && roles.includes("receptionist")) {
+    return enforceLocationScope(req,res,roles,"own_location");
+  }
+
   let strict=false;
   try {
     strict=await isRbacFailClosed();
