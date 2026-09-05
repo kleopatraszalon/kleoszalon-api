@@ -1,18 +1,18 @@
 import type{Response,NextFunction}from'express';
 import db from'../db';
 import{requireAuth,type AuthRequest}from'./auth';
+import{parseRoleKeys}from'../security/roles';
 
-const ADMIN=new Set(['admin','administrator','rendszergazda','superadmin','super_admin']);
-const RECEPTION=new Set(['receptionist','recepciós','recepcios','reception']);
-const BUSINESS=new Set(['location_manager','salon_manager','szalonvezető','szalonvezeto','üzletvezető','uzletvezeto','store_manager','branch_manager']);
+const ADMIN=new Set(['admin']);
+const RECEPTION=new Set(['receptionist']);
+const BUSINESS=new Set(['location_manager','salon_manager']);
 const SCOPED=new Set([...RECEPTION,...BUSINESS]);
-const roles=(raw:any)=>{if(Array.isArray(raw))return raw.map(String).map(x=>x.toLowerCase());try{const p=JSON.parse(String(raw||''));if(Array.isArray(p))return p.map(String).map(x=>x.toLowerCase())}catch{}return String(raw||'').split(',').map(x=>x.replace(/[\[\]"]/g,'').trim().toLowerCase()).filter(Boolean)};
 const idLike=(v:string)=>/^[0-9a-f-]{8,}$/i.test(v)||/^\d+$/.test(v);
 const workOrderIdFrom=(req:AuthRequest)=>{const parts=String(req.path||'').split('/').filter(Boolean);const wi=parts.indexOf('workorders');return wi>=0&&parts[wi+1]&&idLike(parts[wi+1])?parts[wi+1]:''};
 
 async function guard(req:AuthRequest,res:Response,next:NextFunction){
  try{
-  const r=roles(req.user?.role),workOrderId=workOrderIdFrom(req);
+  const r=parseRoleKeys(req.user?.role),workOrderId=workOrderIdFrom(req);
   if(r.some(x=>ADMIN.has(x))){
     res.locals.workOrderFinanceScope={kind:'all',canEdit:true,locationId:null};
     if(workOrderId){const q=await db.query(`SELECT location_id FROM work_orders WHERE id::text=$1 LIMIT 1`,[workOrderId]);const loc=String(q.rows[0]?.location_id||'').trim();if(!q.rows[0])return res.status(404).json({message:'A munkalap nem található.'});if(loc)res.locals.workOrderFinanceLocationId=loc;}
@@ -20,13 +20,13 @@ async function guard(req:AuthRequest,res:Response,next:NextFunction){
   }
   if(!r.some(x=>SCOPED.has(x)))return res.status(403).json({message:'Pénzügyi munkalapműveletet csak adminisztrátor, recepciós vagy üzletvezető végezhet; a szalonvezető pénztári jogosultsággal szintén engedélyezett.'});
   const locationId=String(req.user?.location_id||'').trim();
-  if(!locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.'});
+  if(!locationId)return res.status(403).json({message:'A felhasználóhoz nincs szalon rendelve.',code:'WORKORDER_FINANCE_LOCATION_REQUIRED'});
   res.locals.workOrderFinanceLocationId=locationId;
   res.locals.workOrderFinanceScope={kind:'location',canEdit:true,locationId};
   if(!req.body||typeof req.body!=='object')req.body={};
   (req.query as any).location_id=locationId;
   (req.body as any).location_id=locationId;
-  if(workOrderId){const q=await db.query(`SELECT 1 FROM work_orders WHERE id::text=$1 AND location_id::text=$2 LIMIT 1`,[workOrderId,locationId]);if(!q.rows[0])return res.status(404).json({message:'A munkalap nem ehhez a szalonhoz tartozik.'})}
+  if(workOrderId){const q=await db.query(`SELECT 1 FROM work_orders WHERE id::text=$1 AND location_id::text=$2 LIMIT 1`,[workOrderId,locationId]);if(!q.rows[0])return res.status(404).json({message:'A munkalap nem ehhez a szalonhoz tartozik.',code:'WORKORDER_FINANCE_LOCATION_MISMATCH'})}
   return next()
  }catch(e){next(e)}
 }

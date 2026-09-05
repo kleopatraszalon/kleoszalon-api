@@ -40,6 +40,8 @@ const ALIASES: Record<string, CanonicalRole> = {
   reception: "receptionist",
   "recepciós": "receptionist",
   recepcios: "receptionist",
+  "recepció": "receptionist",
+  recepcio: "receptionist",
 
   employee: "employee",
   staff: "employee",
@@ -59,6 +61,7 @@ const ALIASES: Record<string, CanonicalRole> = {
 
 export function normalizeRoleKey(value: unknown): string {
   const raw = String(value ?? "").trim().toLowerCase();
+  if (/^(?:receptionist|reception|recepciós|recepcios|recepció|recepcio)(?:[\s_-]*\d+)?$/u.test(raw)) return "receptionist";
   return ALIASES[raw] || raw;
 }
 
