@@ -41,7 +41,8 @@ test('global path authorization does not let legacy RBAC rows block receptionist
 
 test('workorder finance scope uses canonical roles and still enforces own salon',()=>{
   assert.match(financeScope,/parseRoleKeys\(req\.user\?\.role\)/);
-  assert.match(financeScope,/x==='receptionist'/);
+  assert.match(financeScope,/const RECEPTION=new Set\(\['receptionist'\]\)/);
+  assert.match(financeScope,/SCOPED\.has\(x\)/);
   assert.match(financeScope,/req\.user\?\.location_id/);
   assert.match(financeScope,/WORKORDER_FINANCE_LOCATION_REQUIRED/);
   assert.match(financeScope,/WORKORDER_FINANCE_LOCATION_MISMATCH/);
