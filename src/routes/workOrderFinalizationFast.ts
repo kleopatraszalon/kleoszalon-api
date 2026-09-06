@@ -86,8 +86,19 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     const woCols=await columns('work_orders');
     if(!woCols.has('stock_consumed_at'))return next();
     await c.query('BEGIN');
+
+    // Keep the same lock order as appointmentLifecycle: appointment first, then work order.
+    // This removes the appointment<->work_order lock inversion that caused 55P03/57014 on finalization.
+    const pre=(await c.query(`SELECT appointment_id FROM work_orders WHERE id::text=$1 LIMIT 1`,[req.params.id])).rows[0];
+    if(!pre){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
+    const hasAppointments=Boolean(pre.appointment_id)&&await tableExists('appointments');
+    if(hasAppointments)await c.query(`SELECT id FROM appointments WHERE id::text=$1 FOR UPDATE`,[String(pre.appointment_id)]);
+
     let wo=(await c.query(`SELECT w.*,to_jsonb(w) _json FROM work_orders w WHERE w.id::text=$1 FOR UPDATE`,[req.params.id])).rows[0];
     if(!wo){await c.query('ROLLBACK');return res.status(404).json({message:'A munkalap nem található.'})}
+    if(wo.appointment_id&&String(wo.appointment_id)!==String(pre.appointment_id||'')&&await tableExists('appointments')){
+      await c.query(`SELECT id FROM appointments WHERE id::text=$1 FOR UPDATE`,[String(wo.appointment_id)]);
+    }
     const j=wo._json||{};
 
     const alreadyClosed=Boolean(j.locked_at||j.archived_at||j.completed_at||j.closed_at)
@@ -177,7 +188,10 @@ router.post('/workorders/:id/finalize',async(req:AuthRequest,res,next)=>{
     console.error('[workorder-finalization-fast] failed',e?.code||'',e?.message||e);
     if(e?.code==='22P02')return res.status(400).json({message:'Érvénytelen munkalapazonosító.',code:e.code});
     if(String(e?.code||'').startsWith('INVENTORY_'))return res.status(Number(e?.status||409)).json({message:String(e?.message||'A készletművelet nem hajtható végre.'),code:e.code});
-    if(e?.code==='57014'||e?.code==='55P03')return res.status(503).json({message:'A munkalap lezárását adatbázis-zárolás vagy timeout akadályozta.',code:e.code});
+    if(['57014','55P03','40P01'].includes(String(e?.code||''))){
+      console.warn('[workorder-finalization-fast] transient lock/timeout -> recovery handoff',e?.code||'');
+      return next();
+    }
     return next(e);
   }finally{c.release()}
 });
